@@ -7,7 +7,10 @@
 #include <drake/geometry/meshcat_visualizer.h>
 #include <drake/geometry/meshcat_visualizer_params.h>
 #include <drake/geometry/scene_graph.h>
+#include <drake/geometry/shape_specification.h>
+#include <drake/math/rigid_transform.h>
 #include <drake/multibody/parsing/parser.h>
+#include <drake/multibody/plant/coulomb_friction.h>
 #include "drake/multibody/plant/multibody_plant.h"
 #include <drake/systems/analysis/simulator.h>
 #include <drake/systems/framework/diagram_builder.h>
@@ -80,6 +83,20 @@ int DoMain(int argc, char* argv[]) {
   ModelInstanceIndex cube_index = parser.AddModels(FindResourceOrThrow(
       "examples/sampling_c3/urdf/numbered_cube/numbered_cube.sdf"))[0];
 
+  // Ground plane so the cube doesn't fall forever if it misses the palm.
+  plant.RegisterCollisionGeometry(
+      plant.world_body(),
+      drake::math::RigidTransform<double>::Identity(),
+      drake::geometry::HalfSpace(),
+      "ground_collision",
+      drake::multibody::CoulombFriction<double>(0.8, 0.5));
+  plant.RegisterVisualGeometry(
+      plant.world_body(),
+      drake::math::RigidTransform<double>::Identity(),
+      drake::geometry::HalfSpace(),
+      "ground_visual",
+      Eigen::Vector4d(0.5, 0.5, 0.5, 0.5));
+
   plant.Finalize();
 
   // PD controller: hold all 16 joints at q=0 (fingers fully extended).
@@ -103,6 +120,9 @@ int DoMain(int argc, char* argv[]) {
   meshcat->SetCameraPose(Eigen::Vector3d(0.8, 0.8, 0.8),
                          Eigen::Vector3d(0, 0, 0.5));
 
+  // Press 'R' in the browser to respawn the cube.
+  meshcat->AddButton("Respawn Cube", "KeyR");
+
   auto diagram = builder.Build();
   Simulator<double> simulator(*diagram);
   simulator.set_target_realtime_rate(1.0);
@@ -116,14 +136,30 @@ int DoMain(int argc, char* argv[]) {
   plant.SetPositions(&plant_context, allegro_index,
                      Eigen::VectorXd::Zero(num_allegro_joints));
 
-  // Cube: identity rotation, centered 3cm above the palm surface.
+  // Initial cube pose: dropped from above the palm.
   // Drake free-body order: [qw, qx, qy, qz, x, y, z]
-  Eigen::VectorXd q_cube(7);
-  q_cube << 1, 0, 0, 0, 0, 0, 0.8;
-  plant.SetPositions(&plant_context, cube_index, q_cube);
+  auto spawn_cube = [&]() {
+    Eigen::VectorXd q_cube(7);
+    q_cube << 1, 0, 0, 0, 0, 0.02, 0.8;
+    plant.SetPositions(&plant_context, cube_index, q_cube);
+    plant.SetVelocities(&plant_context, cube_index,
+                        Eigen::VectorXd::Zero(6));
+  };
+  spawn_cube();
 
   simulator.Initialize();
-  simulator.AdvanceTo(FLAGS_simulation_time);
+
+  // Run in small steps so we can poll for the respawn button.
+  const double poll_step = 1.0 / 30.0;
+  int last_clicks = 0;
+  for (double t = poll_step; t < FLAGS_simulation_time; t += poll_step) {
+    simulator.AdvanceTo(t);
+    int clicks = meshcat->GetButtonClicks("Respawn Cube");
+    if (clicks > last_clicks) {
+      last_clicks = clicks;
+      spawn_cube();
+    }
+  }
 
   return 0;
 }
