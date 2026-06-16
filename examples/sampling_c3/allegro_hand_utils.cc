@@ -27,7 +27,7 @@ ModelInstanceIndex AddAllegroHandToPlant(
   // Weld the hand's base_link to the world frame
   // Palm facing up: rotate 180 degrees around x-axis so palm faces +z
   RigidTransform<double> X_WA(
-      RotationMatrix<double>(RollPitchYaw<double>(M_PI, 0, 0)),
+      RotationMatrix<double>(RollPitchYaw<double>(M_PI / 2, -M_PI / 2, 0)),
       Eigen::Vector3d(0, 0, 0.5));  // 0.5m above ground
 
   plant->WeldFrames(plant->world_frame(),
