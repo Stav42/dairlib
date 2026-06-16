@@ -1,0 +1,2898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grasp Force Decomposition — Theory &amp; Critique</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script>
+  MathJax = {
+    tex: {
+      inlineMath:  [['\\(', '\\)']],
+      displayMath: [['\\[', '\\]']]
+    },
+    chtml: { scale: 1.05 }
+  };
+  </script>
+  <script id="MathJax-script" async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f7f6f2;
+      --white:     #ffffff;
+      --text:      #18181b;
+      --sub:       #374151;
+      --muted:     #9ca3af;
+      --border:    #e5e7eb;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+      --shadow:    0 1px 3px rgba(0,0,0,0.07), 0 6px 18px rgba(0,0,0,0.05);
+
+      --blue:      #1d4ed8;
+      --blue-bg:   #eff6ff;
+      --blue-bd:   #bfdbfe;
+
+      --green:     #166534;
+      --green-bg:  #f0fdf4;
+      --green-bd:  #86efac;
+
+      --red:       #991b1b;
+      --red-bg:    #fff5f5;
+      --red-bd:    #fca5a5;
+
+      --amber:     #92400e;
+      --amber-bg:  #fffbeb;
+      --amber-bd:  #fcd34d;
+
+      --indigo:    #4338ca;
+      --indigo-bg: #eef2ff;
+      --indigo-bd: #c7d2fe;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.78;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 4.5rem 2.5rem 3.5rem;
+      text-align: center;
+    }
+
+    .pill {
+      display: inline-block;
+      background: var(--indigo-bg);
+      color: var(--indigo);
+      border: 1px solid var(--indigo-bd);
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.3rem 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    header h1 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: clamp(2rem, 5vw, 2.9rem);
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      max-width: 700px;
+      margin: 0 auto 1.1rem;
+    }
+
+    header p.lead {
+      color: #6b7280;
+      max-width: 580px;
+      margin: 0 auto;
+      font-size: 0.97rem;
+      line-height: 1.65;
+    }
+
+    /* ── Main ────────────────────────────────────────────── */
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 3rem 2.5rem 5rem;
+    }
+
+    /* ── Section headers ─────────────────────────────────── */
+    .sec {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin: 3.2rem 0 1.4rem;
+    }
+
+    .sec .slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+
+    .sec h2 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.025em;
+      flex-shrink: 0;
+    }
+
+    .sec .rule { flex: 1; height: 1px; background: var(--border); }
+
+    /* ── Prose ───────────────────────────────────────────── */
+    p { margin-bottom: 0.95rem; color: var(--sub); }
+    p:last-child { margin-bottom: 0; }
+    strong { color: var(--text); font-weight: 600; }
+    em { font-style: italic; }
+
+    ul, ol { padding-left: 1.5rem; margin-bottom: 0.95rem; }
+    li { margin-bottom: 0.3rem; color: var(--sub); }
+
+    /* ── Cards ───────────────────────────────────────────── */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card.blue   { border-left: 3px solid var(--blue);   background: var(--blue-bg);  border-color: var(--blue-bd); }
+    .card.green  { border-left: 3px solid var(--green);  background: var(--green-bg); border-color: var(--green-bd); }
+    .card.red    { border-left: 3px solid var(--red);    background: var(--red-bg);   border-color: var(--red-bd); }
+    .card.amber  { border-left: 3px solid var(--amber);  background: var(--amber-bg); border-color: var(--amber-bd); }
+    .card.indigo { border-left: 3px solid var(--indigo); background: var(--indigo-bg);border-color: var(--indigo-bd); }
+
+    .card-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+    .card.blue   .card-label { color: var(--blue); }
+    .card.green  .card-label { color: var(--green); }
+    .card.red    .card-label { color: var(--red); }
+    .card.amber  .card-label { color: var(--amber); }
+    .card.indigo .card-label { color: var(--indigo); }
+
+    .card h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.55rem;
+    }
+
+    /* ── Critique items ──────────────────────────────────── */
+    .critique {
+      background: var(--white);
+      border: 1px solid var(--red-bd);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1.1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .cnum {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.9rem;
+      height: 1.9rem;
+      border-radius: 50%;
+      background: var(--red);
+      color: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.7rem;
+    }
+
+    .critique h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--red);
+      margin-bottom: 0.55rem;
+    }
+
+    /* ── Math ────────────────────────────────────────────── */
+    .eq {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+      text-align: center;
+    }
+
+    .eq-set {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--indigo);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem 1.2rem 1.7rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .eq-set p {
+      margin: 0;
+      line-height: 2.2;
+      color: var(--sub);
+      font-size: 0.95rem;
+    }
+
+    /* ── Code ────────────────────────────────────────────── */
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.84em;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 0.12em 0.42em;
+      border-radius: 4px;
+      color: #374151;
+    }
+
+    /* ── Tables ──────────────────────────────────────────── */
+    .tbl-wrap {
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      margin: 1.1rem 0;
+    }
+
+    table { width: 100%; border-collapse: collapse; background: var(--white); font-size: 0.9rem; }
+    thead tr { background: #f9fafb; }
+    th {
+      padding: 0.7rem 1.1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #6b7280;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 0.65rem 1.1rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--sub); }
+    tr:last-child td { border-bottom: none; }
+
+    .yes    { color: var(--green); font-weight: 600; }
+    .no     { color: var(--red);   font-weight: 600; }
+    .cond   { color: var(--amber); font-weight: 600; }
+
+    /* ── Two-column grid ─────────────────────────────────── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 560px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Blockquote ──────────────────────────────────────── */
+    blockquote {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-bg);
+      border-radius: 0 8px 8px 0;
+      padding: 0.9rem 1.3rem;
+      margin: 1.2rem 0;
+    }
+    blockquote p { color: #1e3a8a; font-style: italic; }
+
+    /* ── Contact geometry box ────────────────────────────── */
+    .geo-box {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.1rem 0;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3rem;
+      flex-wrap: wrap;
+    }
+
+    .cube-diagram {
+      position: relative;
+      width: 140px;
+      height: 140px;
+      flex-shrink: 0;
+    }
+
+    .cube-face {
+      position: absolute;
+      inset: 20px;
+      background: #f8f7f2;
+      border: 2px solid #d1d5db;
+      border-radius: 4px;
+    }
+
+    .contact-pt {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: var(--blue);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    .contact-arrow {
+      position: absolute;
+      font-size: 1.1rem;
+      color: var(--red);
+      transform: translate(-50%, -50%);
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .geo-legend { font-size: 0.85rem; color: var(--sub); line-height: 2; }
+    .geo-legend span { display: block; }
+    .geo-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); margin-right: 6px; vertical-align: middle; }
+
+    /* ── Divider ─────────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+    /* ── Table of Contents ───────────────────────────────── */
+    #toc {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 1.5rem 0;
+    }
+
+    #toc .toc-title {
+      max-width: 1200px;
+      margin: 0 auto 0.9rem;
+      padding: 0 2.5rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    #toc .toc-list {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 2.5rem;
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.15rem 2rem;
+    }
+
+    #toc .toc-list li {
+      margin: 0;
+    }
+
+    #toc .toc-list a {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.88rem;
+      color: var(--sub);
+      transition: background 0.12s, color 0.12s;
+    }
+
+    #toc .toc-list a:hover {
+      background: var(--indigo-bg);
+      color: var(--indigo);
+    }
+
+    .toc-slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      flex-shrink: 0;
+      min-width: 2rem;
+    }
+
+    #toc .toc-list a:hover .toc-slug {
+      color: var(--indigo);
+    }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--white);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════════════════════ -->
+<header>
+  <div class="pill">Robotics &nbsp;·&nbsp; Grasp Theory</div>
+  <h1>Grasp Force Decomposition</h1>
+  <p class="lead">
+    A critique of a proposed cube-grasping scheme, the corrected formulation
+    via the grasp matrix and internal forces, and a detailed treatment of
+    force closure with and without friction.
+  </p>
+</header>
+
+<!-- ── Table of Contents ── -->
+<nav id="toc" aria-label="Table of contents">
+  <p class="toc-title">Contents</p>
+  <ol class="toc-list">
+    <li><a href="#s0"><span class="toc-slug">§0</span>Foundations — Forces, Wrenches, and the Two Jacobians</a></li>
+    <li><a href="#s1"><span class="toc-slug">§1</span>The Proposed Idea</a></li>
+    <li><a href="#s2"><span class="toc-slug">§2</span>What Is Correct</a></li>
+    <li><a href="#s3"><span class="toc-slug">§3</span>The Critiques</a></li>
+    <li><a href="#s4"><span class="toc-slug">§4</span>The Corrected Formulation</a></li>
+    <li><a href="#s5"><span class="toc-slug">§5</span>Force Closure &amp; Friction</a></li>
+    <li><a href="#s6"><span class="toc-slug">§6</span>Summary</a></li>
+    <li><a href="#s7"><span class="toc-slug">§7</span>Where C3 and OSC Come Into the Picture</a></li>
+    <li><a href="#s8"><span class="toc-slug">§8</span>MuJoCo + Allegro Hand: Friction in Simulation</a></li>
+    <li><a href="#s9"><span class="toc-slug">§9</span>The Complete Control Flow — Five Clarifications</a></li>
+    <li><a href="#s10"><span class="toc-slug">§10</span>How Contact Force Is Implicit in Desired Position</a></li>
+    <li><a href="#s11"><span class="toc-slug">§11</span>How Push Anything Encodes and Solves the Goal</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ══════════════════════════════════════════════════════════
+     §0  FOUNDATIONS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s0">
+  <span class="slug">§0</span>
+  <h2>Foundations — Forces, Wrenches, and the Two Jacobians</h2>
+  <div class="rule"></div>
+</div>
+
+<!-- ── Force ── -->
+<p>
+  We build everything from scratch. Start with the simplest object.
+</p>
+
+<div class="card indigo">
+  <div class="card-label">Definition — Force</div>
+  <h3>Force &nbsp;\(\mathbf{f} \in \mathbb{R}^3\)</h3>
+  <p>
+    A force is a 3D vector. It has a direction and a magnitude. Applying force
+    \(\mathbf{f}\) to the centre of mass of a rigid body causes it to accelerate
+    linearly: \(m\ddot{\mathbf{x}} = \mathbf{f}\). Nothing more.
+  </p>
+</div>
+
+<!-- ── Torque ── -->
+<div class="card indigo">
+  <div class="card-label">Definition — Torque</div>
+  <h3>Torque &nbsp;\(\boldsymbol{\tau} \in \mathbb{R}^3\)</h3>
+  <p>
+    A torque is a 3D vector that causes a rigid body to angularly accelerate:
+    \(I\dot{\boldsymbol{\omega}} = \boldsymbol{\tau}\). A torque about the
+    \(z\)-axis spins the body around \(z\). Torque and force are different
+    physical quantities — torque has units N·m, force has units N.
+  </p>
+</div>
+
+<!-- ── Wrench ── -->
+<div class="card indigo">
+  <div class="card-label">Definition — Wrench</div>
+  <h3>Wrench &nbsp;\(\mathbf{w} \in \mathbb{R}^6\)</h3>
+  <p>
+    A wrench stacks a force and a torque into one 6D vector:
+  </p>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[
+      \mathbf{w} = \begin{pmatrix} \mathbf{f} \\ \boldsymbol{\tau} \end{pmatrix} \in \mathbb{R}^6
+    \]
+  </div>
+  <p>
+    A wrench fully describes the loading on a rigid body: the first 3 entries
+    drive linear acceleration, the last 3 drive angular acceleration. A rigid
+    body has 6 degrees of freedom (3 translation, 3 rotation), so a wrench
+    has exactly 6 components — one per DOF.
+  </p>
+</div>
+
+<!-- ── A contact force produces a wrench ── -->
+<p style="margin-top:1.4rem; font-weight:600; color:var(--text);">
+  How a single finger produces a wrench on the cube
+</p>
+<p>
+  Here is the key point. Suppose finger \(i\) presses on the cube surface
+  with force \(\mathbf{f}_i \in \mathbb{R}^3\) at contact point
+  \(\mathbf{p}_i \in \mathbb{R}^3\), where \(\mathbf{p}_i\) is measured
+  from the cube's <em>centre of mass</em>.
+</p>
+<p>
+  Because the force is applied away from the centre, it does two things at once:
+</p>
+<ul>
+  <li>It <strong>pushes</strong> the cube — contributing \(\mathbf{f}_i\) to the net force.</li>
+  <li>It <strong>rotates</strong> the cube — the lever arm \(\mathbf{p}_i\) creates a torque \(\mathbf{p}_i \times \mathbf{f}_i\).</li>
+</ul>
+<p>
+  The cross product \(\mathbf{p}_i \times \mathbf{f}_i\) encodes exactly this lever-arm
+  effect. Concretely, if \(\mathbf{p}_i = (p_x, p_y, p_z)\) and \(\mathbf{f}_i = (f_x, f_y, f_z)\):
+</p>
+<div class="eq">
+  \[
+    \mathbf{p}_i \times \mathbf{f}_i
+    =
+    \begin{pmatrix}
+      p_y f_z - p_z f_y \\
+      p_z f_x - p_x f_z \\
+      p_x f_y - p_y f_x
+    \end{pmatrix}
+  \]
+</div>
+<p>
+  So the full wrench that finger \(i\) exerts on the cube is:
+</p>
+<div class="eq">
+  \[
+    \mathbf{w}_i
+    = \begin{pmatrix} \mathbf{f}_i \\ \mathbf{p}_i \times \mathbf{f}_i \end{pmatrix}
+    \in \mathbb{R}^6
+  \]
+</div>
+
+<!-- ── Net wrench ── -->
+<div class="card indigo">
+  <div class="card-label">Definition — Net Wrench</div>
+  <h3>Net Wrench from \(n\) contacts</h3>
+  <p>
+    With \(n\) fingers each pressing at their own point, the net wrench on the
+    cube is the sum of all individual wrenches — just Newton's third law applied
+    to all contacts at once:
+  </p>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[
+      \mathbf{w}_\text{net}
+      = \sum_{i=1}^{n} \mathbf{w}_i
+      = \sum_{i=1}^{n} \begin{pmatrix} \mathbf{f}_i \\ \mathbf{p}_i \times \mathbf{f}_i \end{pmatrix}
+      \in \mathbb{R}^6
+    \]
+  </div>
+  <p>
+    This is what Newton's laws act on. If \(\mathbf{w}_\text{net} = \mathbf{0}\),
+    the cube is in static equilibrium — not accelerating, not rotating.
+  </p>
+</div>
+
+<!-- ── Grasp matrix G ── -->
+<p style="margin-top:1.4rem; font-weight:600; color:var(--text);">
+  The Grasp Matrix \(G\) — packaging the geometry
+</p>
+<p>
+  The net wrench is linear in each \(\mathbf{f}_i\), which means we can write it
+  as a single matrix multiplication. Stack all contact forces into one long vector:
+</p>
+<div class="eq">
+  \[
+    \mathbf{f}_c
+    = \begin{pmatrix} \mathbf{f}_1 \\ \mathbf{f}_2 \\ \vdots \\ \mathbf{f}_n \end{pmatrix}
+    \in \mathbb{R}^{3n}
+  \]
+</div>
+<p>
+  For each contact \(i\), define the \(6 \times 3\) block:
+</p>
+<div class="eq">
+  \[
+    G_i
+    = \begin{pmatrix} I_3 \\ [\mathbf{p}_i]_\times \end{pmatrix}
+    \in \mathbb{R}^{6 \times 3}
+  \]
+</div>
+<p>
+  where \(I_3\) is the \(3\times 3\) identity (passes the force through unchanged),
+  and \([\mathbf{p}_i]_\times\) is the skew-symmetric matrix that computes the
+  cross product — i.e., \([\mathbf{p}_i]_\times \mathbf{v} = \mathbf{p}_i \times \mathbf{v}\) for any vector \(\mathbf{v}\):
+</p>
+<div class="eq">
+  \[
+    [\mathbf{p}]_\times
+    = \begin{pmatrix} 0 & -p_z & p_y \\ p_z & 0 & -p_x \\ -p_y & p_x & 0 \end{pmatrix}
+  \]
+</div>
+<p>
+  Assemble all blocks side by side to get the <strong>Grasp Matrix</strong>:
+</p>
+<div class="eq">
+  \[
+    G = \begin{bmatrix} G_1 & G_2 & \cdots & G_n \end{bmatrix}
+    \in \mathbb{R}^{6 \times 3n}
+  \]
+</div>
+<p>
+  Then the net wrench is simply:
+</p>
+<div class="eq">
+  \[
+    \mathbf{w} = G\,\mathbf{f}_c
+  \]
+</div>
+
+<div class="card green">
+  <div class="card-label">What G encodes</div>
+  <p>
+    \(G\) contains <em>only</em> geometry: where each contact point
+    \(\mathbf{p}_i\) sits on the cube. It says nothing about the robot. It
+    maps from contact force space (\(\mathbb{R}^{3n}\)) to object wrench space
+    (\(\mathbb{R}^6\)). It changes whenever the cube moves or rotates, because
+    \(\mathbf{p}_i\) is defined in the world frame and tracks with the cube pose.
+  </p>
+</div>
+
+<!-- ── Robot Jacobian J ── -->
+<p style="margin-top:1.4rem; font-weight:600; color:var(--text);">
+  The Robot Jacobian \(J\) — a completely different map
+</p>
+<p>
+  The robot has joint angles \(\mathbf{q} \in \mathbb{R}^{n_j}\). Moving the
+  joints at rate \(\dot{\mathbf{q}}\) moves the fingertips at rate
+  \(\dot{\mathbf{x}} \in \mathbb{R}^{3n}\):
+</p>
+<div class="eq">
+  \[
+    \dot{\mathbf{x}} = J\,\dot{\mathbf{q}}, \qquad J \in \mathbb{R}^{3n \times n_j}
+  \]
+</div>
+<p>
+  Transposing this (via the principle of virtual work), contact forces \(\mathbf{f}_c\)
+  at the fingertips map to joint torques \(\boldsymbol{\tau} \in \mathbb{R}^{n_j}\):
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\tau} = J^\top \mathbf{f}_c, \qquad J^\top \in \mathbb{R}^{n_j \times 3n}
+  \]
+</div>
+
+<div class="card green">
+  <div class="card-label">What J encodes</div>
+  <p>
+    \(J\) contains <em>only</em> robot kinematics: how joint motion propagates to fingertip
+    motion. It says nothing about the cube. It maps from contact force space
+    (\(\mathbb{R}^{3n}\)) to joint torque space (\(\mathbb{R}^{n_j}\)). It changes
+    whenever the robot's joint angles change.
+  </p>
+</div>
+
+<!-- ── Side by side comparison ── -->
+<p style="margin-top:1.4rem; font-weight:600; color:var(--text);">
+  How \(G\) and \(J\) differ — and how they connect
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th></th>
+        <th>Grasp Matrix \(G\)</th>
+        <th>Robot Jacobian \(J^\top\)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Input</strong></td>
+        <td>Contact forces \(\mathbf{f}_c \in \mathbb{R}^{3n}\)</td>
+        <td>Contact forces \(\mathbf{f}_c \in \mathbb{R}^{3n}\)</td>
+      </tr>
+      <tr>
+        <td><strong>Output</strong></td>
+        <td>Object wrench \(\mathbf{w} \in \mathbb{R}^6\)</td>
+        <td>Joint torques \(\boldsymbol{\tau} \in \mathbb{R}^{n_j}\)</td>
+      </tr>
+      <tr>
+        <td><strong>Encodes</strong></td>
+        <td>Contact geometry on the cube</td>
+        <td>Robot kinematic configuration</td>
+      </tr>
+      <tr>
+        <td><strong>Changes when</strong></td>
+        <td>Cube moves or rotates</td>
+        <td>Robot joints move</td>
+      </tr>
+      <tr>
+        <td><strong>Equation</strong></td>
+        <td>\(\mathbf{w} = G\mathbf{f}_c\)</td>
+        <td>\(\boldsymbol{\tau} = J^\top \mathbf{f}_c\)</td>
+      </tr>
+      <tr>
+        <td><strong>Nullspace</strong></td>
+        <td>Forces that produce zero wrench on cube (internal squeeze forces)</td>
+        <td>Forces that produce zero joint torques (kinematically degenerate)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<blockquote>
+  <p>
+    The same contact force vector \(\mathbf{f}_c\) feeds both maps simultaneously.
+    Through \(G\) it determines what the cube <em>feels</em> — how it accelerates.
+    Through \(J^\top\) it determines what the robot <em>does</em> — the torques
+    required at each joint. Controlling \(\mathbf{f}_c\) lets you control both
+    at once, which is the whole point.
+  </p>
+</blockquote>
+
+<!-- ══════════════════════════════════════════════════════════
+     §1  THE PROPOSED IDEA
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§1</span>
+  <h2 id="s1">The Proposed Idea</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="card blue">
+  <div class="card-label">Summary</div>
+  <p>
+    Apply an equal inward force at the centre of each of the 4 lateral faces of a cube.
+    Convert those forces to joint torques via the robot Jacobian \(\boldsymbol{\tau} = J^\top \mathbf{f}\).
+    Then apply additional forces in the <em>nullspace</em> of that Jacobian so that
+    reorientation tasks do not disturb the grasp.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §2  WHAT IS CORRECT
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§2</span>
+  <h2 id="s2">What Is Correct</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="card green">
+  <div class="card-label">Valid</div>
+  <h3>Jacobian transpose maps fingertip forces to joint torques</h3>
+  <p>
+    The relationship \(\boldsymbol{\tau} = J^\top \mathbf{f}_c\) is the standard,
+    correct way to convert contact forces in task space to joint torques via the
+    principle of virtual work. This direction of the derivation is sound.
+  </p>
+</div>
+
+<div class="card green">
+  <div class="card-label">Valid</div>
+  <h3>Decomposing contact forces into grasp and task components</h3>
+  <p>
+    The idea of splitting contact forces into a component that maintains the grasp
+    without moving the object, and a component that produces a desired wrench on the
+    object, is well-founded in grasp theory. The two components can coexist without
+    interfering — <em>in object space</em> — under the right conditions.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §3  THE CRITIQUES
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§3</span>
+  <h2 id="s3">The Critiques</h2>
+  <div class="rule"></div>
+</div>
+
+<!-- Critique 1 -->
+<div class="critique">
+  <div class="cnum">1</div>
+  <h3>Wrong Jacobian — two maps are being conflated</h3>
+  <p>There are two distinct linear maps at play, and they must not be confused:</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Map</th><th>Notation</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Grasp matrix</strong> \(G\)</td>
+          <td>\(\mathbf{w} = G\,\mathbf{f}_c\)</td>
+          <td>Maps contact forces to net wrench on the object</td>
+        </tr>
+        <tr>
+          <td><strong>Robot Jacobian</strong> \(J\)</td>
+          <td>\(\dot{\mathbf{x}} = J\dot{\mathbf{q}},\quad \boldsymbol{\tau} = J^\top \mathbf{f}\)</td>
+          <td>Maps joint velocities to fingertip velocities (and forces back)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The <strong>nullspace of \(G\)</strong> contains contact forces that produce zero net
+    wrench on the object — these are the internal squeeze forces that hold the cube
+    without accelerating it. This is the correct space for grasp forces.
+  </p>
+  <p>
+    The <strong>nullspace of \(J\)</strong> contains joint <em>motions</em> that produce
+    zero fingertip motion — robot self-motions from kinematic redundancy. An entirely
+    different concept. Applying forces "in the nullspace of \(J\)" does not decouple the
+    grasp from the task.
+  </p>
+  <p>
+    The correct statement: <em>decompose contact forces into \(\ker(G)\) (internal)
+    and task components.</em> Task forces produce the desired cube wrench; internal
+    forces squeeze without disturbing the task.
+  </p>
+</div>
+
+<!-- Critique 2 -->
+<div class="critique">
+  <div class="cnum">2</div>
+  <h3>Four lateral face contacts do not achieve full 3D wrench closure</h3>
+  <p>
+    For complete force closure in 3D, the hand must resist arbitrary forces
+    <em>and</em> torques in all 6 degrees of freedom. Four contacts on the lateral
+    faces all lie in the same horizontal plane:
+  </p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>DOF</th><th>Resisted?</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr><td>Lateral forces \(f_x,\, f_y\)</td>     <td class="yes">Yes</td>       <td>Normal forces point inward horizontally</td></tr>
+        <tr><td>Torque about vertical axis \(\tau_z\)</td> <td class="cond">Conditionally</td><td>Requires friction; not guaranteed with equal inward normals alone</td></tr>
+        <tr><td>Tipping moments \(\tau_x,\, \tau_y\)</td>  <td class="no">No</td>        <td>All contact points are coplanar — zero moment arm about tilt axes</td></tr>
+        <tr><td>Vertical force \(f_z\)</td>              <td class="no">No</td>        <td>Lateral normals have no vertical component; gravity is unresisted</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Gravity acts vertically downward. If the 4 contacts are purely lateral, their
+    normal forces have no vertical component. The cube will fall unless friction is
+    large enough — and even then, friction forces must be explicitly planned for,
+    not assumed.
+  </p>
+</div>
+
+<!-- Critique 3 -->
+<div class="critique">
+  <div class="cnum">3</div>
+  <h3>Equal forces at face centres is overly restrictive</h3>
+  <p>
+    Symmetric equal forces are a special case, valid only for a perfectly symmetric
+    cube in a perfectly symmetric hand. In practice:
+  </p>
+  <ul>
+    <li>Finger placements will not be exactly at face centres.</li>
+    <li>Asymmetric tasks (rotating about one axis) require unequal contact forces.</li>
+    <li>The optimiser for task forces needs freedom to vary individual contact
+        magnitudes to stay within friction cones.</li>
+  </ul>
+  <p>
+    Locking to equal forces removes that freedom and will cause infeasibility in
+    the friction cone constraints for non-trivial tasks.
+  </p>
+</div>
+
+<!-- Critique 4 -->
+<div class="critique">
+  <div class="cnum">4</div>
+  <h3>The grasp matrix changes as the cube rotates</h3>
+  <p>
+    When the cube is free-floating, both the robot Jacobian \(J\) and the grasp
+    matrix \(G\) depend on the current configuration of the robot <em>and</em>
+    the current pose of the cube. As the cube rotates — the stated goal —
+    the contact geometry changes, \(G\) changes, and \(\ker(G)\) changes.
+    This is not a static decomposition. It must be recomputed at every control timestep.
+  </p>
+</div>
+
+<!-- Critique 5 -->
+<div class="critique">
+  <div class="cnum">5</div>
+  <h3>No friction cone constraints</h3>
+  <p>
+    The formulation says nothing about friction. Every contact force must lie within
+    its <strong>friction cone</strong>:
+  </p>
+  <div class="eq">
+    \[
+      f_n \geq 0, \qquad \|\mathbf{f}_t\| \leq \mu\, f_n
+    \]
+  </div>
+  <p>
+    The first condition says contacts can only push, never pull. The second bounds
+    the tangential (sliding) force by the normal force times the friction coefficient.
+    If task forces push any contact force outside its cone, the finger slips. These
+    constraints are not optional — they are the hard feasibility condition that makes
+    a grasp physically realizable.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §4  THE CORRECTED FORMULATION
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§4</span>
+  <h2 id="s4">The Corrected Formulation</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The right framework is <strong>grasp force decomposition</strong>. Total contact
+  forces split into an internal component (living in the nullspace of \(G\)) and a
+  task component (which produces the desired wrench on the cube):
+</p>
+
+<div class="eq">
+  \[
+    \mathbf{f}_c \;=\; \mathbf{f}_\text{internal} + \mathbf{f}_\text{task}
+  \]
+</div>
+
+<p>Subject to:</p>
+
+<div class="eq-set">
+  <p>\(G\,\mathbf{f}_\text{internal} = \mathbf{0}\) &emsp;&emsp; — internal forces; zero net wrench on the cube (the squeeze)</p>
+  <p>\(G\,\mathbf{f}_\text{task} = \mathbf{w}_\text{desired}\) &emsp;&emsp; — task forces; produce the desired cube wrench (e.g. a rotation)</p>
+  <p>\(\boldsymbol{\tau} = J^\top \mathbf{f}_c\) &emsp;&emsp; — convert total contact forces to joint torques</p>
+  <p>\(\mathbf{f}_c \in \mathcal{FC}\) &emsp;&emsp; — hard constraint: all contacts must stay inside their friction cones</p>
+  <p>\(G,\; J \;\text{updated each timestep}\) &emsp;&emsp; — both depend on robot config + cube pose</p>
+</div>
+
+<p>
+  \(\mathbf{f}_\text{internal}\) lives in \(\ker(G)\) — that is the squeeze force.
+  \(\mathbf{f}_\text{task}\) is determined by what wrench you want to apply to rotate
+  the cube. The two do not fight each other <em>in object space</em>, but both contribute
+  to joint torques and both must independently satisfy the friction cone constraints.
+</p>
+
+<div class="card amber">
+  <div class="card-label">Important nuance</div>
+  <h3>This is a QP at each timestep</h3>
+  <p>
+    Finding \(\mathbf{f}_c\) is itself an optimisation problem. A common approach is a
+    quadratic program (QP) that minimises joint torque or fingertip force magnitude,
+    subject to the desired object wrench and friction cone constraints. This is precisely
+    what controllers like OSC and C3 do under the hood.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §5  FORCE CLOSURE & FRICTION
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§5</span>
+  <h2 id="s5">Force Closure &amp; Friction</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Force closure is the property that determines whether a grasp can resist any
+  external disturbance. Understanding it requires looking carefully at what
+  kind of contact is assumed.
+</p>
+
+<!-- ── Definition ── -->
+<div class="card indigo">
+  <div class="card-label">Definition</div>
+  <h3>Force Closure</h3>
+  <p>
+    A grasp achieves <strong>force closure</strong> if, for <em>any</em> external
+    wrench \(\mathbf{w}_\text{ext} \in \mathbb{R}^6\) applied to the object, there
+    exist contact forces \(\mathbf{f}_c\) — each inside its friction cone — such
+    that the grasp matrix equation is satisfied:
+  </p>
+  <div class="eq" style="background:transparent; border:none; box-shadow:none; margin:0.6rem 0 0;">
+    \[
+      G\,\mathbf{f}_c = -\mathbf{w}_\text{ext}
+    \]
+  </div>
+  <p style="margin-top:0.6rem;">
+    Equivalently: the set of achievable wrenches \(\{G\mathbf{f}_c \mid \mathbf{f}_c \in \mathcal{FC}\}\)
+    contains an open ball around the origin in \(\mathbb{R}^6\).
+  </p>
+</div>
+
+<!-- ── Two contact types ── -->
+<p>How friction is modelled determines what each contact can contribute.</p>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--amber);">Frictionless Contact</div>
+    <p>Force is purely along the inward normal:</p>
+    <div class="eq" style="padding:0.8rem; margin:0.6rem 0;">
+      \[\mathbf{f}_i = f_n\,\hat{\mathbf{n}}_i, \quad f_n \geq 0\]
+    </div>
+    <p style="font-size:0.9rem;">
+      The contact can only push. No tangential resistance. Each contact
+      contributes a single ray to the wrench space.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--green);">Frictional Contact</div>
+    <p>Force has a normal component and a bounded tangential component:</p>
+    <div class="eq" style="padding:0.8rem; margin:0.6rem 0;">
+      \[\mathbf{f}_i = f_n\,\hat{\mathbf{n}}_i + \mathbf{f}_t\]
+      \[\|\mathbf{f}_t\| \leq \mu\, f_n\]
+    </div>
+    <p style="font-size:0.9rem;">
+      The contact contributes a cone of wrench directions. Much richer
+      wrench space with fewer contacts.
+    </p>
+  </div>
+</div>
+
+<hr />
+
+<!-- ── Geometry ── -->
+<p>
+  Place the cube at the origin with side length \(L\). The four lateral contact
+  points and their inward normals are:
+</p>
+
+<div class="eq">
+  \[
+    \mathbf{p}_1 = \!\begin{pmatrix}\tfrac{L}{2}\\0\\0\end{pmatrix}\!, \hat{\mathbf{n}}_1 = \!\begin{pmatrix}-1\\0\\0\end{pmatrix}
+    \qquad
+    \mathbf{p}_2 = \!\begin{pmatrix}-\tfrac{L}{2}\\0\\0\end{pmatrix}\!, \hat{\mathbf{n}}_2 = \!\begin{pmatrix}+1\\0\\0\end{pmatrix}
+  \]
+  \[
+    \mathbf{p}_3 = \!\begin{pmatrix}0\\\tfrac{L}{2}\\0\end{pmatrix}\!, \hat{\mathbf{n}}_3 = \!\begin{pmatrix}0\\-1\\0\end{pmatrix}
+    \qquad
+    \mathbf{p}_4 = \!\begin{pmatrix}0\\-\tfrac{L}{2}\\0\end{pmatrix}\!, \hat{\mathbf{n}}_4 = \!\begin{pmatrix}0\\+1\\0\end{pmatrix}
+  \]
+</div>
+
+<p>
+  The wrench contributed by contact \(i\) is the 6-vector stacking the linear force
+  and the resulting moment about the object's centre:
+</p>
+<div class="eq">
+  \[
+    \mathbf{w}_i = \begin{pmatrix}\mathbf{f}_i \\ \mathbf{p}_i \times \mathbf{f}_i\end{pmatrix} \in \mathbb{R}^6
+  \]
+</div>
+
+<!-- ── Frictionless analysis ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Case 1 — No friction</p>
+<p>
+  Each contact force is purely normal: \(\mathbf{f}_i = f_{ni}\,\hat{\mathbf{n}}_i\).
+  Because each \(\mathbf{p}_i\) is antiparallel to \(\hat{\mathbf{n}}_i\) (both
+  lie along the same coordinate axis), the moment term vanishes:
+</p>
+<div class="eq">
+  \[
+    \mathbf{p}_1 \times \mathbf{f}_1
+    = \left(\tfrac{L}{2},0,0\right) \times (-f_{n1},0,0)
+    = f_{n1}\underbrace{\left(\tfrac{L}{2},0,0\right) \times (-1,0,0)}_{\text{antiparallel} \Rightarrow\; \mathbf{0}}
+    = \mathbf{0}
+  \]
+</div>
+<p>The same holds for all four contacts. The total achievable wrench is:</p>
+<div class="eq">
+  \[
+    \mathbf{w}_\text{total}
+    = \begin{pmatrix}-f_{n1}+f_{n2}\\[2pt]-f_{n3}+f_{n4}\\[2pt]0\\[2pt]0\\[2pt]0\\[2pt]0\end{pmatrix}, \qquad f_{ni} \geq 0
+  \]
+</div>
+
+<div class="card red">
+  <div class="card-label">Result — No Force Closure</div>
+  <p>
+    The achievable wrench space spans only 2 dimensions: \(f_x\) and \(f_y\). Vertical
+    forces (\(f_z\)), and all three moment components (\(\tau_x, \tau_y, \tau_z\)), are
+    identically zero regardless of what \(f_{ni}\) values are chosen. The grasp matrix
+    has rank 2, not 6. <strong>The cube falls and tips freely.</strong>
+  </p>
+</div>
+
+<!-- ── Frictional analysis ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Case 2 — With friction (\(\mu &gt; 0\))</p>
+<p>
+  Now each contact has a tangential component. Take contact 1 at
+  \(\mathbf{p}_1 = (L/2,\,0,\,0)\):
+</p>
+<div class="eq">
+  \[
+    \mathbf{f}_1 = (-f_{n1},\; f_{t1y},\; f_{t1z}), \qquad f_{t1y}^2 + f_{t1z}^2 \leq \mu^2 f_{n1}^2
+  \]
+</div>
+<div class="eq">
+  \[
+    \mathbf{p}_1 \times \mathbf{f}_1
+    = \left(\tfrac{L}{2},0,0\right) \times (-f_{n1},\,f_{t1y},\,f_{t1z})
+    = \begin{pmatrix}0\\-\tfrac{L}{2}f_{t1z}\\+\tfrac{L}{2}f_{t1y}\end{pmatrix}
+  \]
+</div>
+<p>Summing contributions from all four contacts, the six wrench components become:</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>DOF</th><th>What produces it</th><th>Frictionless</th><th>With friction</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\(f_x\)</td>
+        <td>Normal forces \(f_{n1},\, f_{n2}\)</td>
+        <td class="yes">Yes</td><td class="yes">Yes</td>
+      </tr>
+      <tr>
+        <td>\(f_y\)</td>
+        <td>Normal forces \(f_{n3},\, f_{n4}\)</td>
+        <td class="yes">Yes</td><td class="yes">Yes</td>
+      </tr>
+      <tr>
+        <td>\(f_z\)</td>
+        <td>\(f_{t1z} + f_{t2z} + f_{t3z} + f_{t4z}\)</td>
+        <td class="no">No</td><td class="yes">Yes</td>
+      </tr>
+      <tr>
+        <td>\(\tau_x\)</td>
+        <td>\(\tfrac{L}{2}(f_{t3z} - f_{t4z})\)</td>
+        <td class="no">No</td><td class="yes">Yes</td>
+      </tr>
+      <tr>
+        <td>\(\tau_y\)</td>
+        <td>\(\tfrac{L}{2}(-f_{t1z} + f_{t2z})\)</td>
+        <td class="no">No</td><td class="yes">Yes</td>
+      </tr>
+      <tr>
+        <td>\(\tau_z\)</td>
+        <td>\(\tfrac{L}{2}(f_{t1y} - f_{t2y} - f_{t3x} + f_{t4x})\)</td>
+        <td class="no">No</td><td class="yes">Yes</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card green">
+  <div class="card-label">Result — Force Closure Achievable</div>
+  <p>
+    All 6 wrench components can be independently controlled. The grasp matrix has
+    rank 6, and force closure holds — <strong>provided \(\mu &gt; 0\) and the normal
+    forces \(f_{ni} &gt; 0\) are actively maintained.</strong>
+  </p>
+</div>
+
+<!-- ── The test ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">The formal test for force closure</p>
+<blockquote>
+  <p>
+    A grasp achieves force closure if and only if the origin lies <em>strictly inside</em>
+    the convex hull of the set of primitive contact wrenches
+    \(\{\mathbf{w}_i \mid \mathbf{f}_i \in \mathcal{FC}_i\}\).
+  </p>
+</blockquote>
+<p>
+  For the frictionless 4-contact case, the achievable wrenches form a 2D flat (only
+  \(f_x\) and \(f_y\) reachable). The origin is on the boundary of a flat — not in the
+  interior of a full-dimensional body. <strong>No force closure.</strong>
+</p>
+<p>
+  For the frictional case with \(\mu &gt; 0\) and \(f_{ni} &gt; 0\), the friction cones
+  sweep out a full-dimensional body in \(\mathbb{R}^6\), and the origin can be made
+  to lie strictly inside it. <strong>Force closure holds.</strong>
+</p>
+
+<!-- ── Practical implications ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Practical implications</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Scenario</th><th>Force closure?</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>4 lateral contacts, no friction</td>
+        <td class="no">No</td>
+        <td>Only \(f_x, f_y\) resisted; \(f_z\) and all moments are zero</td>
+      </tr>
+      <tr>
+        <td>4 lateral contacts, \(\mu &gt; 0\), \(f_n &gt; 0\)</td>
+        <td class="yes">Yes</td>
+        <td>Friction supplies \(f_z\) and all three moment directions</td>
+      </tr>
+      <tr>
+        <td>4 lateral contacts, friction but \(f_n \to 0\)</td>
+        <td class="no">Collapses</td>
+        <td>No normal force → no friction budget → grasp fails</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card amber">
+  <div class="card-label">Key insight</div>
+  <h3>The internal forces buy friction capacity</h3>
+  <p>
+    The friction is not automatic — you must <em>actively</em> maintain normal forces
+    \(f_{ni} &gt; 0\) to have a friction budget. This is precisely the role of the
+    internal forces \(\mathbf{f}_\text{internal} \in \ker(G)\): they keep all contacts
+    pressed against the cube without producing any net wrench on it, so there is always
+    a friction reserve available for the task forces to draw on.
+  </p>
+  <p>
+    This is why the internal/task decomposition is not just mathematically convenient —
+    it is physically necessary. The internal forces are not wasted. They are what makes
+    a frictional grasp robust.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §6  SUMMARY
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§6</span>
+  <h2 id="s6">Summary</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Claim</th><th>Verdict</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\(\boldsymbol{\tau} = J^\top \mathbf{f}\) maps fingertip forces to joint torques</td>
+        <td class="yes">Correct</td>
+      </tr>
+      <tr>
+        <td>Nullspace of the robot Jacobian \(J\) decouples grasp from task</td>
+        <td class="no">Wrong — use \(\ker(G)\), the grasp matrix nullspace</td>
+      </tr>
+      <tr>
+        <td>4 lateral face contacts with no friction achieve force closure</td>
+        <td class="no">No — wrench space has rank 2, not 6</td>
+      </tr>
+      <tr>
+        <td>4 lateral face contacts with friction \(\mu &gt; 0\) achieve force closure</td>
+        <td class="yes">Yes — provided normal forces are maintained</td>
+      </tr>
+      <tr>
+        <td>Equal inward forces is the right choice for all tasks</td>
+        <td class="cond">Too restrictive — asymmetric tasks need unequal forces</td>
+      </tr>
+      <tr>
+        <td>The force decomposition is a static precomputation</td>
+        <td class="no">No — \(G\) and \(J\) must be recomputed every timestep</td>
+      </tr>
+      <tr>
+        <td>Friction is handled implicitly</td>
+        <td class="no">Must be an explicit constraint in the QP</td>
+      </tr>
+      <tr>
+        <td>Internal forces (squeeze) serve only to hold the cube in place</td>
+        <td class="cond">Deeper role: they maintain the friction budget for task forces</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §7  WHERE C3 AND OSC COME IN
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§7</span>
+  <h2 id="s7">Where C3 and OSC Come Into the Picture</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Sections §3–§5 established that computing valid contact forces
+  \(\mathbf{f}_c\) requires solving a constrained optimisation at every
+  timestep. C3 and OSC are the two controllers — operating at different
+  levels — that actually do this on a real robot.
+</p>
+
+<!-- ── What problem needs solving ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The problem that needs to be solved every timestep</p>
+<p>
+  At every control timestep, the robot needs to answer: <em>"given where the
+  cube is right now and where I want it to go, what forces should my fingers
+  apply?"</em> This is a trajectory optimisation problem over a short future
+  horizon \(N\):
+</p>
+<div class="eq">
+  \[
+    \min_{\mathbf{x}_{0:N},\, \mathbf{u}_{0:N-1},\, \boldsymbol{\lambda}_{0:N-1}}
+    \sum_{k=0}^{N-1} \ell(\mathbf{x}_k, \mathbf{u}_k) + \ell_f(\mathbf{x}_N)
+  \]
+  \[
+    \text{subject to} \quad \mathbf{x}_{k+1} = f(\mathbf{x}_k, \mathbf{u}_k, \boldsymbol{\lambda}_k)
+  \]
+  \[
+    0 \leq \boldsymbol{\lambda}_k \;\perp\; \Phi(\mathbf{x}_k, \mathbf{u}_k, \boldsymbol{\lambda}_k) \geq 0
+  \]
+</div>
+<p>
+  Here \(\mathbf{x}_k\) is the full system state (robot joints + object pose),
+  \(\mathbf{u}_k\) is the control input (e.g. end-effector Cartesian force),
+  \(\boldsymbol{\lambda}_k\) is the contact force vector, and
+  \(\Phi\) is the signed distance (gap) between contact pairs — positive when
+  separated, zero at contact. The symbol \(\perp\) means <em>complementarity</em>:
+  either the gap is zero (contact is active, force can be nonzero) or the force
+  is zero (no contact). They cannot both be nonzero simultaneously.
+</p>
+<p>
+  This problem is hard to solve in real time because the complementarity
+  constraint makes it non-smooth and combinatorially complex (every contact
+  pair is either on or off — exponentially many combinations).
+</p>
+
+<!-- ── Contact model: LCS ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The contact model: Linear Complementarity System (LCS)</p>
+<p>
+  C3 and C3+ (Push Anything) make this tractable by locally linearising the
+  dynamics around the current state to get a <strong>Linear Complementarity
+  System (LCS)</strong>:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d}
+  \]
+  \[
+    0 \leq \boldsymbol{\lambda}_k \;\perp\; E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c} \geq 0
+  \]
+</div>
+<p>
+  The matrices \(A, B, D, E, F, H\) and vectors \(\mathbf{c}, \mathbf{d}\) are
+  computed once per timestep by linearising around the current operating
+  point. The contact force vector \(\boldsymbol{\lambda}_k\) is split into:
+</p>
+<ul>
+  <li>\(\boldsymbol{\lambda}_k^n \in \mathbb{R}^{n_c}\) — normal forces at each of \(n_c\) contact pairs</li>
+  <li>\(\boldsymbol{\lambda}_k^t \in \mathbb{R}^{n_c \cdot n_e}\) — tangential (friction) forces, with \(n_e\) being the number of edges of the polyhedral friction cone approximation</li>
+</ul>
+<p>
+  In Push Anything, \(n_e = 4\): the circular Coulomb cone is approximated by a
+  4-sided pyramid. This turns the nonlinear friction cone constraint into a set
+  of linear inequalities, which is what makes the LCS tractable.
+</p>
+<div class="eq">
+  \[
+    \|\mathbf{f}_t\| \leq \mu f_n
+    \quad\longrightarrow\quad
+    \text{approximated by } n_e = 4 \text{ linear faces of a pyramid}
+  \]
+</div>
+
+<!-- ── C3 / C3+ ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">C3 and C3+: the high-level planner</p>
+<div class="card blue">
+  <div class="card-label">C3 — Consensus Complementarity Control (Aydinoglu et al., 2024)</div>
+  <p>
+    C3 solves the LCS-constrained MPC problem using <strong>ADMM</strong>
+    (Alternating Direction Method of Multipliers). It splits the problem into
+    two alternating subproblems:
+  </p>
+  <ul>
+    <li><strong>Quadratic step</strong>: solve a QP over the full trajectory, treating complementarity as soft — this is a smooth, fast solve.</li>
+    <li><strong>Projection step</strong>: project the contact forces onto the feasible complementarity set \(\{(\boldsymbol{\lambda}, \boldsymbol{\eta}) : 0 \leq \boldsymbol{\lambda} \perp \boldsymbol{\eta} \geq 0\}\) — this is done independently per timestep and can be parallelised.</li>
+  </ul>
+  <p style="margin-top:0.6rem;">
+    The output of C3 is a <em>desired trajectory</em>: a sequence of desired
+    end-effector positions or forces over the horizon. C3 runs at the high
+    level — it does not directly produce joint torques.
+  </p>
+</div>
+
+<div class="card blue">
+  <div class="card-label">C3+ — Consensus Complementarity Control Plus (Push Anything, 2026)</div>
+  <p>
+    C3+ improves on C3 with a faster projection step (Fig. 5 in the paper: a
+    linear switching boundary replaces the more expensive original projection),
+    enabling real-time performance even with up to 19 simultaneous contact
+    pairs across multiple objects. It also integrates a <strong>sampling
+    strategy</strong>: many candidate end-effector positions are sampled,
+    each gets its own C3+ solve, and the lowest-cost candidate is executed.
+    This helps escape local minima that trip up pure local MPC.
+  </p>
+</div>
+
+<!-- ── OSC ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">OSC: the low-level tracker</p>
+<div class="card green">
+  <div class="card-label">OSC — Operational Space Controller</div>
+  <p>
+    C3/C3+ outputs a <em>desired end-effector trajectory</em>
+    \(\mathbf{x}^\text{des}(t)\). OSC converts this into <em>joint
+    torques</em> \(\boldsymbol{\tau}\) that the robot's motors actually apply.
+    This is exactly the \(\boldsymbol{\tau} = J^\top \mathbf{f}\) mapping from §0,
+    extended with a nullspace term to handle redundant joints:
+  </p>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[
+      \boldsymbol{\tau}
+      = J^\top \mathbf{f}_\text{des}
+      + \underbrace{(I - J^\top J^{+\top})}_{\text{nullspace projector}} \boldsymbol{\tau}_0
+    \]
+  </div>
+  <p>
+    \(\mathbf{f}_\text{des}\) is the desired Cartesian force at the end-effector
+    (computed from a PD law on the tracking error). \(J^{+}\) is the
+    pseudoinverse of \(J\). The nullspace term \(\boldsymbol{\tau}_0\) handles
+    joint-level objectives (e.g. staying away from joint limits) without
+    disturbing the end-effector task.
+  </p>
+  <p style="margin-top:0.6rem;">
+    In Push Anything, OSC runs on a <em>separate real-time computer</em>
+    dedicated to low-latency robot communication, while C3+ runs on a different
+    machine doing the heavy optimisation. The two communicate over LCM.
+  </p>
+</div>
+
+<!-- ── Two-level architecture ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The two-level architecture</p>
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Level</th><th>Controller</th><th>Input</th><th>Output</th><th>Rate</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>High level</strong></td>
+        <td>C3 / C3+</td>
+        <td>Current state \(\mathbf{x}\), goal pose</td>
+        <td>Desired end-effector trajectory \(\mathbf{x}^\text{des}\)</td>
+        <td>~10–50 Hz</td>
+      </tr>
+      <tr>
+        <td><strong>Low level</strong></td>
+        <td>OSC</td>
+        <td>Desired trajectory \(\mathbf{x}^\text{des}\), joint state \(\mathbf{q}, \dot{\mathbf{q}}\)</td>
+        <td>Joint torques \(\boldsymbol{\tau}\)</td>
+        <td>~1 kHz</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<blockquote>
+  <p>
+    C3/C3+ reasons about <em>what</em> the robot should do with contacts over
+    the next few seconds. OSC handles <em>how</em> the robot's joints should
+    move to make that happen — fast enough to be smooth and stable. The two
+    controllers operate at different timescales and are connected through the
+    desired trajectory.
+  </p>
+</blockquote>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §8  MUJOCO + ALLEGRO: FRICTION IN SIMULATION
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§8</span>
+  <h2 id="s8">MuJoCo + Allegro Hand: Will Friction Be Applied, and How Accurate Is It?</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Suppose you set up the Allegro hand holding a coloured cube in MuJoCo, and
+  drive the fingers to press inward with a given normal force on each of the
+  4 lateral faces. Two questions arise: (1) does MuJoCo automatically apply
+  frictional forces, or do you have to specify them? (2) How well does MuJoCo's
+  friction match the contact model assumed by C3/C3+?
+</p>
+
+<!-- ── Q1: Does MuJoCo apply friction? ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Yes — MuJoCo applies friction automatically</p>
+<p>
+  You do not have to manually compute or apply friction forces. MuJoCo detects
+  contact between surfaces, computes normal forces, and resolves friction as
+  part of its physics step. What you specify is:
+</p>
+<ul>
+  <li>The friction coefficient \(\mu\) (set per geom or pair in the MJCF/XML: <code>friction="1.0 0.005 0.0001"</code>, where the three values are sliding, torsional, and rolling friction)</li>
+  <li>Contact stiffness and damping (via <code>solref</code> and <code>solimp</code>)</li>
+</ul>
+<p>
+  Given those, MuJoCo will automatically determine at each timestep whether
+  each contact is sticking or sliding, and will apply the appropriate friction
+  force — you just apply joint torques or position targets to the fingers.
+</p>
+
+<!-- ── MuJoCo's contact model ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">How MuJoCo models contact — and how it differs from C3</p>
+<p>
+  MuJoCo and C3 both model Coulomb friction, but they use fundamentally different
+  mathematical formulations. This matters for how accurately MuJoCo friction
+  matches what C3 assumes.
+</p>
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Property</th><th>C3 / Stewart-Trinkle</th><th>MuJoCo</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Normal force model</strong></td>
+        <td>Rigid body: contact is either active (\(f_n &gt; 0\), \(\phi = 0\)) or inactive (\(f_n = 0\), \(\phi &gt; 0\)); enforced via complementarity</td>
+        <td>Soft/penalty: a spring-damper produces \(f_n\) proportional to penetration depth. Contacts allow slight geometric overlap</td>
+      </tr>
+      <tr>
+        <td><strong>Friction cone</strong></td>
+        <td>Polyhedral pyramid with \(n_e\) faces (e.g. 4), linearising \(\|\mathbf{f}_t\| \leq \mu f_n\) into linear inequalities</td>
+        <td>Elliptic cone, implicitly enforced via a convex quadratic optimisation inside the solver. Closer to the true Coulomb cone</td>
+      </tr>
+      <tr>
+        <td><strong>Sticking vs. sliding</strong></td>
+        <td>Complementarity: exactly one of {sticking, sliding} is active per timestep; modelled as a combinatorial switch</td>
+        <td>Smooth transition via implicit integration and a regularised solver — no hard switch</td>
+      </tr>
+      <tr>
+        <td><strong>Solution uniqueness</strong></td>
+        <td>LCS can have multiple solutions for \(\boldsymbol{\lambda}\). C3 assumes state-level uniqueness (a known limitation). The C3 paper notes MuJoCo's relaxed model is one way to guarantee uniqueness</td>
+        <td>Always unique: regularisation ensures a single solution every step</td>
+      </tr>
+      <tr>
+        <td><strong>Contact penetration</strong></td>
+        <td>Zero (rigid assumption)</td>
+        <td>Non-zero (soft spring), controlled by <code>solref</code>/<code>solimp</code></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── How accurate? ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">How accurate is MuJoCo friction for your scenario?</p>
+
+<div class="card green">
+  <div class="card-label">Where MuJoCo is accurate enough</div>
+  <p>
+    For <strong>quasi-static grasping</strong> — fingers pressing slowly inward,
+    cube held nearly still — MuJoCo's friction is a good approximation of
+    Coulomb friction. The magnitude of friction forces, the sticking/sliding
+    boundary, and the direction of slip all behave correctly when velocities
+    are small. This regime is where most grasp-stability analysis lives, and
+    MuJoCo is reliable here.
+  </p>
+</div>
+
+<div class="card amber">
+  <div class="card-label">Where discrepancies appear</div>
+  <p>
+    For <strong>dynamic rotation</strong> of the cube (the task you want), several
+    sources of error enter:
+  </p>
+  <ul>
+    <li><strong>Polyhedral vs. elliptic cone</strong>: C3 approximates the friction cone as a 4-sided pyramid. MuJoCo uses an elliptic cone. For forces near the cone boundary (sliding is about to occur), these differ by up to ~30% in direction depending on the sliding angle.</li>
+    <li><strong>Soft vs. rigid contact</strong>: MuJoCo's spring-damper normal force depends on penetration depth and velocity, not just contact state. During fast rotation, the effective normal force in MuJoCo will oscillate slightly, changing the friction budget \(\mu f_n\) in ways the rigid LCS model does not predict.</li>
+    <li><strong>Torsional friction</strong>: Rotating the cube about the contact normal (spinning) involves torsional friction. MuJoCo models this with a separate coefficient (<code>friction</code>'s second parameter). C3's LCS formulation for planar pushing does not explicitly model torsional friction — it uses only the sliding cone.</li>
+    <li><strong>Allegro fingertip geometry</strong>: Allegro fingertips have a rounded dome shape, not a point contact. MuJoCo will resolve this as a small contact patch with distributed forces. The LCS model typically assumes a point contact with a single contact normal. This mismatch grows when the cube rotates and the contact patch shifts.</li>
+  </ul>
+</div>
+
+<div class="card red">
+  <div class="card-label">What this means for your simulation plan</div>
+  <p>
+    If you apply joint torques to press Allegro fingers against the cube's 4 faces
+    and then apply a reorienting wrench, MuJoCo will produce physically plausible
+    friction — the cube will not just slide freely. However, the friction forces
+    MuJoCo computes will <em>not</em> exactly match the forces that C3's LCS model
+    would predict for the same scenario, for three reasons:
+  </p>
+  <ol style="margin-top:0.5rem;">
+    <li>Different friction cone geometry (elliptic vs. pyramidal)</li>
+    <li>Different normal force model (soft penalty vs. rigid complementarity)</li>
+    <li>Point contact assumption vs. Allegro's extended contact patch</li>
+  </ol>
+  <p style="margin-top:0.7rem;">
+    For a first-pass simulation to verify that grasp force decomposition works
+    and that you can rotate the cube, MuJoCo is entirely appropriate. To
+    validate a specific C3-based controller, the sim-to-real gap between
+    MuJoCo's smooth model and the LCS rigid model is a known source of
+    discrepancy — the C3 paper explicitly notes this is why uniqueness of
+    the state mapping must be assumed rather than derived.
+  </p>
+</div>
+
+<div class="card indigo">
+  <div class="card-label">Practical recommendation</div>
+  <p>
+    Set <code>friction="1.0 0.005 0.0001"</code> on the Allegro fingertip geoms
+    and cube geom in your MJCF. Use a stiff contact model
+    (<code>solref="0.002 1"</code>) to minimise penetration and get closer to
+    the rigid-body assumption in C3. Apply finger joint torques (not position
+    control) to maintain a steady inward normal force. MuJoCo will then handle
+    friction automatically, and the simulation will be physically meaningful
+    even if not perfectly matched to the LCS contact model.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §9  THE COMPLETE FLOW — FIVE CLARIFICATIONS
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§9</span>
+  <h2 id="s9">The Complete Control Flow — Five Clarifications</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  This section works through five questions about the control architecture in
+  order, building on each answer before the next. Read them in sequence.
+</p>
+
+<!-- ────────────────────────────────────────────────────────
+     Q1: What is x? Forces are not the state.
+──────────────────────────────────────────────────────────── -->
+<div class="card indigo" style="margin-top:1.5rem;">
+  <div class="card-label">Question 1</div>
+  <h3>The objective says "minimise trajectory error in x". But when grasping, x doesn't change — so how can there be nonzero torques?</h3>
+</div>
+
+<p>
+  The confusion is that forces are not part of the state \(\mathbf{x}\).
+  Let's be precise about what each symbol means.
+</p>
+
+<p style="font-weight:600; color:var(--text);">What \(\mathbf{x}\) is</p>
+<p>
+  The state vector stacks positions and velocities — nothing else:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}_k
+    = \begin{pmatrix} \mathbf{q}_k \\ \dot{\mathbf{q}}_k \end{pmatrix}
+    \in \mathbb{R}^{n_x}
+  \]
+</div>
+<p>
+  where \(\mathbf{q}_k\) contains robot joint angles and the cube's position +
+  orientation (as a quaternion), and \(\dot{\mathbf{q}}_k\) contains their
+  time derivatives. No forces. No torques.
+</p>
+
+<p style="font-weight:600; color:var(--text);">Where forces live</p>
+<p>Forces appear in two separate places:</p>
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Symbol</th><th>Name</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>\(\mathbf{u}_k \in \mathbb{R}^{n_u}\)</td>
+        <td>Control input</td>
+        <td>What the robot commands at timestep \(k\). Could be joint torques, or desired Cartesian force at the end-effector. This is the robot's decision variable.</td>
+      </tr>
+      <tr>
+        <td>\(\boldsymbol{\lambda}_k \in \mathbb{R}^{n_\lambda}\)</td>
+        <td>Contact forces</td>
+        <td>The normal and friction forces at each contact, determined by the physics (complementarity constraints). The robot does not directly set these — they arise from how the fingers press.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p style="font-weight:600; color:var(--text);">The dynamics equation shows the answer</p>
+<p>
+  The LCS dynamics are:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d}
+  \]
+</div>
+<p>
+  Now suppose we are grasping statically: the cube is held, nothing is moving,
+  so \(\mathbf{x}_{k+1} = \mathbf{x}_k = \mathbf{x}^*\). Substituting:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}^* = A\mathbf{x}^* + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d}
+  \]
+  \[
+    \Longrightarrow \quad B\mathbf{u}_k + D\boldsymbol{\lambda}_k = (I - A)\mathbf{x}^* - \mathbf{d}
+  \]
+</div>
+<p>
+  The right-hand side is generally nonzero (gravity acts, contact forces act).
+  This means \(\mathbf{u}_k \neq \mathbf{0}\) and \(\boldsymbol{\lambda}_k \neq \mathbf{0}\)
+  are required to hold the system in equilibrium, even though \(\mathbf{x}\)
+  is not changing. <strong>Zero change in state does not mean zero force.</strong>
+  It means the forces perfectly balance, which requires them to be present and nonzero.
+</p>
+
+<div class="card green">
+  <div class="card-label">Intuition</div>
+  <p>
+    Stand still. Your muscles are applying force (against gravity) even though
+    your position is constant. The same is true for the robot: it must exert
+    torques at the joints to maintain the grasp even when nothing is moving.
+    The objective minimises the <em>deviation from the desired state</em> and
+    the <em>control effort</em>. It does not say "apply zero torque when
+    position is not changing."
+  </p>
+</div>
+
+
+<!-- ────────────────────────────────────────────────────────
+     Q2: Does the objective encode grasping?
+──────────────────────────────────────────────────────────── -->
+<div class="card indigo" style="margin-top:2rem;">
+  <div class="card-label">Question 2</div>
+  <h3>Does the C3 objective function include any term about maintaining grasp contact — i.e. keeping normal forces above zero?</h3>
+</div>
+
+<p>
+  The standard C3/C3+ objective as published is:
+</p>
+<div class="eq">
+  \[
+    \min \;\sum_{k=0}^{N-1} \Bigl(\mathbf{x}_k^\top Q\, \mathbf{x}_k + \mathbf{u}_k^\top R\, \mathbf{u}_k\Bigr) + \mathbf{x}_N^\top Q_N \mathbf{x}_N
+  \]
+</div>
+<p>
+  \(Q, Q_N \succeq 0\) penalise state error relative to the goal.
+  \(R \succ 0\) penalises large control effort.
+  <strong>There is no explicit term on \(\boldsymbol{\lambda}_k\).</strong>
+</p>
+<p>
+  Contact forces are not directly optimised — they are determined entirely by
+  the complementarity constraints (the physics). The optimiser chooses
+  \(\mathbf{u}_k\) to minimise state error; the resulting
+  \(\boldsymbol{\lambda}_k\) is whatever the contact equations produce.
+</p>
+
+<div class="card amber">
+  <div class="card-label">Important: C3 is for pushing, not grasping</div>
+  <p>
+    The C3 and Push Anything papers use a <em>single spherical end-effector</em>
+    that pushes objects on a table. Contact is made and broken naturally as the
+    end-effector moves. There is no need to maintain a grasp.
+  </p>
+  <p style="margin-top:0.6rem;">
+    For an Allegro hand grasping a cube, you would need to add to the formulation:
+  </p>
+  <ul>
+    <li>A <strong>constraint</strong>: \(\lambda_n^i \geq f_{\min} > 0\) for each finger contact \(i\), ensuring normal force never drops to zero (contact never breaks).</li>
+    <li>Or a <strong>penalty term</strong>: \(-\alpha \sum_i \lambda_n^i\) in the objective, rewarding larger normal forces.</li>
+    <li>Or an <strong>inner force layer</strong>: apply a constant \(\mathbf{f}_\text{internal} \in \ker(G)\) separately (as in §4), and run C3 only for the task forces on top of it.</li>
+  </ul>
+  <p style="margin-top:0.6rem;">
+    This is an open design choice. The published C3 formulation does not handle it.
+  </p>
+</div>
+
+
+<!-- ────────────────────────────────────────────────────────
+     Q3 + Q4: The full ADMM solve and the pyramid
+──────────────────────────────────────────────────────────── -->
+<div class="card indigo" style="margin-top:2rem;">
+  <div class="card-label">Questions 3 & 4</div>
+  <h3>Who solves the problem at each timestep, and what exactly are the steps? Also: how does the polyhedral cone approximation work?</h3>
+</div>
+
+<p>
+  We first set up the full optimization problem, then walk through how ADMM
+  breaks it down, and along the way explain the pyramid.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Step 0 — Linearize to get the LCS matrices</p>
+<p>
+  At the current estimated state \(\hat{\mathbf{x}}\) and nominal input \(\hat{\mathbf{u}}\),
+  linearise the full nonlinear contact dynamics (Equation (5)-(7) in C3) to get:
+</p>
+<div class="eq">
+  \[
+    A,\, B,\, D,\, E,\, F,\, H,\, \mathbf{c},\, \mathbf{d}
+    \quad\in\quad \mathbb{R}^{(\text{appropriate dimensions})}
+  \]
+</div>
+<p>These are computed once and held fixed for the duration of this timestep's solve.</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Step 1 — Write the contact force vector \(\boldsymbol{\lambda}_k\) (and the pyramid)</p>
+<p>
+  Before writing the full problem, we need to say exactly what
+  \(\boldsymbol{\lambda}_k\) contains. There are \(n_c\) contact pairs (e.g., each
+  fingertip-cube pair). For each contact \(i\), the forces are:
+</p>
+<ul>
+  <li>\(\lambda_n^i \geq 0\) — a single scalar normal force (pushing inward along the contact normal)</li>
+  <li>\(\boldsymbol{\beta}^i \in \mathbb{R}^{n_e}\), \(\boldsymbol{\beta}^i \geq \mathbf{0}\) — \(n_e\) friction force components, one per pyramid edge</li>
+  <li>\(\gamma^i \geq 0\) — a scalar slack variable encoding whether the contact is sliding</li>
+</ul>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">The polyhedral (pyramid) approximation of the friction cone</p>
+<p>
+  True Coulomb friction says the friction force \(\mathbf{f}_t \in \mathbb{R}^2\)
+  (two tangential directions at the contact) satisfies:
+</p>
+<div class="eq">
+  \[
+    \|\mathbf{f}_t\| \leq \mu\, \lambda_n
+    \quad\longleftrightarrow\quad \sqrt{f_{tx}^2 + f_{ty}^2} \leq \mu\, \lambda_n
+  \]
+</div>
+<p>
+  This is a <em>circular cone</em> in \((f_{tx}, f_{ty}, \lambda_n)\) space.
+  At constant \(\lambda_n\), the feasible \(\mathbf{f}_t\) is a
+  <em>disc</em> of radius \(\mu\lambda_n\). The square root makes this nonlinear —
+  we cannot put it into a linear program.
+</p>
+<p>
+  The fix: replace the disc with a regular \(n_e\)-sided polygon. For \(n_e = 4\)
+  this is a square. Define \(n_e\) unit vectors evenly spaced in the tangential plane:
+</p>
+<div class="eq">
+  \[
+    \mathbf{d}_j = \begin{pmatrix}\cos\!\tfrac{2\pi j}{n_e}\\\sin\!\tfrac{2\pi j}{n_e}\end{pmatrix},
+    \quad j = 0,\ldots, n_e{-}1
+  \]
+</div>
+<p>
+  For \(n_e = 4\): \(\mathbf{d}_0 = (1,0)\), \(\mathbf{d}_1 = (0,1)\),
+  \(\mathbf{d}_2 = (-1,0)\), \(\mathbf{d}_3 = (0,-1)\) — the four axis directions.
+</p>
+<p>
+  The friction force is now parametrized as a nonneg combination of these directions:
+</p>
+<div class="eq">
+  \[
+    \mathbf{f}_t = \sum_{j=0}^{n_e-1} \beta_j\, \mathbf{d}_j
+    = \underbrace{\begin{bmatrix}\mathbf{d}_0 & \mathbf{d}_1 & \cdots & \mathbf{d}_{n_e-1}\end{bmatrix}}_{E_t^\top \;\in\;\mathbb{R}^{2\times n_e}} \boldsymbol{\beta},
+    \quad \boldsymbol{\beta} \geq \mathbf{0}
+  \]
+</div>
+<p>
+  The cone constraint \(\|\mathbf{f}_t\| \leq \mu\lambda_n\) is now
+  approximated by the <em>linear</em> constraint:
+</p>
+<div class="eq">
+  \[
+    \mathbf{e}^\top \boldsymbol{\beta} \leq \mu\, \lambda_n
+    \qquad \text{where } \mathbf{e} = (1,\ldots,1)^\top
+  \]
+</div>
+<p>
+  This says the total friction budget allocated across all pyramid edges cannot
+  exceed \(\mu\lambda_n\). It is a <em>linear</em> inequality — no square roots.
+  The pyramid is a conservative approximation of the disc; forces near the
+  diagonal of the square are underestimated by a factor of up to \(\cos(\pi/n_e)\)
+  (for \(n_e = 4\), this is \(\sim 0.71\), a 29% error in the worst case).
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">Complementarity conditions for the pyramid (Stewart-Trinkle)</p>
+<p>
+  The full contact model for one contact pair uses three complementarity conditions:
+</p>
+
+<div class="eq-set">
+  <p>\(\textbf{(i) Contact / separation:}\quad 0 \leq \lambda_n^i \;\perp\; \phi^i(\mathbf{q}) \geq 0\)</p>
+</div>
+<p>
+  \(\phi^i(\mathbf{q}) \geq 0\) is the gap (distance) between the two bodies.
+  If the bodies are separated (\(\phi > 0\)), the normal force is zero
+  (\(\lambda_n = 0\)). If they are in contact (\(\phi = 0\)), the normal
+  force can be positive. One or the other is always zero. That is what
+  \(\perp\) means.
+</p>
+
+<div class="eq-set">
+  <p>\(\textbf{(ii) Sliding vs. sticking:}\quad 0 \leq \gamma^i \;\perp\; (\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i) \geq 0\)</p>
+</div>
+<p>
+  \(\gamma^i\) is the <em>sliding speed magnitude</em>. The term
+  \(\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i\) is the remaining friction
+  budget. If there is remaining budget, we are sticking (\(\gamma = 0\)).
+  If the full budget is used (\(\mu\lambda_n = \mathbf{e}^\top\boldsymbol{\beta}\)),
+  we are sliding (\(\gamma > 0\)). Again, exactly one side is nonzero.
+</p>
+
+<div class="eq-set">
+  <p>\(\textbf{(iii) Friction direction:}\quad 0 \leq \boldsymbol{\beta}^i \;\perp\; (E_t J_t^i \dot{\mathbf{q}} + \gamma^i \mathbf{e}) \geq 0\)</p>
+</div>
+<p>
+  \(E_t J_t^i \dot{\mathbf{q}}\) is the contact point's tangential velocity
+  projected onto each pyramid edge direction. If the contact point is moving
+  in direction \(\mathbf{d}_j\), then \(\beta_j > 0\) (friction opposes that
+  motion). If the contact is sticking (\(\gamma = 0\)), the velocity term is
+  zero and the complementarity reduces to \(\boldsymbol{\beta} \geq 0\) free.
+</p>
+
+<p>
+  All three conditions together (for all \(n_c\) contacts) form the complementarity
+  variable vector:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\lambda}_k = \begin{pmatrix}\boldsymbol{\lambda}_k^n \\ \boldsymbol{\beta}_k \\ \boldsymbol{\gamma}_k\end{pmatrix} \in \mathbb{R}^{n_c(1 + n_e + 1)}
+  \]
+</div>
+<p>and the gap function stacks all the complementarity right-hand sides into \(\boldsymbol{\eta}_k\).</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Step 2 — Write the full QPCC</p>
+<p>
+  Substituting the LCS matrices and the contact variable definition, the problem is:
+</p>
+<div class="eq-set">
+  <p>\(\displaystyle\min_{\mathbf{x}_{0:N},\,\mathbf{u}_{0:N-1},\,\boldsymbol{\lambda}_{0:N-1}} \quad \sum_{k=0}^{N-1}\bigl(\mathbf{x}_k^\top Q\mathbf{x}_k + \mathbf{u}_k^\top R\mathbf{u}_k\bigr) + \mathbf{x}_N^\top Q_N\mathbf{x}_N\)</p>
+  <p>\(\text{s.t.}\quad \mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d} \quad\forall k \quad\text{[linear dynamics]}\)</p>
+  <p>\(\phantom{\text{s.t.}\quad} \boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c} \quad\forall k \quad\text{[gap/slack definition]}\)</p>
+  <p>\(\phantom{\text{s.t.}\quad} 0 \leq \boldsymbol{\lambda}_k \;\perp\; \boldsymbol{\eta}_k \geq 0 \quad\forall k \quad\text{[complementarity — the hard part]}\)</p>
+</div>
+<p>
+  This is a <strong>Quadratic Program with Complementarity Constraints (QPCC)</strong>.
+  It is <em>not</em> a standard QP because of the complementarity condition —
+  that condition is non-convex and combinatorially hard (every contact at every
+  timestep is either on or off). With \(N\) timesteps and \(n_c\) contacts,
+  there are \(2^{N \cdot n_c}\) possible contact mode sequences.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Step 3 — The consensus reformulation (making ADMM applicable)</p>
+<p>
+  Introduce a copy of the decision variables. Define:
+</p>
+<div class="eq">
+  \[
+    \mathbf{z}_k = \begin{pmatrix}\mathbf{x}_k \\ \mathbf{u}_k \\ \boldsymbol{\lambda}_k \\ \boldsymbol{\eta}_k\end{pmatrix}, \qquad
+    \boldsymbol{\delta}_k = \begin{pmatrix}\boldsymbol{\delta}_k^x \\ \boldsymbol{\delta}_k^u \\ \boldsymbol{\delta}_k^\lambda \\ \boldsymbol{\delta}_k^\eta\end{pmatrix}
+    \quad\text{(a copy of }\mathbf{z}_k\text{)}
+  \]
+</div>
+<p>
+  Assign the constraints to two sets:
+</p>
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Set</th><th>What it encodes</th><th>Assigned to</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>\(\mathcal{D}\)</td>
+        <td>Linear dynamics, gap definition, initial condition, input bounds — all <em>linear</em> constraints</td>
+        <td>\(\mathbf{z}\) (the original variables)</td>
+      </tr>
+      <tr>
+        <td>\(\mathcal{H}_k\)</td>
+        <td>Complementarity: \(0 \leq \boldsymbol{\delta}_k^\lambda \perp \boldsymbol{\delta}_k^\eta \geq 0\) — the nonlinear / combinatorial part</td>
+        <td>\(\boldsymbol{\delta}_k\) (the copy variables), independently per timestep \(k\)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<p>The QPCC is rewritten as:</p>
+<div class="eq-set">
+  <p>\(\displaystyle\min_{\mathbf{z},\,\boldsymbol{\delta}}\; c(\mathbf{z}) + \mathcal{I}_\mathcal{D}(\mathbf{z}) + \sum_{k=0}^{N-1}\mathcal{I}_{\mathcal{H}_k}(\boldsymbol{\delta}_k)\)</p>
+  <p>\(\text{s.t.}\quad \mathbf{z}_k = \boldsymbol{\delta}_k \quad \forall k\)</p>
+</div>
+<p>
+  where \(\mathcal{I}_S(\cdot)\) is the indicator function of set \(S\): it equals 0
+  if the argument is in \(S\), and \(+\infty\) otherwise. The constraint
+  \(\mathbf{z}_k = \boldsymbol{\delta}_k\) enforces that the two copies agree.
+  At a solution, \(\mathbf{z}\) satisfies the dynamics and \(\boldsymbol{\delta}\)
+  satisfies complementarity — and they are the same thing.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Step 4 — ADMM: three alternating updates</p>
+<p>
+  Form the <em>augmented Lagrangian</em>, which adds a quadratic penalty for
+  the consensus constraint \(\mathbf{z}_k = \boldsymbol{\delta}_k\):
+</p>
+<div class="eq">
+  \[
+    \mathcal{L}_\rho(\mathbf{z}, \boldsymbol{\delta}, \mathbf{w})
+    = c(\mathbf{z}) + \mathcal{I}_\mathcal{D}(\mathbf{z})
+    + \sum_k \mathcal{I}_{\mathcal{H}_k}(\boldsymbol{\delta}_k)
+    + \frac{\rho}{2}\sum_k \|\mathbf{z}_k - \boldsymbol{\delta}_k + \mathbf{w}_k\|^2
+  \]
+</div>
+<p>
+  \(\mathbf{w}_k\) are the scaled dual variables (Lagrange multipliers).
+  \(\rho > 0\) is a penalty weight. ADMM cycles through three updates:
+</p>
+
+<div class="card blue" style="margin:1rem 0;">
+  <div class="card-label">Update 1 — z-update (the QP step)</div>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[\mathbf{z}^{i+1} = \arg\min_{\mathbf{z} \in \mathcal{D}}\;\Bigl[c(\mathbf{z}) + \tfrac{\rho}{2}\sum_k\|\mathbf{z}_k - \boldsymbol{\delta}_k^i + \mathbf{w}_k^i\|^2\Bigr]\]
+  </div>
+  <p>
+    This is a <strong>standard QP</strong>: quadratic cost (the original objective
+    plus a quadratic proximity penalty to \(\boldsymbol{\delta}^i\)) with the
+    <em>linear</em> constraints from \(\mathcal{D}\) (dynamics, bounds).
+    The complementarity constraint is gone — it has been moved to the
+    \(\boldsymbol{\delta}\) side. A standard QP solver (e.g. OSQP) handles this.
+    Across the full \(N\)-step horizon, this solves for all \(\mathbf{x}_k, \mathbf{u}_k, \boldsymbol{\lambda}_k, \boldsymbol{\eta}_k\) simultaneously.
+  </p>
+</div>
+
+<div class="card blue" style="margin:1rem 0;">
+  <div class="card-label">Update 2 — δ-update (the projection step)</div>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[\boldsymbol{\delta}_k^{i+1} = \arg\min_{\boldsymbol{\delta}_k \in \mathcal{H}_k}\;\tfrac{\rho}{2}\|\mathbf{z}_k^{i+1} - \boldsymbol{\delta}_k + \mathbf{w}_k^i\|^2 \quad \forall k\]
+  </div>
+  <p>
+    Each timestep \(k\) is <em>independent</em>, so all \(N\) can be solved
+    in parallel. For each \(k\), this is the Euclidean projection of
+    \((\mathbf{z}_k^{i+1} + \mathbf{w}_k^i)\) onto the complementarity set
+    \(\mathcal{H}_k = \{(\mathbf{a}, \mathbf{b}) : \mathbf{a} \geq \mathbf{0},\,\mathbf{b} \geq \mathbf{0},\, \mathbf{a} \odot \mathbf{b} = \mathbf{0}\}\).
+  </p>
+  <p style="margin-top:0.6rem; font-weight:600;">How the projection works — per element</p>
+  <p>
+    For each scalar pair \((\lambda^\circ,\, \eta^\circ)\), the nearest point
+    on the L-shaped set \(\{(a,b): a\geq 0,\, b\geq 0,\, ab = 0\}\) is:
+  </p>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[
+      (\hat\lambda,\, \hat\eta) =
+      \begin{cases}
+        (\lambda^\circ,\; 0) & \text{if } \lambda^\circ \geq \eta^\circ \geq 0 \\
+        (0,\; \eta^\circ)    & \text{if } \eta^\circ > \lambda^\circ \geq 0 \\
+        (\lambda^\circ,\; 0) & \text{if } \lambda^\circ \geq 0,\; \eta^\circ < 0 \\
+        (0,\; \eta^\circ)    & \text{if } \eta^\circ \geq 0,\; \lambda^\circ < 0 \\
+        (0,\; 0)             & \text{if } \lambda^\circ < 0 \text{ and } \eta^\circ < 0
+      \end{cases}
+    \]
+  </div>
+  <p>
+    In words: if both are positive, assign the larger one to its axis and set the
+    other to zero. If one is negative, clamp it to zero and keep the other.
+    If both are negative, both go to zero. This is a trivial closed-form
+    computation — no solver needed.
+  </p>
+</div>
+
+<div class="card blue" style="margin:1rem 0;">
+  <div class="card-label">Update 3 — w-update (dual variable update)</div>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    \[\mathbf{w}_k^{i+1} = \mathbf{w}_k^i + \mathbf{z}_k^{i+1} - \boldsymbol{\delta}_k^{i+1} \quad \forall k\]
+  </div>
+  <p>
+    This is just addition. The dual variable \(\mathbf{w}_k\) accumulates the
+    disagreement between \(\mathbf{z}_k\) and \(\boldsymbol{\delta}_k\). As the
+    algorithm converges, \(\mathbf{z}_k \to \boldsymbol{\delta}_k\) and
+    \(\mathbf{w}_k\) stabilises.
+  </p>
+</div>
+
+<p style="font-weight:600; color:var(--text);">What comes out and what the robot does with it</p>
+<p>
+  After convergence (or a fixed number of ADMM iterations), extract
+  \(\mathbf{u}_0\) (the control input for the current timestep) and apply it.
+  Discard the rest of the horizon — at the next control step, the whole
+  procedure runs again from the new state \(\hat{\mathbf{x}}\). This is
+  standard <strong>receding-horizon MPC</strong>.
+</p>
+<div class="eq">
+  \[
+    \underbrace{\hat{\mathbf{x}} \to \text{LCS} \to \text{ADMM}}_{\text{C3/C3+: high-level planner}}
+    \xrightarrow{\mathbf{u}_0,\;\text{desired traj}}
+    \underbrace{\text{OSC}}_{\text{low-level}}
+    \xrightarrow{\boldsymbol{\tau}}
+    \text{Robot}
+    \xrightarrow{\text{sensors}}
+    \hat{\mathbf{x}}_\text{new}
+    \to \cdots
+  \]
+</div>
+
+
+<!-- ────────────────────────────────────────────────────────
+     Q5: OSC when x is static
+──────────────────────────────────────────────────────────── -->
+<div class="card indigo" style="margin-top:2rem;">
+  <div class="card-label">Question 5</div>
+  <h3>C3 gives a trajectory of states x. If x is constant during grasping, how does OSC apply a nonzero fingertip force?</h3>
+</div>
+
+<p>
+  This is the most important practical question for the Allegro setup.
+  The short answer: <strong>OSC in the papers is pure position tracking —
+  but for grasping you need to run it in a hybrid position + force mode.</strong>
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">OSC in pure position tracking mode (what the papers do)</p>
+<p>
+  For the pushing papers, OSC takes the desired end-effector position
+  \(\mathbf{x}^\text{des}\) from C3 and outputs joint torques:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\tau}
+    = J^\top \underbrace{\Bigl[K_p(\mathbf{x}^\text{des} - \mathbf{x}) + K_d(\dot{\mathbf{x}}^\text{des} - \dot{\mathbf{x}})\Bigr]}_{\mathbf{f}_\text{pos}: \text{ PD feedback on position error}}
+    + \underbrace{(I - J^\top J^{+\top})\boldsymbol{\tau}_0}_{\text{nullspace term}}
+  \]
+</div>
+<p>
+  When position is matched (\(\mathbf{x} = \mathbf{x}^\text{des}\)):
+  \(\mathbf{f}_\text{pos} = \mathbf{0}\), so \(\boldsymbol{\tau} \approx \mathbf{0}\)
+  (only the nullspace term remains). <strong>No grasp force is maintained.</strong>
+  This works for the pushing case because the end-effector naturally presses
+  against objects by being driven to positions that overlap them (the contact
+  force comes from position error being small but nonzero at the contact surface).
+</p>
+
+<div class="card red">
+  <div class="card-label">Why this breaks for grasping</div>
+  <p>
+    If you drive the Allegro fingers to their grasp positions and then hold them
+    there with pure position OSC, the moment there is zero position error,
+    the joint torques drop toward zero — and the fingers stop pressing. Gravity
+    pulls the cube down, friction is lost, and the cube falls. Pure position
+    control cannot maintain a static grasp force.
+  </p>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">What you need: hybrid position + force control</p>
+<p>
+  Extend OSC with an explicit force setpoint \(\mathbf{f}_\text{grasp}\):
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\tau}
+    = J^\top \Bigl[\underbrace{K_p(\mathbf{x}^\text{des} - \mathbf{x}) + K_d(\dot{\mathbf{x}}^\text{des} - \dot{\mathbf{x}})}_{\mathbf{f}_\text{pos}} + \underbrace{\mathbf{f}_\text{grasp}}_{\text{constant squeeze force}}\Bigr]
+    + (I - J^\top J^{+\top})\boldsymbol{\tau}_0
+  \]
+</div>
+<p>
+  \(\mathbf{f}_\text{grasp}\) is the desired contact force at the fingertip —
+  it lives in \(\ker(G)\) (internal force, §4), so it squeezes the cube without
+  accelerating it. It is nonzero even when position is not changing. The torques
+  needed to maintain it:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\tau}_\text{grasp} = J^\top \mathbf{f}_\text{grasp} \neq \mathbf{0}
+    \quad\text{even when } \mathbf{x} = \mathbf{x}^\text{des}
+  \]
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">The full picture for Allegro + cube</p>
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Phase</th><th>What C3+ outputs</th><th>What OSC does</th><th>Net fingertip force</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Reaching grasp</strong></td>
+        <td>Trajectory driving fingers to contact positions</td>
+        <td>Position tracking: \(\boldsymbol{\tau} = J^\top \mathbf{f}_\text{pos}\)</td>
+        <td>Position error drives movement; contact force builds up as fingers approach</td>
+      </tr>
+      <tr>
+        <td><strong>Holding (static grasp)</strong></td>
+        <td>Constant desired state; \(\boldsymbol{\lambda}^\text{des} = \mathbf{f}_\text{internal}\)</td>
+        <td>Force control: \(\boldsymbol{\tau} = J^\top \mathbf{f}_\text{grasp}\). Position error is zero; force setpoint is nonzero</td>
+        <td>\(\mathbf{f}_\text{grasp} \in \ker(G)\): cube held, no net wrench on cube</td>
+      </tr>
+      <tr>
+        <td><strong>Reorienting</strong></td>
+        <td>Trajectory and \(\boldsymbol{\lambda}^\text{des} = \mathbf{f}_\text{internal} + \mathbf{f}_\text{task}\)</td>
+        <td>Position + force: \(\boldsymbol{\tau} = J^\top(\mathbf{f}_\text{pos} + \mathbf{f}_\text{grasp} + \mathbf{f}_\text{task})\)</td>
+        <td>Grasp maintained; task force rotates cube</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<blockquote>
+  <p>
+    The key distinction: the C3 papers use OSC purely as a position tracker because
+    for pushing, contact force is implicit in position. For dexterous grasping
+    with the Allegro hand, you must add an explicit force channel to OSC — one that
+    remains nonzero whenever the hand is in contact, independent of whether
+    position is at its setpoint.
+  </p>
+</blockquote>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §10  HOW CONTACT FORCE IS IMPLICIT IN POSITION
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§10</span>
+  <h2 id="s10">How Contact Force Is Implicit in the Desired Position</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  This is a subtle but central idea. We build it up from scratch, starting with
+  what OSC actually computes, then showing what changes the moment the
+  end-effector touches an object.
+</p>
+
+<!-- ── Free space ── -->
+<p style="font-weight:600; color:var(--text);">Case 1 — End-effector in free space (no contact)</p>
+<p>
+  OSC computes a desired Cartesian force at the end-effector from a PD law on
+  the position error, then maps it to joint torques:
+</p>
+<div class="eq">
+  \[
+    \mathbf{f}_\text{tip} = K_p\,(\mathbf{x}^\text{des} - \mathbf{x}) + K_d\,(\dot{\mathbf{x}}^\text{des} - \dot{\mathbf{x}})
+    \qquad
+    \boldsymbol{\tau} = J^\top \mathbf{f}_\text{tip}
+  \]
+</div>
+<p>
+  In free space nothing blocks the end-effector, so it moves toward
+  \(\mathbf{x}^\text{des}\). As it arrives:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x} \to \mathbf{x}^\text{des}
+    \;\Longrightarrow\;
+    \mathbf{f}_\text{tip} \to \mathbf{0}
+    \;\Longrightarrow\;
+    \boldsymbol{\tau} \to \mathbf{0}
+  \]
+</div>
+<p>No contact, no force. Nothing surprising here.</p>
+
+<!-- ── In contact ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Case 2 — End-effector touches an object</p>
+<p>
+  Now suppose the end-effector reaches the surface of the object at position
+  \(\mathbf{x}_\text{surf}\) and C3 has commanded a desired position
+  \(\mathbf{x}^\text{des}\) that lies <em>past</em> the surface — i.e.
+  slightly inside the object:
+</p>
+
+<div class="eq">
+  \[
+    \mathbf{x}^\text{des} = \mathbf{x}_\text{surf} + \underbrace{\delta}_{\text{desired penetration depth}}
+  \]
+</div>
+
+<p>
+  The object is solid. The end-effector cannot pass through it. So the
+  actual end-effector position is locked at the surface:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x} = \mathbf{x}_\text{surf} \quad\text{(held here by the contact)}
+  \]
+</div>
+
+<p>
+  Now compute the PD force:
+</p>
+<div class="eq">
+  \[
+    \mathbf{f}_\text{tip}
+    = K_p\,(\mathbf{x}^\text{des} - \mathbf{x})
+    = K_p\,(\mathbf{x}_\text{surf} + \delta - \mathbf{x}_\text{surf})
+    = K_p\,\delta
+  \]
+</div>
+
+<p>
+  This force is <em>nonzero and persistent</em>. The end-effector never reaches
+  \(\mathbf{x}^\text{des}\) because the object blocks it. The position error
+  \(\delta\) never goes to zero. The PD controller keeps pushing — and that
+  push is exactly the contact force transmitted into the object.
+</p>
+
+<div class="card green">
+  <div class="card-label">The implicit relationship</div>
+  <h3>Contact force = stiffness × desired penetration</h3>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.6rem 0;">
+    \[
+      \underbrace{f_\text{contact}}_{\text{force on object}}
+      \;=\; K_p \cdot \underbrace{\delta}_{\text{how far past the surface } \mathbf{x}^\text{des} \text{ is set}}
+    \]
+  </div>
+  <p>
+    The contact force is <em>not explicitly commanded</em>. It is a consequence
+    of where you placed the desired position. Setting \(\mathbf{x}^\text{des}\)
+    deeper into the object increases \(\delta\), which increases the contact
+    force. Setting \(\mathbf{x}^\text{des}\) exactly at the surface gives
+    \(\delta = 0\) and zero contact force.
+  </p>
+</div>
+
+<!-- ── Visual diagram ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Diagram</p>
+
+<div style="background:var(--white); border:1px solid var(--border); border-radius:12px; padding:1.5rem 2rem; margin:1rem 0; box-shadow:var(--shadow-sm); font-family:'JetBrains Mono',monospace; font-size:0.82rem; line-height:2; overflow-x:auto;">
+  <div style="color:var(--muted); margin-bottom:0.4rem;">Position axis →</div>
+  <div>
+    <span style="color:var(--green); font-weight:700;">●</span>
+    <span style="color:var(--sub);">────────────────</span>
+    <span style="color:var(--red); font-weight:700;">█</span>
+    <span style="color:var(--muted);">──── · · · ────</span>
+    <span style="color:var(--blue); font-weight:700;">✕</span>
+  </div>
+  <div style="display:flex; gap:0; font-size:0.75rem; color:var(--muted); margin-top:0.2rem;">
+    <span style="min-width:180px; color:var(--green);">end-effector actual&nbsp;&nbsp;</span>
+    <span style="min-width:10px; color:var(--red);">object&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
+    <span style="color:var(--blue);">x_des (commanded)</span>
+  </div>
+  <div style="margin-top:0.8rem; color:var(--sub); font-family:'Inter',sans-serif; font-size:0.88rem; line-height:1.7;">
+    <span style="color:var(--red); font-weight:600;">█</span> = object surface at x<sub>surf</sub><br/>
+    <span style="color:var(--blue); font-weight:600;">✕</span> = desired position x<sup>des</sup> = x<sub>surf</sub> + δ<br/>
+    <span style="color:var(--green); font-weight:600;">●</span> = actual end-effector position = x<sub>surf</sub> (blocked)<br/>
+    <span style="color:var(--muted);">· · ·</span> = gap δ = persistent position error = contact force / K<sub>p</sub>
+  </div>
+</div>
+
+<!-- ── How C3 exploits this ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">How C3 exploits this for pushing</p>
+<p>
+  C3 plans a trajectory of desired end-effector positions \(\mathbf{x}^\text{des}_k\).
+  When the trajectory drives the end-effector into contact with an object,
+  \(\mathbf{x}^\text{des}_k\) sits slightly past the object surface.
+  The position error that OSC sees is \(\delta_k\), and by the stiffness
+  relationship above, the contact force on the object is:
+</p>
+<div class="eq">
+  \[
+    f_\text{contact} = K_p\,\delta_k
+  \]
+</div>
+<p>
+  C3 does not need to reason about this force explicitly in the objective —
+  the force is a <em>byproduct</em> of the planned position. Larger
+  \(\delta_k\) (deeper desired penetration) means a harder push. To push
+  gently, C3 sets \(\mathbf{x}^\text{des}\) barely past the surface. To push
+  hard, it sets it further in.
+</p>
+
+<div class="card amber">
+  <div class="card-label">What the contact model in C3 does here</div>
+  <p>
+    Inside the C3 planner, \(\boldsymbol{\lambda}_k\) (the contact force) is
+    determined by the complementarity constraint — it is the force that the
+    object surface exerts on the end-effector to prevent penetration.
+    C3 plans \(\mathbf{x}^\text{des}\) and \(\mathbf{u}^\text{des}\) such that
+    the resulting \(\boldsymbol{\lambda}_k\) is large enough to push the object
+    toward the goal. The OSC then ensures the robot physically produces that
+    position trajectory, and the contact force emerges automatically.
+  </p>
+</div>
+
+<!-- ── Why this breaks for grasping ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Why this mechanism breaks for dexterous grasping</p>
+<p>
+  For pushing there is one end-effector and one contact. For the Allegro hand
+  grasping a cube there are four fingers, each pressing from a different face.
+  The implicit force mechanism breaks in three ways:
+</p>
+
+<div class="critique" style="border-color:var(--amber-bd);">
+  <div class="cnum" style="background:var(--amber);">1</div>
+  <h3 style="color:var(--amber);">The cube can move — and all four position errors change simultaneously</h3>
+  <p>
+    For pushing, the object moves in one direction (away from the push).
+    The position error \(\delta\) stays well-defined because the end-effector
+    and the object surface move together.
+  </p>
+  <p>
+    For grasping, if the cube shifts even slightly — say, it drops 1 mm due to
+    gravity — then all four contact surfaces move at once. Fingers on the top face
+    suddenly have larger \(\delta\) (more force), fingers on the bottom face have
+    smaller \(\delta\) (less force). The four contact forces become coupled
+    through the cube's motion and start fighting each other. There is no stable
+    equilibrium from pure position control with four opposing fingers.
+  </p>
+</div>
+
+<div class="critique" style="border-color:var(--amber-bd);">
+  <div class="cnum" style="background:var(--amber);">2</div>
+  <h3 style="color:var(--amber);">The contact force direction is also implicit — and wrong for grasping</h3>
+  <p>
+    For pushing, the contact force direction is always the same as the
+    end-effector's approach direction. This is consistent: you push in one direction.
+  </p>
+  <p>
+    For grasping, each finger must apply a precisely inward normal force.
+    The implicit direction is determined by whichever way the PD law pulls
+    toward \(\mathbf{x}^\text{des}\). If the fingertip is slightly misaligned,
+    the implicit force has a tangential component that tries to slide along the
+    cube face — which the cube resists, creating unwanted moments. The
+    direction is not guaranteed to be purely normal.
+  </p>
+</div>
+
+<div class="critique" style="border-color:var(--amber-bd);">
+  <div class="cnum" style="background:var(--amber);">3</div>
+  <h3 style="color:var(--amber);">There is no way to set internal force independently of task force</h3>
+  <p>
+    For pushing, there is only one contact and one "task": push. The single
+    \(\delta\) controls the single contact force, and that force is the task force.
+  </p>
+  <p>
+    For grasping, we need to decompose contact forces into internal (§4:
+    squeeze, lives in \(\ker(G)\), keeps the grasp stable) and task (produces
+    the desired wrench on the cube). With implicit position control, there is no
+    way to set these two components separately. Any change in \(\mathbf{x}^\text{des}\)
+    for one finger changes both the internal and the task component of that
+    finger's force simultaneously.
+  </p>
+</div>
+
+<div class="card indigo" style="margin-top:1rem;">
+  <div class="card-label">Summary</div>
+  <p>
+    For pushing: one contact, one direction, force = \(K_p \times \delta\) where
+    \(\delta\) is the single well-defined gap between end-effector and object.
+    Contact force is a stable byproduct of position. OSC works perfectly.
+  </p>
+  <p style="margin-top:0.6rem;">
+    For grasping: four contacts, four directions, all coupled through the cube's
+    six degrees of freedom. Cube motion changes all four \(\delta\)s at once
+    in a coupled, unstable way. Contact forces are no longer a stable byproduct
+    of position — they must be controlled explicitly through a force setpoint,
+    which is what the hybrid position + force OSC in §9 Q5 provides.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §11  HOW PUSH ANYTHING ENCODES AND SOLVES THE GOAL
+══════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <span class="slug">§11</span>
+  <h2 id="s11">How Push Anything Encodes the Goal and Solves It Across Distance</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  We trace the full control loop in Push Anything from scratch — what the
+  state contains, how the goal enters the cost, what the optimizer does when
+  the robot is far from the object, what changes the moment contact is made,
+  how the complementarity constraint resolves that transition, and how the
+  final object pose is guaranteed.
+</p>
+
+<!-- ── 1. What is in x ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">1 — What the state x contains and where the goal lives</p>
+
+<p>
+  The full state at timestep \(k\) is:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}_k =
+    \begin{pmatrix}
+      \mathbf{p}_k^e \\ \mathbf{p}_k^o \\ \boldsymbol{\theta}_k^o \\[4pt]
+      \dot{\mathbf{p}}_k^e \\ \dot{\mathbf{p}}_k^o \\ \dot{\boldsymbol{\theta}}_k^o
+    \end{pmatrix}
+    \in \mathbb{R}^{n_x}
+  \]
+</div>
+<p>
+  where \(\mathbf{p}^e \in \mathbb{R}^3\) is the end-effector (Cartesian) position,
+  \(\mathbf{p}^o \in \mathbb{R}^3\) is the object's centre-of-mass position,
+  \(\boldsymbol{\theta}^o \in \mathbb{R}^3\) is the object's orientation
+  (e.g. Euler angles or a rotation vector), and the dotted terms are their
+  velocities. In the 1-object setting, \(n_x = 19\)
+  (3 end-effector + 6 object pose + 3 end-effector velocity + 6 object velocity +
+  1 slack for contact geometry = 19; the paper quotes this number directly).
+  For \(n\) objects the state grows by 12 per additional object.
+</p>
+
+<p>
+  The goal is a <em>desired state</em>:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}^\text{goal} =
+    \begin{pmatrix}
+      \mathbf{p}^{e,\text{nom}} \\ \mathbf{p}^{o,\text{goal}} \\ \boldsymbol{\theta}^{o,\text{goal}} \\ \mathbf{0} \\ \mathbf{0} \\ \mathbf{0}
+    \end{pmatrix}
+  \]
+</div>
+<p>
+  The object components are set to the desired goal pose (specified by the
+  user or a task planner). The velocity components are zero (we want the
+  object to arrive still). The end-effector component \(\mathbf{p}^{e,\text{nom}}\)
+  is a soft nominal position — it matters much less than the object pose in
+  the cost weights, and it is overridden by the sampling layer anyway.
+  <strong>The goal is entirely about where the object ends up, not about where
+  the end-effector ends up.</strong>
+</p>
+
+<!-- ── 2. The cost function ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">2 — The cost function: how the goal pulls the optimizer</p>
+
+<p>
+  Define the error relative to the goal:
+  \(\tilde{\mathbf{x}}_k = \mathbf{x}_k - \mathbf{x}^\text{goal}\).
+  The objective is:
+</p>
+<div class="eq">
+  \[
+    \min \;\sum_{k=0}^{N-1} \Bigl(\tilde{\mathbf{x}}_k^\top Q_k\, \tilde{\mathbf{x}}_k
+    + \mathbf{u}_k^\top R_k\, \mathbf{u}_k\Bigr)
+    + \tilde{\mathbf{x}}_N^\top Q_N\, \tilde{\mathbf{x}}_N
+  \]
+</div>
+<p>
+  \(Q_k\) and \(Q_N\) are diagonal positive-semidefinite matrices.
+  Their diagonal entries are the weights on each component of the state error.
+  The object pose components get <em>large weights</em>; the end-effector
+  position components get <em>small weights</em> (or zero). So the optimizer
+  cares overwhelmingly about whether the object reaches its goal pose,
+  and only mildly about where the end-effector sits.
+  \(R_k \succ 0\) penalises large control forces (keeps the robot from
+  being unnecessarily aggressive).
+</p>
+<p>
+  \(Q_N\) (the terminal weight) is typically set much larger than the stage
+  weights \(Q_k\). This concentrates the pull toward the goal at the end of
+  the planning horizon, which encourages the optimizer to find trajectories
+  that arrive close to the goal after \(N\) steps.
+</p>
+
+<!-- ── 3. The three-layer architecture ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">3 — The three-layer architecture</p>
+
+<p>
+  Before tracing the physics, it helps to see all three layers and what
+  problem each one solves:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Name</th><th>Input</th><th>Output</th><th>Solves</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Layer 1</strong></td>
+        <td>Sampling</td>
+        <td>Current object pose, goal pose, object mesh</td>
+        <td>Best candidate end-effector position \(\mathbf{p}^{e,*}\)</td>
+        <td>Global guidance: "where should the end-effector be to make progress?"</td>
+      </tr>
+      <tr>
+        <td><strong>Layer 2</strong></td>
+        <td>C3+ (CI-MPC)</td>
+        <td>\(\hat{\mathbf{x}}\), \(\mathbf{p}^{e,*}\) as initial end-effector setpoint, goal \(\mathbf{x}^\text{goal}\)</td>
+        <td>Desired end-effector trajectory \(\mathbf{x}^\text{des}_{0:N}\), contact forces \(\boldsymbol{\lambda}_{0:N-1}\)</td>
+        <td>Local contact-aware planning: "given we're here, what forces to apply?"</td>
+      </tr>
+      <tr>
+        <td><strong>Layer 3</strong></td>
+        <td>OSC</td>
+        <td>Desired trajectory from C3+, current joint state</td>
+        <td>Joint torques \(\boldsymbol{\tau}\)</td>
+        <td>Low-level tracking: "what motor commands achieve this trajectory?"</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Layers 2 and 3 run at every control step. Layer 1 re-evaluates whenever
+  the current candidate is no longer making progress.
+</p>
+
+<!-- ── 4. Far away: no contact ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">4 — When the robot and object are far apart: the sampling layer rescues the optimizer</p>
+
+<p>
+  Suppose the object is 0.5 m away from the end-effector. What does C3+
+  see? The gap function \(\Phi\) between the end-effector and the object
+  is large and positive. The complementarity constraint says:
+</p>
+<div class="eq">
+  \[
+    0 \leq \boldsymbol{\lambda}_k \;\perp\; \Phi(\mathbf{x}_k) \geq 0
+  \]
+</div>
+<p>
+  Since \(\Phi \gg 0\) (large gap), the complementarity forces
+  \(\boldsymbol{\lambda}_k = 0\) for all \(k\) in the horizon.
+  No contact forces exist. The problem degenerates to a pure
+  state-tracking QP with no coupling to the object at all:
+</p>
+<div class="eq">
+  \[
+    \min \;\sum_{k=0}^{N-1} \Bigl(\tilde{\mathbf{x}}_k^\top Q_k \tilde{\mathbf{x}}_k + \mathbf{u}_k^\top R_k \mathbf{u}_k\Bigr)
+    \quad \text{s.t.}\quad \mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + \mathbf{d},\quad \boldsymbol{\lambda}_k = \mathbf{0}
+  \]
+</div>
+<p>
+  The optimizer can only move the end-effector. But the object's state
+  cost is in \(Q_k\) — and \(\mathbf{u}_k\) has no effect on the object
+  when \(\boldsymbol{\lambda} = \mathbf{0}\). So the object error in the
+  cost is fixed no matter what \(\mathbf{u}_k\) is chosen.
+  <strong>The gradient of the cost with respect to \(\mathbf{u}_k\) says
+  nothing about the object.</strong> The optimizer is stuck in a local minimum:
+  it cannot see a path that reduces object error because the horizon is too
+  short to bridge the distance.
+</p>
+
+<div class="card amber">
+  <div class="card-label">Why pure local MPC fails for distant objects</div>
+  <p>
+    The LCS model is a <em>local linearisation</em> valid only near the current
+    state. When the object is far away, the linearisation window does not reach
+    the object. Within the planning horizon \(N \cdot \Delta t\) seconds, the
+    end-effector physically cannot reach the object. The cost gradient with
+    respect to all controls is dominated by the end-effector regularisation term
+    \(R_k\), which just says "do nothing." The controller freezes or drifts randomly.
+  </p>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">How sampling solves the far-away problem</p>
+<p>
+  Instead of running C3+ from the current end-effector position, Push Anything
+  samples \(S\) candidate end-effector positions around the <em>object surface</em>:
+</p>
+<ol>
+  <li>Pick a random face of the object mesh (weighted by area)</li>
+  <li>Project outward along that face's normal by a fixed distance</li>
+  <li>Project down to a fixed world height (table-top plane)</li>
+  <li>Reject if too close to any object</li>
+</ol>
+<p>
+  All candidates are on or near the object, so starting from any one of
+  them, C3+ <em>is</em> within reach of the object in the planning horizon.
+  For each candidate \(s\), C3+ is solved starting with the end-effector
+  hypothetically at that candidate position. The total cost is:
+</p>
+<div class="eq">
+  \[
+    \text{cost}_s = \underbrace{J_\text{travel}(s)}_{\text{cost to move end-effector to candidate } s} + \underbrace{J_\text{C3+}(s)}_{\text{C3+ objective cost from candidate } s}
+  \]
+</div>
+<p>
+  The candidate with the lowest total cost wins. If it differs from the
+  current end-effector position, the robot first moves there along a
+  collision-free straight-line path (no contact reasoning needed —
+  the object is not in the way), and then C3+ takes over.
+  This is why the paper separates execution into a <em>contact-free
+  repositioning phase</em> and a <em>contact-rich pushing phase</em>.
+</p>
+
+<!-- ── 5. In contact ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">5 — When the end-effector touches the object: contact forces enter the optimizer</p>
+
+<p>
+  The end-effector has moved to the chosen candidate position. It is now
+  adjacent to the object surface. The gap \(\Phi\) is near zero. At the
+  next control step, C3+ starts a solve where the horizon <em>includes
+  timesteps at which contact is active</em>. Specifically, the complementarity
+  variable \(\boldsymbol{\lambda}_k\) can now be nonzero.
+</p>
+
+<p>
+  The state at contact includes both the end-effector and the object.
+  The dynamics equation that C3+ works with is (from the linearised LCS):
+</p>
+<div class="eq">
+  \[
+    \underbrace{\begin{pmatrix}\mathbf{p}^e_{k+1} \\ \mathbf{p}^o_{k+1} \\ \boldsymbol{\theta}^o_{k+1} \\ \dot{(\cdots)}_{k+1}\end{pmatrix}}_{\mathbf{x}_{k+1}}
+    = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d}
+  \]
+</div>
+<p>
+  The matrix \(D\) is the key. It maps contact forces \(\boldsymbol{\lambda}_k\)
+  to changes in the <em>object's</em> position and velocity. Concretely:
+  \(D\) has large entries coupling \(\lambda_n\) (normal contact force) to
+  \(\dot{\mathbf{p}}^o\) (object velocity). So when \(\boldsymbol{\lambda}_k > 0\),
+  the object accelerates. The optimizer now has a handle on the object.
+</p>
+
+<p>
+  The cost gradient with respect to \(\mathbf{u}_k\) now has a path to reducing
+  object error:
+</p>
+<div class="eq">
+  \[
+    \frac{\partial \tilde{\mathbf{x}}_{k+1}}{\partial \mathbf{u}_k}
+    = B + D\,\frac{\partial \boldsymbol{\lambda}_k}{\partial \mathbf{u}_k}
+    \;\neq\; \mathbf{0}
+  \]
+</div>
+<p>
+  The term \(D\,\frac{\partial \boldsymbol{\lambda}}{\partial \mathbf{u}}\)
+  is nonzero as long as contact is active (i.e., as long as \(\Phi \approx 0\)
+  and the complementarity allows force). The optimizer finds the combination of
+  \(\mathbf{u}_k\) (end-effector Cartesian force) and \(\boldsymbol{\lambda}_k\)
+  (contact force at the object surface) that drives the object toward the goal.
+</p>
+
+<!-- ── 6. How complementarity resolves the transition ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">6 — How the complementarity constraint resolves the contact transition</p>
+
+<p>
+  At each ADMM step, the δ-update projects \((\boldsymbol{\lambda}_k, \boldsymbol{\eta}_k)\)
+  onto the L-shaped complementarity set, per element. Consider a single
+  contact pair with gap \(\eta = \Phi\) and contact force \(\lambda\):
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Situation</th><th>\(\lambda^\circ\) (force candidate)</th><th>\(\eta^\circ = \Phi\) (gap candidate)</th><th>Projection result</th><th>Physical meaning</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Far from object</td>
+        <td>\(\approx 0\) (no force needed)</td>
+        <td>\(\gg 0\) (large gap)</td>
+        <td>\(\hat\lambda = 0,\; \hat\eta = \eta^\circ\)</td>
+        <td>Gap wins: contact is off, force is zero</td>
+      </tr>
+      <tr>
+        <td>Approaching</td>
+        <td>Small positive</td>
+        <td>Small positive</td>
+        <td>Whichever is larger keeps its value; the other goes to zero</td>
+        <td>Optimizer decides whether to initiate contact this step</td>
+      </tr>
+      <tr>
+        <td>In contact</td>
+        <td>\(\gg 0\) (large force needed to move object)</td>
+        <td>\(\approx 0\) (gap is closed)</td>
+        <td>\(\hat\lambda = \lambda^\circ,\; \hat\eta = 0\)</td>
+        <td>Force wins: contact is on, gap is zero</td>
+      </tr>
+      <tr>
+        <td>Losing contact</td>
+        <td>Goes to zero (object pulling away)</td>
+        <td>Becomes positive again</td>
+        <td>\(\hat\lambda = 0,\; \hat\eta = \eta^\circ\)</td>
+        <td>Contact drops automatically as gap reopens</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  No human decision is needed to switch between "contact on" and
+  "contact off." The projection step does it automatically, per element,
+  in closed form, at every ADMM iteration. The optimizer discovers
+  <em>when</em> contact should be made and broken by finding the sequence
+  \((\boldsymbol{\lambda}_k, \boldsymbol{\eta}_k)\) that minimises cost
+  subject to these projections converging.
+</p>
+
+<div class="card green">
+  <div class="card-label">What "contact-implicit" means</div>
+  <p>
+    The contact schedule — which contacts are active at which timesteps — is
+    never specified by the user. It is a <em>result</em> of the optimisation.
+    The complementarity constraint encodes the physics that determines when
+    contact is possible, and the ADMM projection enforces it. The optimizer
+    chooses to make contact whenever doing so reduces the cost (i.e., whenever
+    pressing the object actually moves it toward the goal).
+  </p>
+</div>
+
+<!-- ── 7. What the optimizer produces at each step ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">7 — What comes out of one C3+ solve and what the robot does with it</p>
+
+<p>
+  After ADMM converges (or is early-terminated after a fixed number of
+  iterations), the solve produces:
+</p>
+<ul>
+  <li>\(\mathbf{x}^\text{des}_{0:N}\) — the planned state trajectory over the horizon</li>
+  <li>\(\boldsymbol{\lambda}^\text{des}_{0:N-1}\) — the planned contact forces at each step</li>
+  <li>\(\mathbf{u}^\text{des}_{0:N-1}\) — the planned control inputs (Cartesian forces)</li>
+</ul>
+<p>
+  Only \(\mathbf{u}_0\) and \(\mathbf{x}^\text{des}_0\) are applied immediately
+  (receding horizon). The rest are discarded and recomputed next step.
+</p>
+<p>
+  The low-level impedance controller (OSC) then tracks
+  \(\mathbf{x}^\text{des}_0\) using the full Franka Panda model:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\tau} = J_f^\top \Lambda
+    \begin{pmatrix}K & 0 \\ 0 & B\end{pmatrix}
+    \tilde{\mathbf{x}}^e
+    + J_f^\top \tau_{ff}
+    + N_f \bigl(K_n(\mathbf{q}^d_f - \mathbf{q}^f) + B_n(\dot{\mathbf{q}}^d_f - \dot{\mathbf{q}}^f)\bigr)
+  \]
+</div>
+<p>
+  where \(\tilde{\mathbf{x}}^e = \mathbf{x}^{e,\text{des}} - \mathbf{x}^e\)
+  is the end-effector tracking error, \(\Lambda = (J_f M_f^{-1} J_f^\top)^{-1}\)
+  is the end-effector inertia matrix, and the feedforward term
+  \(\tau_{ff} = J_c^\top \boldsymbol{\lambda}^\text{des}\) directly
+  injects the desired contact forces from C3+ as a torque feedforward —
+  this is what prevents the problem in §9 Q5 even for this system:
+  even when position error is zero, \(\boldsymbol{\lambda}^\text{des}\)
+  keeps the end-effector pressing.
+</p>
+
+<!-- ── 8. How the final pose is ensured ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">8 — How the final object pose is ensured and maintained</p>
+
+<p>
+  There is no single solve that guarantees the object reaches the goal.
+  Instead, the system relies on three overlapping mechanisms:
+</p>
+
+<div class="card blue">
+  <div class="card-label">Mechanism 1 — Receding horizon feedback</div>
+  <p>
+    At every control step, the vision system measures the current object pose
+    \((\mathbf{p}^o, \boldsymbol{\theta}^o)\) and feeds it into the new
+    \(\hat{\mathbf{x}}\). C3+ re-solves with the updated error
+    \(\tilde{\mathbf{x}} = \hat{\mathbf{x}} - \mathbf{x}^\text{goal}\).
+    Any drift, slip, or disturbance is corrected automatically on the next
+    solve — the goal error is always recomputed fresh. The controller never
+    "forgets" where the goal is or accumulates uncorrected error.
+  </p>
+</div>
+
+<div class="card blue">
+  <div class="card-label">Mechanism 2 — Terminal cost Q_N drives convergence</div>
+  <p>
+    The large terminal weight \(Q_N\) forces the \(N\)-step plan to end near
+    the goal even if intermediate steps are not. Over successive control
+    steps, the receding horizon marches the actual state toward this terminal
+    target. As the object gets closer to the goal, the terminal cost error
+    shrinks, the optimizer needs less aggressive contacts, and the system
+    naturally slows and fine-tunes.
+  </p>
+</div>
+
+<div class="card blue">
+  <div class="card-label">Mechanism 3 — Termination criterion and re-sampling</div>
+  <p>
+    The object pose is continuously compared against the goal within specified
+    tolerances (position error \(< \epsilon_p\), orientation error
+    \(< \epsilon_\theta\)). Once inside tolerance, the current task is declared
+    complete. If the object overshoots or drifts after reaching the goal, the
+    controller detects the error immediately (the receding horizon cost is no
+    longer near-zero) and begins corrective pushes. The object is not released
+    and forgotten — the controller actively holds it near the goal by
+    continuing to run.
+  </p>
+</div>
+
+<blockquote>
+  <p>
+    The goal pose is never guaranteed in a single trajectory solve.
+    It is guaranteed by the combination of continuous vision feedback,
+    a cost function that always penalises the current object pose error,
+    and a receding horizon that re-optimises every control step. The
+    system asymptotically converges to the goal as long as the physics
+    are reachable and the solver finds a cost-reducing contact sequence
+    at each step.
+  </p>
+</blockquote>
+
+</main>
+
+<footer>
+  dairlib &nbsp;/&nbsp; grasp_theory_critique.html
+</footer>
+
+</body>
+</html>

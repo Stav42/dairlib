@@ -1,0 +1,2272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>C3 — How the Optimization is Actually Solved</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script>
+  MathJax = {
+    tex: {
+      inlineMath:  [['\\(', '\\)']],
+      displayMath: [['\\[', '\\]']]
+    },
+    chtml: { scale: 1.05 }
+  };
+  </script>
+  <script id="MathJax-script" async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f7f6f2;
+      --white:     #ffffff;
+      --text:      #18181b;
+      --sub:       #374151;
+      --muted:     #9ca3af;
+      --border:    #e5e7eb;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+      --shadow:    0 1px 3px rgba(0,0,0,0.07), 0 6px 18px rgba(0,0,0,0.05);
+
+      --blue:      #1d4ed8;
+      --blue-bg:   #eff6ff;
+      --blue-bd:   #bfdbfe;
+
+      --green:     #166534;
+      --green-bg:  #f0fdf4;
+      --green-bd:  #86efac;
+
+      --red:       #991b1b;
+      --red-bg:    #fff5f5;
+      --red-bd:    #fca5a5;
+
+      --amber:     #92400e;
+      --amber-bg:  #fffbeb;
+      --amber-bd:  #fcd34d;
+
+      --indigo:    #4338ca;
+      --indigo-bg: #eef2ff;
+      --indigo-bd: #c7d2fe;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.78;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 4.5rem 2.5rem 3.5rem;
+      text-align: center;
+    }
+
+    .pill {
+      display: inline-block;
+      background: var(--indigo-bg);
+      color: var(--indigo);
+      border: 1px solid var(--indigo-bd);
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.3rem 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    header h1 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: clamp(2rem, 5vw, 2.9rem);
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      max-width: 700px;
+      margin: 0 auto 1.1rem;
+    }
+
+    header p.lead {
+      color: #6b7280;
+      max-width: 600px;
+      margin: 0 auto;
+      font-size: 0.97rem;
+      line-height: 1.65;
+    }
+
+    /* ── Main ────────────────────────────────────────────── */
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 3rem 2.5rem 5rem;
+    }
+
+    /* ── Section headers ─────────────────────────────────── */
+    .sec {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin: 3.2rem 0 1.4rem;
+    }
+
+    .sec .slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+
+    .sec h2 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.025em;
+      flex-shrink: 0;
+    }
+
+    .sec .rule { flex: 1; height: 1px; background: var(--border); }
+
+    /* ── Prose ───────────────────────────────────────────── */
+    p { margin-bottom: 0.95rem; color: var(--sub); }
+    p:last-child { margin-bottom: 0; }
+    strong { color: var(--text); font-weight: 600; }
+    em { font-style: italic; }
+
+    ul, ol { padding-left: 1.5rem; margin-bottom: 0.95rem; }
+    li { margin-bottom: 0.3rem; color: var(--sub); }
+
+    /* ── Cards ───────────────────────────────────────────── */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card.blue   { border-left: 3px solid var(--blue);   background: var(--blue-bg);  border-color: var(--blue-bd); }
+    .card.green  { border-left: 3px solid var(--green);  background: var(--green-bg); border-color: var(--green-bd); }
+    .card.red    { border-left: 3px solid var(--red);    background: var(--red-bg);   border-color: var(--red-bd); }
+    .card.amber  { border-left: 3px solid var(--amber);  background: var(--amber-bg); border-color: var(--amber-bd); }
+    .card.indigo { border-left: 3px solid var(--indigo); background: var(--indigo-bg);border-color: var(--indigo-bd); }
+
+    .card-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+    .card.blue   .card-label { color: var(--blue); }
+    .card.green  .card-label { color: var(--green); }
+    .card.red    .card-label { color: var(--red); }
+    .card.amber  .card-label { color: var(--amber); }
+    .card.indigo .card-label { color: var(--indigo); }
+
+    .card h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.55rem;
+    }
+
+    /* ── Critique / callout ──────────────────────────────── */
+    .callout {
+      background: var(--white);
+      border: 1px solid var(--amber-bd);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1.1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .callout h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--amber);
+      margin-bottom: 0.55rem;
+    }
+
+    .cnum {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.9rem;
+      height: 1.9rem;
+      border-radius: 50%;
+      background: var(--amber);
+      color: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.7rem;
+    }
+
+    /* ── Math ────────────────────────────────────────────── */
+    .eq {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+      text-align: center;
+    }
+
+    .eq-set {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--indigo);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem 1.2rem 1.7rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .eq-set p {
+      margin: 0;
+      line-height: 2.4;
+      color: var(--sub);
+      font-size: 0.95rem;
+    }
+
+    /* ── Code ────────────────────────────────────────────── */
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.84em;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 0.12em 0.42em;
+      border-radius: 4px;
+      color: #374151;
+    }
+
+    pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      box-shadow: var(--shadow-sm);
+    }
+
+    pre .kw  { color: #93c5fd; }
+    pre .ty  { color: #6ee7b7; }
+    pre .cm  { color: #6b7280; }
+    pre .st  { color: #fcd34d; }
+
+    /* ── Tables ──────────────────────────────────────────── */
+    .tbl-wrap {
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      margin: 1.1rem 0;
+    }
+
+    table { width: 100%; border-collapse: collapse; background: var(--white); font-size: 0.9rem; }
+    thead tr { background: #f9fafb; }
+    th {
+      padding: 0.7rem 1.1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #6b7280;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 0.65rem 1.1rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--sub); }
+    tr:last-child td { border-bottom: none; }
+
+    .yes    { color: var(--green); font-weight: 600; }
+    .no     { color: var(--red);   font-weight: 600; }
+    .cond   { color: var(--amber); font-weight: 600; }
+
+    /* ── Two-column grid ─────────────────────────────────── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 560px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Three-column grid ───────────────────────────────── */
+    .three-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 700px) { .three-col { grid-template-columns: 1fr; } }
+
+    /* ── Blockquote ──────────────────────────────────────── */
+    blockquote {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-bg);
+      border-radius: 0 8px 8px 0;
+      padding: 0.9rem 1.3rem;
+      margin: 1.2rem 0;
+    }
+    blockquote p { color: #1e3a8a; font-style: italic; }
+
+    /* ── Divider ─────────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+    /* ── Step badge ──────────────────────────────────────── */
+    .step-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--indigo-bg);
+      border: 1px solid var(--indigo-bd);
+      border-radius: 8px;
+      padding: 0.3rem 0.8rem;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--indigo);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.6rem;
+    }
+
+    /* ── Pipeline flow ───────────────────────────────────── */
+    .pipeline {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin: 1.2rem 0;
+      overflow-x: auto;
+    }
+
+    .pipe-box {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.9rem 1.1rem;
+      flex: 1;
+      min-width: 140px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .pipe-arrow {
+      display: flex;
+      align-items: center;
+      padding: 0 0.5rem;
+      color: var(--muted);
+      font-size: 1.3rem;
+      flex-shrink: 0;
+    }
+
+    .pipe-box .pipe-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--indigo);
+      margin-bottom: 0.3rem;
+    }
+
+    .pipe-box .pipe-name {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.2rem;
+    }
+
+    .pipe-box .pipe-detail {
+      font-size: 0.75rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* ── Table of Contents ───────────────────────────────── */
+    #toc {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 1.5rem 0;
+    }
+
+    #toc .toc-title {
+      max-width: 1200px;
+      margin: 0 auto 0.9rem;
+      padding: 0 2.5rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    #toc .toc-list {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 2.5rem;
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.15rem 2rem;
+    }
+
+    #toc .toc-list li { margin: 0; }
+
+    #toc .toc-list a {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.88rem;
+      color: var(--sub);
+      transition: background 0.12s, color 0.12s;
+    }
+
+    #toc .toc-list a:hover {
+      background: var(--indigo-bg);
+      color: var(--indigo);
+    }
+
+    .toc-slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      flex-shrink: 0;
+      min-width: 2rem;
+    }
+
+    #toc .toc-list a:hover .toc-slug { color: var(--indigo); }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--white);
+    }
+
+    /* ── External link ───────────────────────────────────── */
+    a { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+    a:hover { color: var(--indigo); }
+
+    /* ── Collapsible sections ────────────────────────────── */
+    details {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin: 1.2rem 0;
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+
+    details[open] {
+      box-shadow: var(--shadow);
+    }
+
+    summary {
+      cursor: pointer;
+      padding: 1rem 1.5rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    summary:hover { background: #f9fafb; }
+
+    summary::-webkit-details-marker { display: none; }
+
+    summary::before {
+      content: "▶";
+      font-size: 0.7rem;
+      color: var(--indigo);
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+
+    details[open] > summary::before {
+      transform: rotate(90deg);
+    }
+
+    .details-body {
+      padding: 0 1.5rem 1.5rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .details-body > p:first-child { margin-top: 1rem; }
+
+    .summary-subtitle {
+      font-weight: 400;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-left: 0.3rem;
+    }
+
+    /* ── Term glossary inline ────────────────────────────── */
+    .term {
+      background: #fef3c7;
+      border-bottom: 2px solid #f59e0b;
+      padding: 0.05em 0.3em;
+      border-radius: 3px;
+      font-weight: 600;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════════════════════ -->
+<header>
+  <div class="pill">Robotics &nbsp;·&nbsp; Contact-Implicit MPC</div>
+  <h1>C3 — How the Optimization is Actually Solved</h1>
+  <p class="lead">
+    A ground-up walkthrough of how the trajectory optimization problem in
+    Push Anything is formulated, how the non-convex complementarity constraint
+    is handled by ADMM, and exactly which file in the codebase does what.
+    References <a href="grasp_theory_critique.html">the companion document</a>
+    throughout.
+  </p>
+</header>
+
+<!-- ── Table of Contents ── -->
+<nav id="toc" aria-label="Table of contents">
+  <p class="toc-title">Contents</p>
+  <ol class="toc-list">
+    <li><a href="#s0"><span class="toc-slug">§0</span>One Correction First: D, Not Q, Couples Forces to Motion</a></li>
+    <li><a href="#s1"><span class="toc-slug">§1</span>The Full Optimization Problem: QPCC</a></li>
+    <li><a href="#s2"><span class="toc-slug">§2</span>What x, u, λ, and η Actually Are in Code</a></li>
+    <li><a href="#s3"><span class="toc-slug">§3</span>Building the LCS: AutoDiff Linearization via Drake</a></li>
+    <li><a href="#s4"><span class="toc-slug">§4</span>Why the QPCC Is Hard and What ADMM Does About It</a></li>
+    <li><a href="#s5"><span class="toc-slug">§5</span>Consensus Reformulation: Setting Up ADMM</a></li>
+    <li><a href="#s6"><span class="toc-slug">§6</span>z-update: A Standard QP Solved with OSQP</a></li>
+    <li><a href="#s7"><span class="toc-slug">§7</span>δ-update: Three Strategies for Projecting onto Complementarity</a></li>
+    <li><a href="#s8"><span class="toc-slug">§8</span>w-update, Convergence, and What Comes Out</a></li>
+    <li><a href="#s9"><span class="toc-slug">§9</span>The Sampling Outer Loop</a></li>
+    <li><a href="#s10"><span class="toc-slug">§10</span>Cost Matrices Q, R, G, U and the Two-Phase Switching</a></li>
+    <li><a href="#s11"><span class="toc-slug">§11</span>Software Architecture: Which File Does What</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ══════════════════════════════════════════════════════════
+     §0  ONE CORRECTION FIRST
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s0">
+  <span class="slug">§0</span>
+  <h2>One Correction First: D, Not Q, Couples Forces to Object Motion</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Before going further, one conceptual correction to the mental model in the question.
+  The statement was: <em>"The Q matrix is the coupling between lambda force and the
+  motion of the object."</em> This is not right. There are two completely separate matrices
+  at play, and confusing them will make the rest of the architecture hard to follow.
+</p>
+
+<div class="two-col">
+  <div class="card indigo" style="margin-bottom:0;">
+    <div class="card-label">D — The Dynamics Coupling</div>
+    <h3>\(D \in \mathbb{R}^{n_x \times n_\lambda}\)</h3>
+    <p>
+      Appears in the LCS dynamics equation:
+    </p>
+    <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.4rem 0;">
+      \[\mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + \mathbf{D}\boldsymbol{\lambda}_k + \mathbf{d}\]
+    </div>
+    <p>
+      \(D\) is the matrix that physically <em>couples contact forces to object acceleration</em>.
+      Its rows corresponding to the object's velocity states will be nonzero; rows
+      corresponding to the end-effector states will be near zero (the end-effector is
+      not pushed around by contact forces — it is the agent). \(D\) comes entirely
+      from the linearized multibody physics.
+    </p>
+  </div>
+  <div class="card amber" style="margin-bottom:0;">
+    <div class="card-label">Q — The Stage Cost</div>
+    <h3>\(Q \in \mathbb{R}^{n_x \times n_x}\)</h3>
+    <p>
+      Appears in the objective function only:
+    </p>
+    <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.4rem 0;">
+      \[\min \;\sum_{k=0}^{N-1} \tilde{\mathbf{x}}_k^\top Q\, \tilde{\mathbf{x}}_k + \cdots\]
+    </div>
+    <p>
+      \(Q\) penalises deviation from the desired state — it has nothing to do with
+      forces. \(Q\) is diagonal, hand-tuned, and its large entries (on the object pose
+      rows) simply tell the optimizer <em>to care more about where the object ends up</em>
+      than where the end-effector ends up. Forces do not appear in \(Q\) at all.
+    </p>
+  </div>
+</div>
+
+<blockquote>
+  <p>
+    \(D\) is the bridge between contact forces and object motion — it comes from physics.
+    \(Q\) is the goal specification — it comes from the designer. Confusing them conflates
+    how the optimizer reasons about goals with how physics propagates forces.
+  </p>
+</blockquote>
+
+<p>
+  With that settled: the whole architecture is described in
+  <a href="grasp_theory_critique.html#s7">§7</a> and
+  <a href="grasp_theory_critique.html#s9">§9 Q3–Q4</a> of the companion document
+  at a high level. This document goes deeper — from the mathematical form of the QPCC
+  all the way down to which OSQP call solves it.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §1  THE FULL OPTIMIZATION PROBLEM: QPCC
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s1">
+  <span class="slug">§1</span>
+  <h2>The Full Optimization Problem: QPCC</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  At every control step, C3 solves the following problem over a horizon of
+  \(N\) timesteps. The decision variables are the full state trajectory
+  \(\mathbf{x}_{0:N}\), the control trajectory \(\mathbf{u}_{0:N-1}\),
+  the contact force trajectory \(\boldsymbol{\lambda}_{0:N-1}\), and the
+  complementarity gap trajectory \(\boldsymbol{\eta}_{0:N-1}\).
+</p>
+
+<div class="card blue">
+  <div class="card-label">The QPCC — Quadratic Program with Complementarity Constraints</div>
+  <div class="eq-set" style="background:transparent;border:none;box-shadow:none;margin:0.5rem 0;">
+    <p>\(\displaystyle\min_{\mathbf{x}_{0:N},\;\mathbf{u}_{0:N-1},\;\boldsymbol{\lambda}_{0:N-1},\;\boldsymbol{\eta}_{0:N-1}} \quad \sum_{k=0}^{N-1}\Bigl(\tilde{\mathbf{x}}_k^\top Q_k\,\tilde{\mathbf{x}}_k + \mathbf{u}_k^\top R_k\,\mathbf{u}_k\Bigr) + \tilde{\mathbf{x}}_N^\top Q_N\,\tilde{\mathbf{x}}_N\)</p>
+    <p>\(\text{subject to}\)</p>
+    <p>\(\quad\mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d} \quad \forall k \quad\textbf{[linearised dynamics]}\)</p>
+    <p>\(\quad\boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c} \quad \forall k \quad\textbf{[gap / slack definition]}\)</p>
+    <p>\(\quad 0 \leq \boldsymbol{\lambda}_k \;\perp\; \boldsymbol{\eta}_k \geq 0 \quad \forall k \quad\textbf{[complementarity — the hard constraint]}\)</p>
+    <p>\(\quad \mathbf{x}_0 = \hat{\mathbf{x}} \quad\textbf{[initial condition: current measured state]}\)</p>
+    <p>\(\quad \tilde{\mathbf{x}}_k = \mathbf{x}_k - \mathbf{x}^\text{goal} \quad\textbf{[state error relative to goal]}\)</p>
+  </div>
+</div>
+
+<p>
+  Before going further, let's define three terms that just appeared:
+</p>
+
+<ul>
+  <li><span class="term">Linearising</span> means approximating a curved (nonlinear) relationship with a straight-line (linear) one, valid near the current operating point. Think of zooming in on a curve until it looks straight. The robot's real physics equations are nonlinear — linearising them gives us the constant matrices \(A, B, D, \ldots\) that a fast QP solver can handle.</li>
+  <li><span class="term">ADMM</span> (Alternating Direction Method of Multipliers) is the algorithm that actually solves this problem. It splits the hard problem into two easier sub-problems and alternates between them. We explain it fully in §4–§8. For now, just know: "one ADMM solve" = one complete run of this alternating algorithm (typically 10–50 iterations of back-and-forth between the two sub-problems) to produce a plan for the next \(N\) timesteps.</li>
+  <li><span class="term">LCS</span> (Linear Complementarity System) is the name for the pair of linear equations above (dynamics + gap definition) together with the complementarity constraint. It's the linearised version of the full nonlinear contact dynamics, packaged as a set of constant matrices.</li>
+</ul>
+
+<p>
+  The matrices \(A, B, D, E, F, H\) and vectors \(\mathbf{c}, \mathbf{d}\) come from
+  linearising the full nonlinear contact dynamics at the current state — they change
+  every control step and are held fixed during one ADMM solve. These are the LCS matrices
+  (explained in detail in §3). The collapsible below gives a quick-reference summary
+  of exactly what each matrix does and how it is computed.
+</p>
+
+<details>
+  <summary>
+    How are A, B, D, d, E, F, H, c actually calculated?
+    <span class="summary-subtitle">— click to expand the full explanation</span>
+  </summary>
+  <div class="details-body">
+
+    <p><strong>Quick summary (TL;DR):</strong> The real robot obeys nonlinear physics equations. A QP solver can only handle linear equations. So at every control step, we take the robot's physics simulator (Drake's <code>MultibodyPlant</code>), run it at the current state, and extract the derivatives (Jacobians) of its output with respect to each input. These derivatives become the constant matrices \(A, B, D, E, F, H\). They form a linear approximation that is accurate near the current state. The two equations they populate are:</p>
+
+    <div class="eq-set">
+      <p>\(\mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d} \quad\) <strong>[dynamics: how the state evolves]</strong></p>
+      <p>\(\boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c} \quad\) <strong>[gap definition: what the complementarity partner of λ is]</strong></p>
+    </div>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">But wait — what is the function \(f\) we are differentiating?</p>
+
+    <p>There is no closed-form equation written on paper for \(f\). Instead, <strong>Drake's <code>MultibodyPlant</code> <em>is</em> the function \(f\)</strong>. It is a physics simulator: you feed it the current state \(\mathbf{x}\), control input \(\mathbf{u}\), and contact forces \(\boldsymbol{\lambda}\), and it internally runs all the rigid-body dynamics computations (mass matrices, Coriolis terms, gravity, contact geometry, joint constraints, numerical integration) and spits out the next state \(\mathbf{x}_{k+1}\). The simulator is a giant computation graph made of thousands of arithmetic operations — additions, multiplications, trig functions, matrix solves — but there is no single formula you could write down.</p>
+
+    <p>So how do we get the Jacobians \(\frac{\partial f}{\partial \mathbf{x}}\), \(\frac{\partial f}{\partial \mathbf{u}}\), \(\frac{\partial f}{\partial \boldsymbol{\lambda}}\) from a simulator that has no closed-form equation? That is exactly what <span class="term">AutoDiff</span> (automatic differentiation) solves. See the detailed explanation below the tables.</p>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The dynamics equation — matrices A, B, D, d</p>
+
+    <p>This equation says: "given where we are now (\(\mathbf{x}_k\)), what force we apply (\(\mathbf{u}_k\)), and what contact forces arise (\(\boldsymbol{\lambda}_k\)), where will we be at the next timestep (\(\mathbf{x}_{k+1}\))?"</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Matrix</th><th>Size</th><th>What it encodes</th><th>How it is computed</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>\(A\)</td>
+            <td>\(n_x \times n_x\)</td>
+            <td>How the current state propagates to the next state on its own (inertia, gravity, damping). This is the Jacobian \(\frac{\partial f}{\partial \mathbf{x}}\) — i.e., how much does each component of the next state \(\mathbf{x}_{k+1}\) change when you change each component of the current state \(\mathbf{x}_k\)?</td>
+            <td>AutoDiff extracts this from the simulator in one pass. The input being differentiated is \(\mathbf{x}_k\) (the current state vector — positions and velocities of end-effector and object). The output is \(\mathbf{x}_{k+1}\) (the next state). Each column of \(A\) tells you how one input state variable affects all output state variables.</td>
+          </tr>
+          <tr>
+            <td>\(B\)</td>
+            <td>\(n_x \times n_u\)</td>
+            <td>How the control input \(\mathbf{u}\) (end-effector force command) affects the next state. Jacobian \(\frac{\partial f}{\partial \mathbf{u}}\).</td>
+            <td>AutoDiff extracts this from the simulator in one pass. The input being differentiated is \(\mathbf{u}_k\) (the 3D Cartesian force command to the end-effector). The output is \(\mathbf{x}_{k+1}\). Each column of \(B\) tells you how one component of the force command affects all state variables at the next step.</td>
+          </tr>
+          <tr>
+            <td>\(D\)</td>
+            <td>\(n_x \times n_\lambda\)</td>
+            <td>How contact forces \(\boldsymbol{\lambda}\) affect the next state — this is the <em>bridge between contact forces and object acceleration</em>. Jacobian \(\frac{\partial f}{\partial \boldsymbol{\lambda}}\).</td>
+            <td>AutoDiff extracts this from the simulator in one pass. The input being differentiated is \(\boldsymbol{\lambda}_k\) (the contact force vector — normal forces, friction components, and sliding slacks for all contacts). The output is \(\mathbf{x}_{k+1}\). Rows for object velocity are nonzero (contact forces accelerate the object); rows for end-effector are near zero (the EE is the pusher, not the pushee).</td>
+          </tr>
+          <tr>
+            <td>\(\mathbf{d}\)</td>
+            <td>\(n_x \times 1\)</td>
+            <td>The constant offset — captures gravity, Coriolis forces, and the linearisation residual (the gap between the true nonlinear dynamics and the linear approximation at the operating point).</td>
+            <td>\(\mathbf{d} = f(\hat{\mathbf{x}}, \hat{\mathbf{u}}, \hat{\boldsymbol{\lambda}}) - A\hat{\mathbf{x}} - B\hat{\mathbf{u}} - D\hat{\boldsymbol{\lambda}}\). Here \(f(\hat{\mathbf{x}}, \hat{\mathbf{u}}, \hat{\boldsymbol{\lambda}})\) is the simulator output at the current operating point — i.e., just run the simulator once with the current state, force, and contact force values, and see what next state it produces. Then subtract the linear terms to get whatever is left over.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The gap equation — matrices E, F, H, c</p>
+
+    <p>This equation defines \(\boldsymbol{\eta}_k\), the "complementarity partner" of \(\boldsymbol{\lambda}_k\). Recall that the complementarity constraint says: for each contact, either the force is zero (no contact) or the gap is zero (contact is touching). The vector \(\boldsymbol{\eta}_k\) packages up all the gap-related quantities that must be nonneg and complementary to \(\boldsymbol{\lambda}_k\). Specifically, \(\boldsymbol{\eta}_k\) stacks three types of quantities (one per block of \(\boldsymbol{\lambda}_k\)):</p>
+
+    <ol>
+      <li><strong>Gap distances \(\phi^i(\mathbf{q})\)</strong> — the signed distance between the end-effector and object face \(i\). Positive = separated, zero = touching. This is complementary to the normal force \(\lambda_n^i\): you can only push if you're touching.</li>
+      <li><strong>Friction budget \(\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i\)</strong> — how much friction capacity remains. Here \(\mu\) is the friction coefficient, \(\lambda_n^i\) is the normal force (bigger normal force = more friction available), \(\boldsymbol{\beta}^i\) are the friction force components (one per edge of the friction pyramid), and \(\mathbf{e}\) is a vector of all ones that sums them up. This is complementary to the sliding speed \(\gamma^i\): you can only slide if you've used up all your friction budget.</li>
+      <li><strong>Contact tangential velocities \(E_t J_t^i \dot{\mathbf{q}} + \gamma^i \mathbf{e}\)</strong> — how fast the contact point is sliding along each friction direction. Here \(J_t^i\) is the tangential Jacobian (maps joint velocities to sliding velocity at contact \(i\)), \(E_t\) is a timestep scaling factor, and \(\gamma^i \mathbf{e}\) adds the sliding speed slack. This is complementary to the friction force \(\boldsymbol{\beta}^i\): friction opposes sliding.</li>
+    </ol>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Matrix</th><th>Size</th><th>What it encodes</th><th>How it is computed</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>\(E\)</td>
+            <td>\(n_\lambda \times n_x\)</td>
+            <td>How the state \(\mathbf{x}\) (positions and velocities) affects the gap and contact-velocity quantities. Contains the Jacobians of the signed-distance functions \(\frac{\partial \phi}{\partial \mathbf{q}}\) and the tangential contact velocity Jacobians \(E_t J_t^i\).</td>
+            <td>AutoDiff extracts this from the simulator. The input being differentiated is \(\mathbf{x}_k\) (positions and velocities). The output is \(\boldsymbol{\eta}_k\) (gap distances and sliding velocities). Drake computes signed distances between geometry pairs and contact Jacobians internally — AutoDiff tracks how these change as you vary the state.</td>
+          </tr>
+          <tr>
+            <td>\(F\)</td>
+            <td>\(n_\lambda \times n_\lambda\)</td>
+            <td>How the contact forces \(\boldsymbol{\lambda}\) themselves affect the gap quantities. The key entry is the friction budget row: \(-\mathbf{e}^\top\) (summing the \(\beta\) components) and \(\mu\) (scaling the normal force). Most other entries are zero.</td>
+            <td>Mostly constant structure from the Stewart–Trinkle contact model. The \(\mu\) and \(\mathbf{e}\) entries are set directly from the friction coefficient and the number of friction pyramid edges. This matrix is largely structural — it encodes algebraic relationships between sub-components of \(\boldsymbol{\lambda}\) rather than coming from the physics simulator.</td>
+          </tr>
+          <tr>
+            <td>\(H\)</td>
+            <td>\(n_\lambda \times n_u\)</td>
+            <td>How the control input \(\mathbf{u}\) affects the gap quantities. In most setups this is zero or near-zero — the end-effector force command does not directly change the contact gap or sliding velocity (it does so indirectly through the dynamics).</td>
+            <td>AutoDiff extracts this from the simulator. The input being differentiated is \(\mathbf{u}_k\) (the force command). The output is \(\boldsymbol{\eta}_k\). Usually a zero or near-zero matrix because the commanded force doesn't directly change contact geometry.</td>
+          </tr>
+          <tr>
+            <td>\(\mathbf{c}\)</td>
+            <td>\(n_\lambda \times 1\)</td>
+            <td>The constant offset for the gap equation — captures the current gap distances and contact velocities at the linearisation point, minus the linear terms.</td>
+            <td>\(\mathbf{c} = \boldsymbol{\eta}(\hat{\mathbf{x}}, \hat{\boldsymbol{\lambda}}, \hat{\mathbf{u}}) - E\hat{\mathbf{x}} - F\hat{\boldsymbol{\lambda}} - H\hat{\mathbf{u}}\). Here \(\boldsymbol{\eta}(\hat{\mathbf{x}}, \hat{\boldsymbol{\lambda}}, \hat{\mathbf{u}})\) is the gap vector evaluated at the current operating point — just compute the gap distances and sliding velocities at the current state. Then subtract the linear terms to get the residual.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">How the nonlinear \(\boldsymbol{\eta}\) is computed — and what depends on what</p>
+
+    <p>Before linearising, we need to evaluate the actual (nonlinear) gap vector \(\boldsymbol{\eta}\) at the current operating point. Yes, it is fully calculatable — but its three blocks come from different sources. Let's trace where every quantity comes from:</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Quantity</th><th>What it is</th><th>Where it comes from</th><th>Depends on</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>\(\phi^i(\mathbf{q})\)</td>
+            <td>Signed distance between EE and object face \(i\)</td>
+            <td>Drake's geometry engine: it queries the collision geometry (sphere vs. box face, etc.) and returns the signed distance. This is a purely geometric computation based on the current positions \(\mathbf{q}\) (part of state \(\mathbf{x}\)).</td>
+            <td><strong>\(\mathbf{x}\) only</strong> (specifically the position components \(\mathbf{q}\))</td>
+          </tr>
+          <tr>
+            <td>\(\mu\)</td>
+            <td>Friction coefficient</td>
+            <td>A constant loaded from the YAML config file. Set by the user before the controller starts.</td>
+            <td><strong>Nothing</strong> — it's a fixed parameter</td>
+          </tr>
+          <tr>
+            <td>\(\lambda_n^i\)</td>
+            <td>Normal contact force at contact \(i\)</td>
+            <td>A sub-component of \(\boldsymbol{\lambda}\), which is a <em>decision variable</em> of the optimization. It is not something the simulator tracks or measures — it's something the optimizer solves for. At the linearisation point, we plug in the current guess (from a previous solve, or zero on the first step).</td>
+            <td><strong>\(\boldsymbol{\lambda}\) only</strong></td>
+          </tr>
+          <tr>
+            <td>\(\boldsymbol{\beta}^i\)</td>
+            <td>Friction force components at contact \(i\)</td>
+            <td>Sub-components of \(\boldsymbol{\lambda}\) — same story as \(\lambda_n\). Decision variables, not simulator outputs.</td>
+            <td><strong>\(\boldsymbol{\lambda}\) only</strong></td>
+          </tr>
+          <tr>
+            <td>\(\mathbf{e}\)</td>
+            <td>Vector of all ones (length \(n_e\))</td>
+            <td>A fixed structural constant. Just a vector \([1, 1, \ldots, 1]^\top\). Used to sum up the \(\beta\) components.</td>
+            <td><strong>Nothing</strong> — it's a fixed constant</td>
+          </tr>
+          <tr>
+            <td>\(\gamma^i\)</td>
+            <td>Sliding speed slack at contact \(i\)</td>
+            <td>A sub-component of \(\boldsymbol{\lambda}\) — same story. Decision variable.</td>
+            <td><strong>\(\boldsymbol{\lambda}\) only</strong></td>
+          </tr>
+          <tr>
+            <td>\(J_t^i\)</td>
+            <td>Tangential Jacobian at contact \(i\)</td>
+            <td>Drake's kinematics engine: it computes the Jacobian that maps joint velocities \(\dot{\mathbf{q}}\) to the tangential (sliding) velocity at the contact point. This depends on the current configuration \(\mathbf{q}\) (because the Jacobian changes as the robot and object move).</td>
+            <td><strong>\(\mathbf{x}\) only</strong> (specifically the position components \(\mathbf{q}\))</td>
+          </tr>
+          <tr>
+            <td>\(\dot{\mathbf{q}}\)</td>
+            <td>Joint/generalised velocities</td>
+            <td>Part of the state vector \(\mathbf{x}\). Measured from sensors (or estimated).</td>
+            <td><strong>\(\mathbf{x}\) only</strong> (the velocity components)</td>
+          </tr>
+          <tr>
+            <td>\(E_t\)</td>
+            <td>Timestep scaling factor</td>
+            <td>A constant: typically \(E_t = \Delta t\) (the planning timestep). Converts velocity to displacement over one step.</td>
+            <td><strong>Nothing</strong> — it's a fixed parameter</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The dependency structure — which block of η depends on which variable</p>
+
+    <p>Now we can see the full picture. Each block of \(\boldsymbol{\eta}\) depends on a specific subset of the inputs:</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Block of \(\boldsymbol{\eta}\)</th><th>Formula</th><th>Depends on \(\mathbf{x}\)?</th><th>Depends on \(\boldsymbol{\lambda}\)?</th><th>Depends on \(\mathbf{u}\)?</th><th>Which matrix captures this dependency</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Gap distances</td>
+            <td>\(\phi^i(\mathbf{q})\)</td>
+            <td class="yes">Yes — through \(\mathbf{q}\) (positions in \(\mathbf{x}\))</td>
+            <td class="no">No</td>
+            <td class="no">No</td>
+            <td>\(E\) (AutoDiff on Drake's geometry queries)</td>
+          </tr>
+          <tr>
+            <td>Friction budget</td>
+            <td>\(\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i\)</td>
+            <td class="no">No</td>
+            <td class="yes">Yes — through \(\lambda_n\) and \(\boldsymbol{\beta}\) (both sub-components of \(\boldsymbol{\lambda}\))</td>
+            <td class="no">No</td>
+            <td>\(F\) (structural, closed-form — see below)</td>
+          </tr>
+          <tr>
+            <td>Tangential velocities</td>
+            <td>\(E_t J_t^i \dot{\mathbf{q}} + \gamma^i \mathbf{e}\)</td>
+            <td class="yes">Yes — through \(\dot{\mathbf{q}}\) (velocities in \(\mathbf{x}\)) and \(J_t^i\) (which depends on \(\mathbf{q}\))</td>
+            <td class="yes">Yes — through \(\gamma^i\) (sub-component of \(\boldsymbol{\lambda}\))</td>
+            <td class="no">No</td>
+            <td>\(E\) for the \(\mathbf{x}\) part (AutoDiff), \(F\) for the \(\boldsymbol{\lambda}\) part (structural)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Why F is closed-form (not from AutoDiff) — and why E and H are</p>
+
+    <p>Here is the crucial distinction. The physics simulator (Drake's <code>MultibodyPlant</code>) tracks <strong>states</strong> (\(\mathbf{x}\): positions, velocities) and accepts <strong>inputs</strong> (\(\mathbf{u}\): commanded forces). It does <em>not</em> track \(\boldsymbol{\lambda}\) — contact forces are <em>decision variables</em> of the optimization, not quantities the simulator computes or stores. The simulator tells you "given this state and this force command, here is the next state." It does not tell you "here is the contact force" — that is what the optimizer solves for.</p>
+
+    <p>This means:</p>
+
+    <ul>
+      <li><strong>\(E = \frac{\partial \boldsymbol{\eta}}{\partial \mathbf{x}}\)</strong> — the gap distances \(\phi^i(\mathbf{q})\) and tangential velocities \(E_t J_t^i \dot{\mathbf{q}}\) are computed by the simulator as functions of \(\mathbf{x}\). AutoDiff can differentiate through these computations. So \(E\) comes from AutoDiff.</li>
+
+      <li><strong>\(H = \frac{\partial \boldsymbol{\eta}}{\partial \mathbf{u}}\)</strong> — the control input \(\mathbf{u}\) is also an input to the simulator (though it doesn't directly affect gap distances or sliding velocities). AutoDiff can still differentiate through it. The result is zero or near-zero because \(\mathbf{u}\) doesn't appear in any of the three \(\boldsymbol{\eta}\) formulas above. So \(H\) comes from AutoDiff (and turns out to be zero).</li>
+
+      <li><strong>\(F = \frac{\partial \boldsymbol{\eta}}{\partial \boldsymbol{\lambda}}\)</strong> — \(\boldsymbol{\lambda}\) is <em>not</em> an input to the simulator. The simulator doesn't compute anything as a function of \(\boldsymbol{\lambda}\). The terms in \(\boldsymbol{\eta}\) that involve \(\boldsymbol{\lambda}\) are <strong>pure algebraic expressions</strong> defined by the Stewart–Trinkle contact model: \(\mu\lambda_n - \mathbf{e}^\top\boldsymbol{\beta}\) and \(\gamma\mathbf{e}\). These are simple linear functions of \(\boldsymbol{\lambda}\) with known constant coefficients (\(\mu\), \(\mathbf{e}\)). So their derivatives w.r.t. \(\boldsymbol{\lambda}\) are trivially the coefficients themselves. <strong>\(F\) is a closed-form, handwritten structural matrix</strong> — it is assembled directly from the contact model definition, not extracted from the simulator via AutoDiff.</li>
+    </ul>
+
+    <p>Concretely, \(F\) looks like this (for one contact with \(n_e = 4\) friction directions):</p>
+
+    <div class="eq">
+      \[
+        F = \begin{pmatrix}
+          0 & 0 & 0 & 0 & 0 & 0 \\
+          \mu & -1 & -1 & -1 & -1 & 0 \\
+          0 & 0 & 0 & 0 & 0 & 1 \\
+          0 & 0 & 0 & 0 & 0 & 1 \\
+          0 & 0 & 0 & 0 & 0 & 1 \\
+          0 & 0 & 0 & 0 & 0 & 1
+        \end{pmatrix}
+        \begin{matrix}
+          \leftarrow \text{gap distance row: no } \boldsymbol{\lambda} \text{ dependence} \\
+          \leftarrow \text{friction budget: } \mu \text{ on } \lambda_n, -1 \text{ on each } \beta_j \\
+          \leftarrow \text{tangential vel. dir. 1: } +1 \text{ on } \gamma \\
+          \leftarrow \text{tangential vel. dir. 2: } +1 \text{ on } \gamma \\
+          \leftarrow \text{tangential vel. dir. 3: } +1 \text{ on } \gamma \\
+          \leftarrow \text{tangential vel. dir. 4: } +1 \text{ on } \gamma
+        \end{matrix}
+      \]
+    </div>
+
+    <p>The columns correspond to \([\lambda_n, \beta_1, \beta_2, \beta_3, \beta_4, \gamma]\). Every entry is a known constant — no AutoDiff needed. For multiple contacts, this block is repeated along the diagonal.</p>
+
+    <div class="card indigo">
+      <div class="card-label">Summary: how each matrix is obtained</div>
+      <p>
+        <strong>\(E\)</strong> — AutoDiff on Drake's geometry engine (signed distances \(\phi^i(\mathbf{q})\)) and kinematics engine (tangential Jacobians \(J_t^i(\mathbf{q})\) applied to velocities \(\dot{\mathbf{q}}\)). The input being differentiated is \(\mathbf{x}\).<br/><br/>
+        <strong>\(F\)</strong> — Closed-form, handwritten from the Stewart–Trinkle contact model. Contains \(\mu\), \(-1\), \(+1\), and \(0\) entries. Not from AutoDiff because \(\boldsymbol{\lambda}\) is not a simulator variable.<br/><br/>
+        <strong>\(H\)</strong> — AutoDiff (or just set to zero, since \(\mathbf{u}\) doesn't appear in any \(\boldsymbol{\eta}\) formula).<br/><br/>
+        <strong>\(\mathbf{c}\)</strong> — Computed as \(\boldsymbol{\eta}(\hat{\mathbf{x}}, \hat{\boldsymbol{\lambda}}, \hat{\mathbf{u}}) - E\hat{\mathbf{x}} - F\hat{\boldsymbol{\lambda}} - H\hat{\mathbf{u}}\). Evaluate the nonlinear gap function at the operating point, then subtract the linear approximation to get the residual.
+      </p>
+    </div>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The full procedure, step by step</p>
+
+    <ol>
+      <li><strong>Read the current state</strong> \(\hat{\mathbf{x}}\) from sensors (positions and velocities of EE and object). Pick a value for \(\hat{\boldsymbol{\lambda}}\) — typically from the previous solve, or zero on the first step. Set \(\hat{\mathbf{u}}\) from the previous solve or zero.</li>
+
+      <li><strong>Evaluate the nonlinear gap function</strong> at \((\hat{\mathbf{x}}, \hat{\boldsymbol{\lambda}}, \hat{\mathbf{u}})\):
+        <ul>
+          <li>Query Drake's geometry engine for signed distances \(\phi^i(\hat{\mathbf{q}})\) — these are the gap distances at the current configuration.</li>
+          <li>Compute friction budgets \(\mu\hat{\lambda}_n^i - \mathbf{e}^\top\hat{\boldsymbol{\beta}}^i\) using the current \(\hat{\boldsymbol{\lambda}}\) values.</li>
+          <li>Query Drake's kinematics engine for tangential Jacobians \(J_t^i(\hat{\mathbf{q}})\), multiply by \(\hat{\dot{\mathbf{q}}}\), add \(\hat{\gamma}^i \mathbf{e}\).</li>
+          <li>Stack all of these into the vector \(\hat{\boldsymbol{\eta}}\).</li>
+        </ul>
+      </li>
+
+      <li><strong>Compute \(E\) via AutoDiff:</strong> Seed AutoDiff derivatives on \(\mathbf{x}\). Run Drake's geometry queries (for \(\phi^i\)) and kinematics queries (for \(J_t^i \dot{\mathbf{q}}\)) with AutoDiff numbers. Read off the derivatives — these are the rows of \(E\).</li>
+
+      <li><strong>Assemble \(F\) from the contact model:</strong> Fill in the structural matrix with \(\mu\), \(-1\), \(+1\), and \(0\) entries according to the Stewart–Trinkle formulation. No AutoDiff needed.</li>
+
+      <li><strong>Set \(H = 0\)</strong> (or compute via AutoDiff and confirm it's zero).</li>
+
+      <li><strong>Compute \(\mathbf{c} = \hat{\boldsymbol{\eta}} - E\hat{\mathbf{x}} - F\hat{\boldsymbol{\lambda}} - H\hat{\mathbf{u}}\)</strong> — the linearisation residual.</li>
+    </ol>
+
+    <p style="font-weight:600; color:var(--text); margin-top:1.2rem;">How AutoDiff actually works — and why "perturbation" is the wrong mental model</p>
+
+    <p>You might be thinking: "if there's no closed-form equation, how does the computer compute derivatives? Does it nudge each input slightly and measure the output change?" That would be <span class="term">finite differences</span> — a numerical approximation that is slow, inaccurate, and not what we use. AutoDiff is fundamentally different and much better.</p>
+
+    <p>Here is how it works, step by step:</p>
+
+    <ol>
+      <li><strong>Drake's simulator is a computation graph.</strong> When <code>MultibodyPlant</code> computes the next state from the current state, it performs thousands of arithmetic operations: computing mass matrices, evaluating trigonometric functions of joint angles, solving linear systems for accelerations, numerically integrating velocities and positions, computing signed distances between geometry pairs, etc. Every one of these operations is a simple function (add, multiply, sin, cos, solve) whose derivative is known.</li>
+
+      <li><strong>AutoDiff replaces every number with a "dual number."</strong> Instead of using normal floating-point numbers (like 3.14), Drake's <code>AutoDiffXd</code> type carries <em>two</em> pieces of information: the value <em>and</em> its derivative with respect to some input variable. When you add two AutoDiff numbers, the result carries the sum of values and the sum of derivatives. When you multiply, the product rule is applied automatically. When you call sin(), the chain rule is applied automatically. Every arithmetic operation propagates both the value and the derivative forward.</li>
+
+      <li><strong>One forward pass gives you the output AND all derivatives.</strong> To compute matrix \(A = \frac{\partial f}{\partial \mathbf{x}}\): you set up the input state \(\mathbf{x}\) as AutoDiff numbers where each element \(x_j\) carries a derivative of 1 with respect to itself and 0 with respect to all other elements (this is called "seeding"). You set \(\mathbf{u}\) and \(\boldsymbol{\lambda}\) as plain constants (derivative = 0, since we are not differentiating with respect to them). Then you run the simulator forward. The output \(\mathbf{x}_{k+1}\) comes back as AutoDiff numbers — each element carries its value <em>and</em> its partial derivative with respect to every element of \(\mathbf{x}\). Those partial derivatives are exactly the matrix \(A\).</li>
+
+      <li><strong>Repeat for B and D.</strong> To get \(B = \frac{\partial f}{\partial \mathbf{u}}\): seed the AutoDiff derivatives on \(\mathbf{u}\) instead (each \(u_j\) has derivative 1 w.r.t. itself). Run the simulator. The output derivatives give you \(B\). Same for \(D\) with \(\boldsymbol{\lambda}\). In practice, the <code>LCSFactory</code> seeds all inputs simultaneously (each input variable gets its own derivative slot), so one simulator pass extracts all Jacobians at once.</li>
+    </ol>
+
+    <div class="card indigo">
+      <div class="card-label">The key insight</div>
+      <p>
+        <strong>AutoDiff does not need a closed-form equation.</strong> It works on any program — no matter how complex — as long as the program is built from elementary arithmetic operations. Drake's <code>MultibodyPlant</code> is exactly such a program. AutoDiff tracks derivatives through every single operation inside the simulator, applying the chain rule automatically at each step. The result is <em>exact</em> derivatives (not approximate like finite differences), computed in roughly the same time as one simulator evaluation.
+      </p>
+    </div>
+
+    <p>In code, the controller keeps two copies of the physics model:</p>
+    <pre>
+<span class="ty">MultibodyPlant&lt;double&gt;</span>     plant_;     <span class="cm">// normal double-precision — for fast simulation</span>
+<span class="ty">MultibodyPlant&lt;AutoDiffXd&gt;</span> plant_ad_;  <span class="cm">// AutoDiff version — for extracting Jacobians</span>
+    </pre>
+
+    <p>The <code>double</code> version is used for fast forward simulation (e.g., evaluating candidate plans). The <code>AutoDiffXd</code> version is used once per control step to extract the Jacobian matrices. The <code>LCSFactory</code> class (in <code>c3/multibody/lcs_factory.h</code>) orchestrates this: it seeds the AutoDiff inputs, runs the AutoDiff plant forward, and reads off the Jacobians from the output dual numbers. This happens once per control step per candidate sample.</p>
+
+    <div class="card amber">
+      <div class="card-label">Why these matrices change every control step</div>
+      <p>
+        The linearisation is only accurate near the point where it was computed. As the robot moves, the operating point changes, so the matrices must be recomputed. This is why the controller rebuilds the LCS from scratch at every control step — it always linearises around the latest measured state. During one ADMM solve (which plans over the next \(N\) timesteps), the matrices are held fixed. This is the standard MPC assumption: the linearisation is "good enough" over the short planning horizon.
+      </p>
+    </div>
+
+  </div>
+</details>
+
+<p>
+  The symbol \(\perp\) is the <span class="term">complementarity operator</span>. For two scalars it means
+  \(\lambda \cdot \eta = 0\) with both \(\geq 0\). For vectors, it applies
+  element-wise: <em>for each pair \((\lambda_i, \eta_i)\), either the force is
+  zero (no contact) or the gap is zero (contact is active)</em> — never both
+  simultaneously nonzero. Think of a light switch: it's either ON (force can flow, gap = 0) or OFF (no force, gap > 0).
+</p>
+
+<details>
+  <summary>
+    30-second overview: how does the whole optimization actually work?
+    <span class="summary-subtitle">— the big picture before the details</span>
+  </summary>
+  <div class="details-body">
+
+    <p>Here is the entire C3 pipeline in plain English, from start to finish. Read this first, then the detailed sections below will make much more sense.</p>
+
+    <ol>
+      <li><strong>The robot needs a plan.</strong> Every ~50ms (one "control step"), the controller asks: "given where the object is now and where I want it to go, what should the end-effector do over the next few seconds?" It plans over a short future window of \(N\) timesteps (the <span class="term">horizon</span>).</li>
+
+      <li><strong>The real physics are too hard to solve directly.</strong> The full physics equations are nonlinear, and the contact constraints (touching vs. not-touching) create a combinatorial explosion. So the controller <em>linearises</em> the physics around the current state to get simple constant matrices (\(A, B, D, E, F, H, \mathbf{c}, \mathbf{d}\)). This turns the problem into a <span class="term">QPCC</span> — a quadratic program with complementarity constraints.</li>
+
+      <li><strong>Even the QPCC is too hard as one piece.</strong> The complementarity constraint (the "light switch" — contact is ON or OFF) makes it non-convex. So <span class="term">ADMM</span> splits it into two alternating sub-problems:
+        <ul>
+          <li><strong>Sub-problem 1 (the "z-update"):</strong> Solve a standard QP — plan the best trajectory <em>ignoring</em> the complementarity constraint. This is done by <span class="term">OSQP</span>, a fast QP solver. It gives a trajectory that obeys the dynamics and bounds but might violate the contact ON/OFF rules.</li>
+          <li><strong>Sub-problem 2 (the "δ-update"):</strong> Take the trajectory from sub-problem 1 and <em>project</em> it onto the complementarity set — fix the contact ON/OFF violations. This is a simple per-timestep arithmetic operation (in C3+, it's just comparing two numbers and picking the bigger one).</li>
+          <li><strong>Repeat:</strong> Alternate between these two. Each round, they get closer to agreeing. A third step (the "w-update") just accumulates the running disagreement to help them converge. After a fixed number of rounds (say 20–50), you get a trajectory that approximately satisfies everything.</li>
+        </ul>
+      </li>
+
+      <li><strong>One ADMM solve = one complete run of this alternating loop</strong> (all 20–50 iterations) for one set of linearised matrices. It produces a full planned trajectory \([\mathbf{x}_{0:N}, \mathbf{u}_{0:N-1}, \boldsymbol{\lambda}_{0:N-1}]\).</li>
+
+      <li><strong>But wait — does the optimizer guarantee the end-effector touches the object?</strong> No. Here is the key insight: the optimizer does <em>not</em> force the end-effector to be on the object surface. The complementarity constraint allows \(\boldsymbol{\lambda} = \mathbf{0}\) (no contact forces), which means the end-effector can be anywhere in free space. If the arm starts far from the object, the optimizer will likely plan a trajectory through free space toward where contact <em>would</em> be useful — but it won't necessarily reach the object within the planning horizon.
+
+        <p style="margin-top:0.8rem;"><strong>Why is this a problem?</strong> C3 is a <span class="term">local optimizer</span> — it can only make progress if the end-effector is already close enough to the object that contact can happen within the next \(N\) timesteps. If the arm is far away:
+        </p>
+        <ul>
+          <li>The optimizer plans \(\boldsymbol{\lambda}_k = \mathbf{0}\) for all \(k\) (no contact is possible)</li>
+          <li>With \(\boldsymbol{\lambda} = \mathbf{0}\), the term \(D\boldsymbol{\lambda}\) in the dynamics vanishes</li>
+          <li>The object doesn't move in the plan (no forces act on it)</li>
+          <li>The optimizer has no gradient to reduce object error — it's stuck</li>
+        </ul>
+
+        <p style="margin-top:0.8rem;"><strong>The solution: the sampling outer loop.</strong> Instead of hoping the optimizer will "find" the object, the controller explicitly tries multiple "what if" scenarios:
+        </p>
+        <ol>
+          <li>Sample 10–20 candidate end-effector positions <em>on the object surface</em> (using the object's mesh geometry)</li>
+          <li>For each candidate, <em>pretend the arm is already there</em> — set the initial state \(\mathbf{x}_0\) to have the end-effector at that candidate position</li>
+          <li>Run a full C3/ADMM solve for each candidate (in parallel, using multiple CPU cores)</li>
+          <li>Pick the candidate with the lowest cost (best plan for moving the object toward the goal)</li>
+          <li>Execute that plan — the arm moves to the chosen contact point and starts pushing</li>
+        </ol>
+
+        <p style="margin-top:0.8rem;">This is why it's called a <span class="term">sampling-based</span> controller. The sampling happens <em>outside</em> the optimization — it's a separate layer that generates candidate starting points for the optimizer to work from. Without this outer loop, C3 would get stuck whenever the arm isn't already touching the object.</p>
+      </li>
+
+      <li><strong>Execute and repeat.</strong> Only the first control action \(\mathbf{u}_0\) from the best plan is sent to the robot's low-level controller (the <span class="term">OSC</span> — Operational Space Controller, which converts the Cartesian force command into actual joint torques). Then, 50ms later, the whole process repeats from scratch with the new measured state. This is <span class="term">receding horizon control</span> (a.k.a. MPC): always plan ahead, but only execute the first step.</li>
+    </ol>
+
+    <div class="card green">
+      <div class="card-label">The mental model</div>
+      <p>
+        <strong>Outer loop (every 50ms):</strong> Sample candidate positions → Build linearised physics (LCS) for each → Run ADMM for each → Pick the best plan → Send first action to robot.<br/><br/>
+        <strong>Inside each ADMM:</strong> Solve QP (ignore complementarity) → Project onto complementarity (fix ON/OFF) → Update disagreement → Repeat 20–50 times.<br/><br/>
+        <strong>Inside each QP:</strong> OSQP solves a standard convex quadratic program with linear constraints. Fast and reliable.
+      </p>
+    </div>
+
+  </div>
+</details>
+
+<div class="card red">
+  <div class="card-label">Why this is not a standard QP</div>
+  <p>
+    If the complementarity constraint were removed, this would be a standard QP
+    (quadratic objective, linear equality/inequality constraints) solvable with
+    OSQP in milliseconds. The complementarity constraint ruins convexity: it is
+    equivalent to requiring that for every contact at every timestep, one of two
+    discrete modes holds — contact on, or contact off. With \(n_c\) contacts and
+    \(N\) timesteps there are up to \(2^{N \cdot n_c}\) possible contact mode
+    sequences. This makes the problem <span class="term">NP-hard</span> in general (meaning no known algorithm can solve all instances efficiently — the worst-case time grows exponentially). C3's contribution is
+    a way to solve it approximately but fast.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §2  WHAT x, u, λ, η ACTUALLY ARE IN CODE
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s2">
+  <span class="slug">§2</span>
+  <h2>What \(\mathbf{x}\), \(\mathbf{u}\), \(\boldsymbol{\lambda}\), and \(\boldsymbol{\eta}\) Actually Are in Code</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The abstract symbols above map to concrete vectors whose layout is fixed at
+  construction time in <code>sampling_based_c3_controller.cc</code>.
+</p>
+
+<p style="font-weight:600; color:var(--text);">The state vector \(\mathbf{x}_k \in \mathbb{R}^{n_x}\)</p>
+
+<p>
+  For a single object (1 object, 1 end-effector), the state is:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Indices</th><th>Contents</th><th>Dim</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\(0:2\)</td>
+        <td>End-effector Cartesian position \(\mathbf{p}^e\)</td>
+        <td>3</td>
+        <td>World frame XYZ. This is what C3 directly controls via \(\mathbf{u}\).</td>
+      </tr>
+      <tr>
+        <td>\(3:6\)</td>
+        <td>Object quaternion \(\mathbf{q}^o = (q_w, q_x, q_y, q_z)\)</td>
+        <td>4</td>
+        <td>Unit quaternion for orientation. For multiple objects, repeat this block.</td>
+      </tr>
+      <tr>
+        <td>\(7:9\)</td>
+        <td>Object centre-of-mass position \(\mathbf{p}^o\)</td>
+        <td>3</td>
+        <td>World frame XYZ.</td>
+      </tr>
+      <tr>
+        <td>\(10:12\)</td>
+        <td>End-effector Cartesian velocity \(\dot{\mathbf{p}}^e\)</td>
+        <td>3</td>
+        <td>Time derivative of position.</td>
+      </tr>
+      <tr>
+        <td>\(13:15\)</td>
+        <td>Object angular velocity \(\boldsymbol{\omega}^o\)</td>
+        <td>3</td>
+        <td>Body or world frame, depending on Drake convention.</td>
+      </tr>
+      <tr>
+        <td>\(16:18\)</td>
+        <td>Object linear velocity \(\dot{\mathbf{p}}^o\)</td>
+        <td>3</td>
+        <td>World frame.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Total: \(n_x = 3 + 4 + 3 + 3 + 3 + 3 = 19\) for one object. For \(n_\text{obj}\) objects
+  it grows by 13 per additional object (7 pose + 6 velocity, no end-effector repeat).
+  The sizes <code>n_q_</code>, <code>n_v_</code>, <code>n_x_</code> are queried directly from
+  Drake's <code>MultibodyPlant</code>.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">The control input \(\mathbf{u}_k \in \mathbb{R}^{n_u}\)</p>
+
+<p>
+  In Push Anything, \(\mathbf{u}_k \in \mathbb{R}^3\) is the desired Cartesian
+  <em>force</em> at the end-effector — not joint torques, not position. The
+  downstream OSC converts this Cartesian force target into joint torques.
+  Bounds on \(\mathbf{u}_k\) are added as linear constraints in the QPCC:
+  horizontal force limits <code>u_horizontal_limits</code> and vertical force
+  limit <code>u_vertical_limits</code> (from the YAML config, enforced per element
+  of \(\mathbf{u}\)).
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">The contact force vector \(\boldsymbol{\lambda}_k \in \mathbb{R}^{n_\lambda}\)</p>
+
+<p>
+  This is the most structured variable. For each of \(n_c\) contact pairs (e.g.,
+  end-effector vs. each face of the object, or end-effector vs. ground), the contact
+  is modelled using the <span class="term">Stewart–Trinkle formulation</span> — a standard way to model contact that replaces the smooth circular friction cone with a polyhedral (pyramid-shaped) approximation, turning nonlinear friction constraints into linear ones. It is described in
+  <a href="grasp_theory_critique.html#s9">§9 Q3–Q4</a> of the companion document.
+  For each contact \(i\), three blocks are stacked:
+</p>
+
+<div class="eq">
+  \[
+    \boldsymbol{\lambda}_k =
+    \begin{pmatrix}
+      \lambda_n^1, \ldots, \lambda_n^{n_c} \\[4pt]
+      \boldsymbol{\beta}^1, \ldots, \boldsymbol{\beta}^{n_c} \\[4pt]
+      \gamma^1, \ldots, \gamma^{n_c}
+    \end{pmatrix}
+    \in \mathbb{R}^{n_c(1 + n_e + 1)}
+  \]
+</div>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Symbol</th><th>Size per contact</th><th>Physical meaning</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\(\lambda_n^i \geq 0\)</td>
+        <td>1</td>
+        <td>Normal contact force — pushes along the contact normal. Nonzero only when in contact (\(\phi = 0\)).</td>
+      </tr>
+      <tr>
+        <td>\(\boldsymbol{\beta}^i \geq \mathbf{0}\)</td>
+        <td>\(n_e\) (default 4)</td>
+        <td>Friction force components — one per edge of the <span class="term">polyhedral (pyramid) friction cone</span>. The real friction cone is circular (like an ice cream cone — the set of all directions friction can push, bounded by \(\|\mathbf{f}_t\| \leq \mu f_n\)). A circle is hard to work with in a linear program, so we approximate it with a pyramid of \(n_e\) flat faces (default 4). Each \(\beta_j\) is the friction force along one edge of this pyramid. Their nonneg combination produces the tangential friction force \(\mathbf{f}_t = \sum_j \beta_j \mathbf{d}_j\), where \(\mathbf{d}_j\) are the unit vectors along each pyramid edge.</td>
+      </tr>
+      <tr>
+        <td>\(\gamma^i \geq 0\)</td>
+        <td>1</td>
+        <td>Sliding speed slack — encodes whether the contact is sticking (\(\gamma = 0\)) or sliding (\(\gamma > 0\)). Used in the friction complementarity condition.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The total size is computed in code as:
+</p>
+<pre>
+n_lambda_ = <span class="ty">LCSFactory</span>::<span class="kw">GetNumContactVariables</span>(
+    contact_model, <span class="cm">// e.g. kStewartTrinkle</span>
+    num_contacts,
+    num_friction_directions_per_contact <span class="cm">// n_e, usually 4</span>
+);
+</pre>
+<p>
+  For \(n_c = 1\) contact with \(n_e = 4\) friction directions:
+  \(n_\lambda = 1 \cdot (1 + 4 + 1) = 6\).
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">The gap vector \(\boldsymbol{\eta}_k \in \mathbb{R}^{n_\lambda}\)</p>
+
+<p>
+  \(\boldsymbol{\eta}_k\) is the "complementarity partner" of \(\boldsymbol{\lambda}_k\) —
+  it has the same size and the same block structure. For each contact \(i\), the three blocks of \(\boldsymbol{\eta}_k\) correspond one-to-one with the three blocks of \(\boldsymbol{\lambda}_k\) (normal force \(\lambda_n^i\), friction components \(\boldsymbol{\beta}^i\), and sliding speed \(\gamma^i\)).
+</p>
+
+<p>
+  The complementarity constraint says: for each pair \((\lambda_j, \eta_j)\), at least one must be zero. So we need to understand what each \(\eta_j\) physically represents. Here is the full breakdown, connecting every symbol:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Block of \(\boldsymbol{\lambda}_k\)</th>
+        <th>Corresponding block of \(\boldsymbol{\eta}_k\)</th>
+        <th>What it means in plain English</th>
+        <th>Complementarity condition</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\(\lambda_n^i \geq 0\)<br/><em>(normal force)</em></td>
+        <td>\(\phi^i(\mathbf{q}) \geq 0\)<br/><em>(gap distance)</em></td>
+        <td>\(\phi^i\) is the <span class="term">signed distance</span> between the end-effector and object face \(i\). Positive = separated, zero = touching. It depends on the state \(\mathbf{x}\) (specifically the positions \(\mathbf{q}\)), which is why it involves the matrix \(E\) and vector \(\mathbf{c}\) in the linearised equation.</td>
+        <td>\(0 \leq \lambda_n^i \perp \phi^i \geq 0\)<br/><em>You can only push (\(\lambda_n > 0\)) if you're touching (\(\phi = 0\)). If separated (\(\phi > 0\)), force must be zero.</em></td>
+      </tr>
+      <tr>
+        <td>\(\gamma^i \geq 0\)<br/><em>(sliding speed slack)</em></td>
+        <td>\(\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i \geq 0\)<br/><em>(remaining friction budget)</em></td>
+        <td>This is the <span class="term">friction budget</span>. \(\mu\) is the friction coefficient. \(\mu\lambda_n^i\) is the total friction capacity (proportional to normal force). \(\boldsymbol{\beta}^i\) are the friction force components (one per edge of the friction pyramid, defined above in \(\boldsymbol{\lambda}\)). \(\mathbf{e}\) is simply a <span class="term">vector of all ones</span> of length \(n_e\) — so \(\mathbf{e}^\top\boldsymbol{\beta}^i = \beta_1 + \beta_2 + \cdots + \beta_{n_e}\), the total friction force used. The difference is how much friction capacity remains. This involves both \(\boldsymbol{\lambda}\) terms (through \(F\)) and is independent of \(\mathbf{x}\) and \(\mathbf{u}\).</td>
+        <td>\(0 \leq \gamma^i \perp (\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i) \geq 0\)<br/><em>If there is unused friction budget (budget > 0), the contact is sticking (\(\gamma = 0\)). If the contact is sliding (\(\gamma > 0\)), the budget must be fully used up (budget = 0).</em></td>
+      </tr>
+      <tr>
+        <td>\(\boldsymbol{\beta}^i \geq \mathbf{0}\)<br/><em>(friction force components, one per pyramid edge)</em></td>
+        <td>\(E_t J_t^i \dot{\mathbf{q}} + \gamma^i \mathbf{e} \geq \mathbf{0}\)<br/><em>(contact sliding velocity per friction direction)</em></td>
+        <td>This is the <span class="term">tangential sliding velocity</span> at the contact, one entry per friction pyramid edge. \(J_t^i\) is the <span class="term">tangential Jacobian</span> — it maps joint velocities \(\dot{\mathbf{q}}\) (part of the state \(\mathbf{x}\)) to the sliding velocity at contact \(i\) along each friction direction. \(E_t\) is a timestep scaling factor (it converts velocity to displacement over one timestep \(\Delta t\)). \(\gamma^i \mathbf{e}\) adds the sliding speed slack \(\gamma^i\) to every direction (remember \(\mathbf{e}\) = vector of ones). This involves the state \(\mathbf{x}\) (through \(E\)) and the sliding slack \(\gamma\) (which is part of \(\boldsymbol{\lambda}\), through \(F\)).</td>
+        <td>\(0 \leq \boldsymbol{\beta}^i \perp (E_t J_t^i \dot{\mathbf{q}} + \gamma^i \mathbf{e}) \geq 0\)<br/><em>Friction force \(\beta_j\) along direction \(j\) can only be nonzero if the contact is sliding along that direction (velocity = 0 means sticking, so \(\beta_j\) must be 0). If sliding (velocity > 0), friction opposes it.</em></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">How \(\boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c}\) encodes all three blocks</p>
+
+<p>
+  The single linear equation \(\boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c}\) packages all three complementarity conditions above into one matrix equation. Here is how each term contributes:
+</p>
+
+<ul>
+  <li><strong>\(E\mathbf{x}_k\)</strong> — the state-dependent part. The gap distance \(\phi^i\) depends on positions (part of \(\mathbf{x}\)). The sliding velocity \(E_t J_t^i \dot{\mathbf{q}}\) depends on velocities (also part of \(\mathbf{x}\)). So \(E\) contains the Jacobians of these quantities with respect to the state.</li>
+  <li><strong>\(F\boldsymbol{\lambda}_k\)</strong> — the force-dependent part. The friction budget \(\mu\lambda_n^i - \mathbf{e}^\top\boldsymbol{\beta}^i\) depends on both the normal force \(\lambda_n^i\) and the friction components \(\boldsymbol{\beta}^i\) (both are parts of \(\boldsymbol{\lambda}\)). The sliding velocity term also picks up \(\gamma^i \mathbf{e}\) (since \(\gamma^i\) is also part of \(\boldsymbol{\lambda}\)). So \(F\) encodes these structural relationships: the \(\mu\) entries, the \(-\mathbf{e}^\top\) entries, and the \(\mathbf{e}\) entries.</li>
+  <li><strong>\(H\mathbf{u}_k\)</strong> — the control-dependent part. In most setups this is zero or near-zero, because the commanded end-effector force \(\mathbf{u}\) does not directly change the gap distance or sliding velocity (it does so indirectly through the dynamics, captured by \(B\) and \(D\)).</li>
+  <li><strong>\(\mathbf{c}\)</strong> — the constant offset. Captures the current gap distances and sliding velocities at the linearisation point, minus the linear terms. Same idea as \(\mathbf{d}\) in the dynamics equation.</li>
+</ul>
+
+<div class="card indigo">
+  <div class="card-label">Connecting the dots: where are β and e?</div>
+  <p>
+    You may have noticed that \(\boldsymbol{\eta}_k\) is defined using \(\mathbf{x}\), \(\boldsymbol{\lambda}\), and \(\mathbf{u}\) — but the complementarity conditions use \(\boldsymbol{\beta}\) and \(\mathbf{e}\). Here is the connection: \(\boldsymbol{\beta}^i\) and \(\gamma^i\) are <em>sub-components of \(\boldsymbol{\lambda}_k\)</em> (see the \(\boldsymbol{\lambda}\) definition above). And \(\mathbf{e}\) (the vector of all ones) is a <em>structural constant</em> that lives inside the matrix \(F\). So when you write \(\boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c}\), the \(\boldsymbol{\beta}\) terms come through \(F\boldsymbol{\lambda}_k\) (because \(\boldsymbol{\beta}\) is part of \(\boldsymbol{\lambda}\)), and the \(\mathbf{e}\) terms are baked into the entries of \(F\). Nothing is missing — it's all inside the matrices.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §3  BUILDING THE LCS: AUTODIFF LINEARIZATION
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s3">
+  <span class="slug">§3</span>
+  <h2>Building the LCS: AutoDiff Linearization via Drake</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The LCS matrices \(A, B, D, E, F, H, \mathbf{c}, \mathbf{d}\) are the output of
+  the <code>LCSFactory</code>, which lives in the C3 library at
+  <code>c3/multibody/lcs_factory.h</code> (pulled as an external Bazel dependency
+  from <a href="https://github.com/DAIRLab/c3.git">github.com/DAIRLab/c3</a>).
+</p>
+
+<div class="pipeline">
+  <div class="pipe-box">
+    <div class="pipe-label">Input</div>
+    <div class="pipe-name">Drake MultibodyPlant</div>
+    <div class="pipe-detail">Franka arm + object, full nonlinear dynamics, contact geometry via GeometryId pairs</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">
+    <div class="pipe-label">Evaluation</div>
+    <div class="pipe-name">AutoDiff pass</div>
+    <div class="pipe-detail">Plant instantiated with <code>AutoDiffXd</code> scalar type; evaluated at current \((\hat q, \hat v, \hat u)\) to extract Jacobians</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">
+    <div class="pipe-label">Output</div>
+    <div class="pipe-name">LCS matrices</div>
+    <div class="pipe-detail">\(A, B, D, E, F, H, \mathbf{c}, \mathbf{d}\) — held fixed for this timestep's ADMM solve</div>
+  </div>
+</div>
+
+<p>
+  The controller holds two parallel instances of the plant: one with the standard
+  <code>double</code> scalar (for fast simulation and evaluation) and one with
+  <code>AutoDiffXd</code> (for extracting the Jacobians needed by the LCS factory):
+</p>
+
+<pre>
+<span class="ty">MultibodyPlant&lt;double&gt;</span>&         plant_;     <span class="cm">// double-precision plant</span>
+<span class="ty">MultibodyPlant&lt;AutoDiffXd&gt;</span>&      plant_ad_;  <span class="cm">// AutoDiff plant for Jacobians</span>
+</pre>
+
+<p>
+  The contact geometry pairs are specified as <code>SortedPair&lt;GeometryId&gt;</code> —
+  each pair identifies two geometries whose signed distance function \(\phi^i(\mathbf{q})\)
+  defines one contact's gap. For Push Anything, the relevant pairs are end-effector
+  sphere vs. each object face, and end-effector sphere vs. ground.
+</p>
+
+<p>
+  The LCS creation for all candidate samples happens in one batch call:
+</p>
+
+<pre>
+<span class="kw">auto</span> lcs_pair = SamplingC3Controller::<span class="ty">CreateLCSObjectsForSamples</span>(
+    candidate_states,   <span class="cm">// one per sample EE position</span>
+    x_lcs_curr,
+    lcs_factory_options
+);
+<span class="kw">std::vector&lt;LCS&gt;</span> lcs_candidates          = lcs_pair.first;   <span class="cm">// for planning</span>
+<span class="kw">std::vector&lt;LCS&gt;</span> lcs_candidates_for_cost = lcs_pair.second;  <span class="cm">// for cost eval</span>
+</pre>
+
+<p>
+  Two LCS objects are built per candidate — one for the ADMM solve and one for
+  post-solve cost evaluation (they can differ if the cost evaluation strategy
+  simulates the LCS forward separately from the planned trajectory).
+</p>
+
+<div class="card amber">
+  <div class="card-label">Important: the LCS is valid only locally</div>
+  <p>
+    The linearization is valid only in a small neighbourhood of the current state.
+    Because the LCS is rebuilt every control step from the latest measured state
+    \(\hat{\mathbf{x}}\), the approximation error stays bounded as long as the
+    system evolves slowly between steps. This is the standard assumption behind
+    all MPC-based controllers.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §4  WHY THE QPCC IS HARD AND WHAT ADMM DOES
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s4">
+  <span class="slug">§4</span>
+  <h2>Why the QPCC Is Hard and What ADMM Does About It</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The complementarity constraint \(0 \leq \boldsymbol{\lambda}_k \perp \boldsymbol{\eta}_k \geq 0\)
+  can be written equivalently as:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\lambda}_k \geq \mathbf{0}, \quad
+    \boldsymbol{\eta}_k \geq \mathbf{0}, \quad
+    \boldsymbol{\lambda}_k \odot \boldsymbol{\eta}_k = \mathbf{0}
+  \]
+</div>
+<p>
+  The last condition (element-wise product equals zero, written \(\odot\)) is a <span class="term">bilinear equality</span> — it multiplies two variables together, which makes it nonlinear and <span class="term">non-convex</span>. (A problem is "convex" if the set of valid solutions forms a solid blob with no holes or sharp corners — any point between two valid solutions is also valid. "Non-convex" means the valid solutions are fragmented, like separate islands.) The feasible set here is an L-shaped region in \((\lambda_i, \eta_i)\) space: you must be on the \(\lambda\)-axis (force > 0, gap = 0) or the \(\eta\)-axis (force = 0, gap > 0) — the two arms of the L. This set is not convex (the point halfway between the two arms is in the interior, which is not allowed). A standard QP solver can only handle convex problems, so it cannot handle this.
+</p>
+
+<blockquote>
+  <p>
+    C3's key insight: use ADMM (Alternating Direction Method of Multipliers) to
+    <em>split</em> the problem into two alternating subproblems — one that is a
+    standard convex QP (no complementarity), and one that is a trivial closed-form
+    projection onto the L-shaped complementarity set per element.
+    Neither subproblem is hard; iterating between them converges to a solution of
+    the full non-convex problem.
+  </p>
+</blockquote>
+
+<p>
+  ADMM is a classic tool for non-convex and distributed optimization. Here is how it works in plain English: it makes a <em>copy</em> of all the decision variables (call the originals \(\mathbf{z}\) and the copies \(\boldsymbol{\delta}\)). It puts the easy constraints (dynamics, bounds) on \(\mathbf{z}\) and the hard constraint (complementarity) on \(\boldsymbol{\delta}\). Then it alternates: first optimise \(\mathbf{z}\) (ignoring complementarity), then fix \(\boldsymbol{\delta}\) to satisfy complementarity (ignoring dynamics), then nudge a "disagreement tracker" \(\mathbf{w}\). Over many rounds, \(\mathbf{z}\) and \(\boldsymbol{\delta}\) converge to the same answer — a solution that satisfies both sets of constraints. The magic here is that projecting the copy onto the complementarity set is analytically trivial (just comparing two numbers).
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §5  CONSENSUS REFORMULATION
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s5">
+  <span class="slug">§5</span>
+  <h2>Consensus Reformulation: Setting Up ADMM</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Pack all decision variables at timestep \(k\) into one vector:
+</p>
+
+<div class="eq">
+  \[
+    \mathbf{z}_k =
+    \begin{pmatrix} \mathbf{x}_k \\ \boldsymbol{\lambda}_k \\ \mathbf{u}_k \\ \boldsymbol{\eta}_k \end{pmatrix}
+    \in \mathbb{R}^{n_z}, \qquad
+    n_z = n_x + n_\lambda + n_u + n_\lambda
+  \]
+</div>
+
+<p>
+  Introduce a copy vector \(\boldsymbol{\delta}_k\) of the same size, and split
+  the constraints into two sets. Here is what the two set names mean:
+</p>
+
+<ul>
+  <li><span class="term">\(\mathcal{D}\)</span> (the "dynamics-feasible" set) — the set of all trajectories that obey the linear constraints: dynamics equations, gap definitions, initial conditions, and box bounds on inputs/states. This is everything <em>except</em> complementarity.</li>
+  <li><span class="term">\(\mathcal{H}_k\)</span> (the "complementarity-feasible" set at timestep \(k\)) — the set of all \((\boldsymbol{\lambda}_k, \boldsymbol{\eta}_k)\) pairs that satisfy the complementarity constraint \(0 \leq \boldsymbol{\lambda}_k \perp \boldsymbol{\eta}_k \geq 0\). The subscript \(k\) just means "at timestep \(k\)" — each timestep has its own independent complementarity set. Geometrically, \(\mathcal{H}_k\) is an L-shaped region in each \((\lambda_i, \eta_i)\) pair: you must be on one axis or the other, never in the interior.</li>
+</ul>
+
+<p>Now the two sets in table form:</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Set</th><th>Constraints it contains</th><th>Assigned to</th><th>Convex?</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>\(\mathcal{D}\)</strong></td>
+        <td>Linearised dynamics, gap definition, initial condition, input/state box constraints, EE velocity limits</td>
+        <td>\(\mathbf{z}_k\) (original variables)</td>
+        <td class="yes">Yes — all linear</td>
+      </tr>
+      <tr>
+        <td><strong>\(\mathcal{H}_k\)</strong></td>
+        <td>Complementarity: \(0 \leq \boldsymbol{\delta}_k^\lambda \perp \boldsymbol{\delta}_k^\eta \geq 0\)<br/><em>(for each contact: either force=0 or gap=0, never both positive)</em></td>
+        <td>\(\boldsymbol{\delta}_k\) (copy), <em>independently per timestep \(k\)</em></td>
+        <td class="no">No — but projection is trivial</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>The QPCC is rewritten as a <span class="term">consensus problem</span> — both \(\mathbf{z}\) and \(\boldsymbol{\delta}\) must agree on the same answer, but each is only responsible for its own set of constraints:</p>
+
+<div class="eq-set">
+  <p>\(\displaystyle\min_{\mathbf{z},\,\boldsymbol{\delta}}\; c(\mathbf{z}) + \mathcal{I}_\mathcal{D}(\mathbf{z}) + \sum_{k=0}^{N-1}\mathcal{I}_{\mathcal{H}_k}(\boldsymbol{\delta}_k)\)</p>
+  <p>\(\text{subject to}\quad \mathbf{z}_k = \boldsymbol{\delta}_k \quad \forall k\)</p>
+</div>
+
+<p>
+  Here \(\mathcal{I}_S(\cdot)\) is an <span class="term">indicator function</span>: it equals 0 if the argument is inside the set \(S\) (all constraints satisfied), and \(+\infty\) if it is outside (any constraint violated). It's a mathematical trick to turn constraints into penalties in the objective. The constraint \(\mathbf{z}_k = \boldsymbol{\delta}_k\) is the <em>consensus constraint</em> — it says the dynamics-feasible copy and the complementarity-feasible copy must eventually agree on the same values.
+</p>
+
+<p>
+  Form the <span class="term">augmented Lagrangian</span> — the ADMM objective — by adding a
+  quadratic penalty for the consensus constraint. (An augmented Lagrangian is just the original objective plus a penalty term that punishes violations of the consensus constraint, plus a "dual variable" term that accumulates past violations to help convergence):
+</p>
+
+<div class="eq">
+  \[
+    \mathcal{L}(\mathbf{z}, \boldsymbol{\delta}, \mathbf{w})
+    = c(\mathbf{z}) + \mathcal{I}_\mathcal{D}(\mathbf{z})
+    + \sum_{k} \mathcal{I}_{\mathcal{H}_k}(\boldsymbol{\delta}_k)
+    + \frac{1}{2}\sum_{k} \bigl(\mathbf{z}_k - \boldsymbol{\delta}_k + \mathbf{w}_k\bigr)^\top
+    \Sigma_k \bigl(\mathbf{z}_k - \boldsymbol{\delta}_k + \mathbf{w}_k\bigr)
+  \]
+</div>
+
+<p>
+  Here \(\mathbf{w}_k\) are the <span class="term">scaled dual variables</span> — think of them as a running "memory" of past disagreements between \(\mathbf{z}\) and \(\boldsymbol{\delta}\). (In optimization jargon, they are also called "Lagrange multipliers" — numbers that track how badly a constraint is being violated, and push harder to fix it the longer it stays violated.) \(\Sigma_k\) is a <span class="term">block-diagonal penalty matrix</span> — a diagonal matrix where different blocks of variables get different penalty weights. In the code this is parameterized by the \(G\) and \(U\) cost matrices (see §10). Higher penalty = stronger pull toward agreement = faster convergence but possibly less optimal objective.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §6  z-UPDATE: QP SOLVED WITH OSQP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s6">
+  <span class="slug">§6</span>
+  <h2>z-update: A Standard QP Solved with OSQP</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="step-badge">ADMM Step 1 of 3 — the expensive step</div>
+
+<p>
+  "Holding \(\boldsymbol{\delta}^i\) and \(\mathbf{w}^i\) fixed" means: treat the copy variables and the disagreement trackers as constants (they were computed in the previous ADMM iteration). Now find the best \(\mathbf{z}\) given those fixed values. The superscript \(i\) is the ADMM iteration counter — not the timestep.
+</p>
+
+<div class="eq">
+  \[
+    \mathbf{z}^{i+1} = \arg\min_{\mathbf{z} \in \mathcal{D}}\;
+    \Bigl[c(\mathbf{z}) + \tfrac{1}{2}\sum_k \|\mathbf{z}_k - \boldsymbol{\delta}_k^i + \mathbf{w}_k^i\|_{\Sigma_k}^2\Bigr]
+  \]
+</div>
+
+<p>
+  Because \(c(\mathbf{z})\) is quadratic (the MPC cost) and \(\mathcal{D}\) contains only linear
+  constraints (dynamics, bounds), this is a <span class="term">standard convex QP</span> (Quadratic Program — an optimization problem with a quadratic objective and linear constraints). No complementarity.
+  No integer variables. OSQP can solve it.
+</p>
+
+<p>
+  Concretely, the cost expands to:
+</p>
+
+<div class="eq">
+  \[
+    \underbrace{\sum_{k=0}^{N-1}\tilde{\mathbf{x}}_k^\top Q_k \tilde{\mathbf{x}}_k + \mathbf{u}_k^\top R_k \mathbf{u}_k + \tilde{\mathbf{x}}_N^\top Q_N\tilde{\mathbf{x}}_N}_{\text{original MPC objective}}
+    + \underbrace{\frac{1}{2}\sum_k \|\mathbf{z}_k - \boldsymbol{\delta}_k^i + \mathbf{w}_k^i\|_{\Sigma_k}^2}_{\text{quadratic pull toward } \boldsymbol{\delta}^i}
+  \]
+</div>
+
+<p>
+  The second term is a quadratic proximity penalty that pulls \(\mathbf{z}_k\)
+  toward \(\boldsymbol{\delta}_k^i\) (the complementarity-feasible copy from the
+  last iteration). As ADMM converges, \(\boldsymbol{\delta}^i \to \mathbf{z}^i\)
+  and this term vanishes.
+</p>
+
+<p>
+  The linear constraints in \(\mathcal{D}\) cover all N timesteps simultaneously.
+  The full QP is therefore quite large — the variable count scales as
+  \(N \cdot (n_x + n_\lambda + n_u + n_\lambda)\) — but its constraint matrix
+  is highly structured (<span class="term">block-banded</span>: each timestep's dynamics only connect to the previous and next timestep, so the matrix has nonzero entries only along a narrow diagonal band, like a staircase). OSQP exploits this sparsity to solve much faster than a generic solver would.
+</p>
+
+<div class="card green">
+  <div class="card-label">The solver: OSQP</div>
+  <p>
+    The z-update QP is solved with <span class="term">OSQP</span> (Operator Splitting QP), invoked via
+    Drake's solver interface. OSQP settings are loaded from
+    <code>solvers/osqp_options_default.yaml</code> at startup and passed to the
+    C3 object via <code>test_c3_object->SetSolverOptions(solver_options_)</code>.
+    OSQP uses an <span class="term">operator-splitting method</span> internally (it splits the QP into simpler pieces and alternates between them — similar in spirit to how ADMM splits the QPCC), which makes it fast and <span class="term">warm-startable</span> (it can reuse the solution from the previous ADMM iteration as a starting guess, converging much faster than starting from scratch). The same OSQP instance can be efficiently
+    re-solved at the next ADMM iteration with a slightly changed right-hand side.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §7  δ-UPDATE: THREE PROJECTION STRATEGIES
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s7">
+  <span class="slug">§7</span>
+  <h2>δ-update: Three Strategies for Projecting onto Complementarity</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="step-badge">ADMM Step 2 of 3 — independently per timestep, parallelizable</div>
+
+<p>
+  Given the updated \(\mathbf{z}^{i+1}\) and dual variables \(\mathbf{w}^i\), <span class="term">project</span>
+  onto the complementarity set — independently for each timestep \(k\). ("Projecting" a point onto a set means finding the closest point that is inside the set. Imagine you have a point in 2D space and you want to snap it to the nearest point on an L-shaped curve — that's projection.)
+</p>
+
+<div class="eq">
+  \[
+    \boldsymbol{\delta}_k^{i+1}
+    = \Pi_{\mathcal{H}_k}\!\bigl(\mathbf{z}_k^{i+1} + \mathbf{w}_k^i\bigr)
+    = \arg\min_{\boldsymbol{\delta}_k \in \mathcal{H}_k}\;\tfrac{1}{2}\|\mathbf{z}_k^{i+1} + \mathbf{w}_k^i - \boldsymbol{\delta}_k\|^2
+  \]
+</div>
+
+<p>
+  For the non-complementarity components (state \(\mathbf{x}\), control \(\mathbf{u}\)),
+  the projection is <span class="term">identity</span> — they just pass through unchanged (there is no complementarity constraint on \(\mathbf{x}\) or \(\mathbf{u}\), so the "closest valid point" is the point itself). The interesting part is the
+  projection of the \((\boldsymbol{\lambda}, \boldsymbol{\eta})\) block onto the
+  L-shaped complementarity set \(\mathcal{H}_k\).
+</p>
+
+<p>
+  Three projection strategies are implemented, selectable via the
+  <code>projection_type</code> YAML parameter. The code instantiates the corresponding
+  C3 subclass:
+</p>
+
+<pre>
+<span class="kw">if</span> (projection_type == <span class="st">"C3+"</span>)  { c3 = <span class="ty">C3Plus</span>(...); }
+<span class="kw">if</span> (projection_type == <span class="st">"QP"</span>)   { c3 = <span class="ty">C3QP</span>(...); }
+<span class="kw">if</span> (projection_type == <span class="st">"MIQP"</span>) { c3 = <span class="ty">C3MIQP</span>(...); }
+</pre>
+
+<div class="three-col" style="margin-top:1rem;">
+
+  <div class="card" style="margin-bottom:0; border-left:3px solid var(--green); background:var(--green-bg); border-color:var(--green-bd);">
+    <div class="card-label" style="color:var(--green);">C3+ (Recommended)</div>
+    <h3>Linear Switching Projection</h3>
+    <p>
+      For each scalar pair \((\lambda^\circ, \eta^\circ) = (\mathbf{z}_k^\lambda + \mathbf{w}_k^\lambda,\;\mathbf{z}_k^\eta + \mathbf{w}_k^\eta)\),
+      the nearest point on the L-shaped set is:
+    </p>
+    <div class="eq" style="padding:0.8rem; font-size:0.82rem; margin:0.6rem 0;">
+      \[
+        (\hat\lambda, \hat\eta) =
+        \begin{cases}
+          (\lambda^\circ,\; 0) & \text{if } \lambda^\circ \geq \eta^\circ,\; \lambda^\circ \geq 0 \\
+          (0,\; \eta^\circ)    & \text{if } \eta^\circ > \lambda^\circ,\; \eta^\circ \geq 0 \\
+          (0,\; 0)             & \text{if both negative}
+        \end{cases}
+      \]
+    </div>
+    <p style="font-size:0.88rem;">
+      This is \(O(n_\lambda)\) per timestep — purely arithmetic, no solver.
+      All \(N\) timesteps are fully independent and can run in parallel.
+      C3+ uses this faster projection replacing the original C3's more expensive
+      step, enabling real-time performance. This is the default for Push Anything.
+    </p>
+  </div>
+
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">C3QP</div>
+    <h3>QP-based Projection</h3>
+    <p>
+      Projects \((\boldsymbol{\lambda}^\circ, \boldsymbol{\eta}^\circ)\) onto
+      \(\mathcal{H}_k\) by solving a small QP per timestep. The QP minimises
+      the Euclidean distance while enforcing the complementarity condition as
+      a combinatorial constraint via Big-M relaxation or sequential search
+      over active set combinations.
+    </p>
+    <p style="font-size:0.88rem;">
+      More accurate than C3+ at the cost of \(N\) small QP solves per ADMM
+      iteration. Each of these is cheap (few variables) but the overhead adds
+      up. Useful when accuracy matters more than speed.
+    </p>
+  </div>
+
+  <div class="card" style="margin-bottom:0; border-left:3px solid var(--red); background:var(--red-bg); border-color:var(--red-bd);">
+    <div class="card-label" style="color:var(--red);">C3MIQP</div>
+    <h3>Mixed-Integer QP Projection</h3>
+    <p>
+      Projects onto \(\mathcal{H}_k\) via a MIQP: binary variables explicitly
+      select which leg of the L (contact on or off) is active for each element
+      pair \((\lambda_i, \eta_i)\). Solved with a MIQP solver (Drake's default
+      is GUROBI or SCIP).
+    </p>
+    <p style="font-size:0.88rem;">
+      The most accurate projection — it finds the globally optimal assignment
+      of contact modes. Also the slowest. Used for offline analysis or when
+      worst-case feasibility is more important than real-time speed.
+    </p>
+  </div>
+
+</div>
+
+<p style="margin-top:1.2rem;">
+  In all three cases, the result \(\boldsymbol{\delta}_k^{i+1}\) is guaranteed to satisfy
+  complementarity exactly — it is a point on the L-shaped set. The disagreement
+  between \(\mathbf{z}_k^{i+1}\) (linear-feasible) and \(\boldsymbol{\delta}_k^{i+1}\)
+  (complementarity-feasible) is captured by the dual variable \(\mathbf{w}_k\).
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §8  w-UPDATE, CONVERGENCE, WHAT COMES OUT
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s8">
+  <span class="slug">§8</span>
+  <h2>w-update, Convergence, and What Comes Out</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="step-badge">ADMM Step 3 of 3 — just addition</div>
+
+<p>
+  After the z-update and δ-update, the <span class="term">scaled dual variables</span> (the "disagreement memory" \(\mathbf{w}\)) are updated:
+</p>
+
+<div class="eq">
+  \[
+    \mathbf{w}_k^{i+1} = \mathbf{w}_k^i + \mathbf{z}_k^{i+1} - \boldsymbol{\delta}_k^{i+1} \qquad \forall k
+  \]
+</div>
+
+<p>
+  \(\mathbf{w}_k\) accumulates the running sum of the disagreement between \(\mathbf{z}_k\)
+  (linear-feasible) and \(\boldsymbol{\delta}_k\) (complementarity-feasible). Think of it as a "grudge" that grows each time the two copies disagree — this grudge is fed back into the next z-update and δ-update as an extra pull, forcing them to move closer together.
+  As the algorithm <span class="term">converges</span> (meaning the iterates stop changing much — the two copies agree), \(\mathbf{z}_k \to \boldsymbol{\delta}_k\) and
+  \(\mathbf{w}_k\) stabilises. In practice the iterations stop after a fixed count
+  (not a convergence tolerance) to stay within the control timestep budget — there is only ~50ms before the robot needs the next command.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The complete three-update cycle</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>ADMM Update</th><th>What it solves</th><th>Output</th><th>Cost</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>z-update</strong></td>
+        <td>QP over full horizon — quadratic cost + linear constraints (dynamics, bounds)</td>
+        <td>\(\mathbf{z}^{i+1} = [\mathbf{x}_{0:N}, \boldsymbol{\lambda}_{0:N-1}, \mathbf{u}_{0:N-1}, \boldsymbol{\eta}_{0:N-1}]\)</td>
+        <td>OSQP call — \(O(n_z^2)\), dominant cost</td>
+      </tr>
+      <tr>
+        <td><strong>δ-update</strong></td>
+        <td>Per-timestep projection onto complementarity set \(\mathcal{H}_k\)</td>
+        <td>\(\boldsymbol{\delta}_k^{i+1}\) for each \(k\) independently</td>
+        <td>C3+: closed form. C3QP: small QPs. MIQP: binary programs</td>
+      </tr>
+      <tr>
+        <td><strong>w-update</strong></td>
+        <td>Dual variable accumulation: \(\mathbf{w}_k \mathrel{+}= \mathbf{z}_k - \boldsymbol{\delta}_k\)</td>
+        <td>Updated multipliers \(\mathbf{w}_k^{i+1}\)</td>
+        <td>\(O(n_z)\) — just vector addition</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">What comes out of a full C3 solve</p>
+
+<p>
+  After the last ADMM iteration, the solution stored in the C3 object is:
+</p>
+
+<pre>
+<span class="kw">vector&lt;VectorXd&gt;</span> z_sol;  <span class="cm">// z_sol[k] = [x_k, λ_k, u_k] for k = 0..N-1</span>
+
+<span class="cm">// Extracted as:</span>
+x_plan[k]      = z_sol[k].segment(0,        n_x_);
+lambda_plan[k] = z_sol[k].segment(n_x_,     n_lambda_);
+u_plan[k]      = z_sol[k].segment(n_x_ + n_lambda_, n_u_);
+</pre>
+
+<p>
+  Only the <em>first</em> control action \(\mathbf{u}_0\) and desired state \(\mathbf{x}_0^\text{des}\)
+  are applied (<span class="term">receding horizon</span> — you plan a full trajectory but only execute the first step, then re-plan from scratch). The rest of the horizon is discarded and
+  re-optimised from scratch at the next control step with the updated measured state.
+  This is identical to standard nonlinear MPC except the re-solve uses a fresh LCS
+  rather than re-linearising around a warm-started trajectory.
+</p>
+
+<div class="card indigo">
+  <div class="card-label">The end-on-QP-step option</div>
+  <p>
+    An option <code>end_on_qp_step</code> controls whether the final ADMM iteration
+    ends on a z-update (QP step) or a δ-update (projection step). Ending on the QP step
+    means the returned trajectory satisfies the linear constraints (dynamics, bounds)
+    exactly — but may violate complementarity slightly. Ending on the δ-update
+    means complementarity is satisfied exactly — but the dynamics may be slightly
+    violated. For execution, ending on the QP step is usually preferred: a dynamically
+    consistent trajectory that is sent to OSC is more important than exact
+    complementarity satisfaction in the planned trajectory.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §9  THE SAMPLING OUTER LOOP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s9">
+  <span class="slug">§9</span>
+  <h2>The Sampling Outer Loop</h2>
+  <div class="rule"></div>
+</div>
+
+<p style="font-weight:600; color:var(--text);">Why do we need sampling at all?</p>
+
+<p>
+  You might be wondering: if \(\mathbf{x}_{0:N}\) are all optimization variables, doesn't the optimizer just figure out where to put the end-effector? The answer is: <strong>not reliably</strong>. Here's why:
+</p>
+
+<ul>
+  <li><strong>The optimizer does not force contact.</strong> The complementarity constraint \(0 \leq \boldsymbol{\lambda}_k \perp \boldsymbol{\eta}_k \geq 0\) allows \(\boldsymbol{\lambda}_k = \mathbf{0}\) (zero contact force) as a valid solution. This means the end-effector can be anywhere in free space — it doesn't have to touch the object.</li>
+  
+  <li><strong>If the arm starts far away, the optimizer plans through free space.</strong> Suppose the end-effector is 30cm from the object and the planning horizon is 1 second. The optimizer will likely plan a trajectory that moves the arm toward the object but doesn't reach it within the horizon. All \(\boldsymbol{\lambda}_k\) will be zero (no contact happens), so the object doesn't move in the plan. The optimizer has no gradient to reduce object error — it's stuck.</li>
+  
+  <li><strong>C3 is a local optimizer.</strong> It can only make progress if the end-effector is already close enough to the object that contact can happen within the next \(N\) timesteps. "Close enough" means within the planning horizon's reach — if the horizon is 1 second and the arm moves at 0.5 m/s, the arm can only reach points within ~50cm.</li>
+</ul>
+
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">The solution: try multiple "what if" scenarios</p>
+
+<p>
+  Instead of hoping the optimizer will "find" the object from far away, we explicitly generate candidate contact points on the object surface and ask: <em>"what if the arm were already here?"</em> For each candidate:
+</p>
+
+<ol>
+  <li>Pick a point on the object's surface (using the object's mesh geometry)</li>
+  <li>Set the initial state \(\mathbf{x}_0\) to have the end-effector at that candidate position (pretend the arm is already there)</li>
+  <li>Run a full C3/ADMM solve — now the optimizer can plan contact forces because the arm starts in contact</li>
+  <li>Evaluate the cost of the resulting plan</li>
+</ol>
+
+<p>
+  After trying all candidates (in parallel), pick the one with the lowest cost. This is the "best place to contact the object" according to the optimizer. The arm then moves to that position and starts pushing.
+</p>
+
+<div class="card amber">
+  <div class="card-label">Key insight</div>
+  <p>
+    The sampling happens <em>outside</em> the optimization. It's a separate layer that generates candidate starting points for the optimizer to work from. Without this outer loop, C3 would get stuck whenever the arm isn't already touching the object. This is why it's called a <strong>sampling-based</strong> controller.
+  </p>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">When does C3 get stuck without sampling?</p>
+
+<p>
+  A single C3 solve is a local optimizer — it can only make progress on the object
+  if the end-effector is already within the planning horizon's reach of the object.
+  When the arm is far away, or when the current approach direction is stuck in a
+  local minimum, a pure C3 solve degenerates: \(\boldsymbol{\lambda}_k = \mathbf{0}\)
+  for all \(k\), the D term vanishes, and the optimizer has no gradient to reduce
+  object error. This is exactly the analysis in
+  <a href="grasp_theory_critique.html#s11">§11.4</a> of the companion document.
+</p>
+
+<p>
+  The sampling outer loop solves this by generating \(S\) candidate end-effector
+  positions <em>on or near the object surface</em> and running a C3 solve from each,
+  then picking the best.
+</p>
+
+<p style="font-weight:600; color:var(--text);">How candidate positions are sampled</p>
+
+<ol>
+  <li>Load the object's mesh as a <code>TriangleSurfaceMesh</code> (OBJ file, via Drake's geometry library).</li>
+  <li>Build a list of triangular faces, weighted by area, and compute a cumulative-area probability distribution.</li>
+  <li>Reject faces whose outward normal is too vertical (i.e., top and bottom faces of the object that the arm can't push against laterally) — threshold controlled by <code>buffer_distance</code> and <code>sample_projection_clearance</code>.</li>
+  <li>For each sample: draw a face proportional to area, pick a random point on that face, project outward along the face normal by a fixed stand-off distance, clamp to the table height, check for collisions with all objects and walls. Retry if in collision.</li>
+</ol>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Parallel evaluation with <span class="term">OpenMP</span> (a C++ library for running code on multiple CPU cores simultaneously)</p>
+
+<p>
+  Each candidate state (one per sample + the current EE location) gets its own
+  LCS, its own C3 object, and its own full ADMM solve. These are run in parallel:
+</p>
+
+<pre>
+<span class="cm">// One C3 solve per sample, in parallel</span>
+<span class="kw">#pragma omp parallel for</span> num_threads(num_threads_to_use_)
+<span class="kw">for</span> (<span class="ty">int</span> i = 0; i < num_total_samples; i++) {
+    test_c3_object->Solve(candidate_states[i]);
+    <span class="ty">double</span> cost = CalcCost(cost_type, lcs_for_cost, ...);
+    all_sample_costs_[i] = cost + travel_cost_per_meter * xy_travel_distance;
+}
+</pre>
+
+<p>
+  The total cost for each candidate adds a <em>travel cost</em> — the XY distance
+  from the current EE position to the candidate. This penalises candidates that
+  require the arm to first move a long way, favouring nearby candidates that
+  produce equally good plans.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Repositioning mode vs. C3 mode</p>
+
+<p>
+  The controller maintains a flag <code>is_doing_c3_</code>. Two modes are possible:
+</p>
+
+<div class="two-col">
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">C3 Mode (<code>is_doing_c3_ = true</code>)</div>
+    <p>
+      The C3 solve runs and its output trajectory is executed directly by OSC.
+      Progress is tracked by monitoring the object's cost history.
+      If cost has not improved for <code>progress_steps_without_improvement</code>
+      control steps, the controller concludes the current approach is stuck
+      and switches to repositioning mode.
+    </p>
+  </div>
+  <div class="card amber" style="margin-bottom:0;">
+    <div class="card-label">Repositioning Mode (<code>is_doing_c3_ = false</code>)</div>
+    <p>
+      The controller moves the end-effector along a straight-line collision-free
+      path to the best sampled candidate position (no contact reasoning). Once
+      the EE reaches the candidate, it switches back to C3 mode. The previous
+      repositioning target is re-evaluated at each step and updated if a better
+      candidate is found.
+    </p>
+  </div>
+</div>
+
+<div class="card indigo" style="margin-top:1rem;">
+  <div class="card-label">Correction to the mental model in the question</div>
+  <p>
+    The question described "two modes — one where phi > 0, then a point is sampled
+    and free motion computed." That is close but not quite right. The sampling happens
+    at every control step regardless — it is always evaluating multiple candidates in
+    parallel. The complementarity constraint naturally produces \(\boldsymbol{\lambda}_k = 0\)
+    when the gap is large (no contact is possible in the horizon), but C3 does not
+    "plan a free motion trajectory" as a separate pass. Instead, the Q-penalized
+    objective and the failing complementarity gradient together cause the optimizer
+    to plan movement toward the goal state with zero contact forces — which physically
+    means "move through free space toward where contact would be useful."
+    The repositioning mode is a <em>separate explicit logic switch</em> that kicks in
+    only when C3 makes no measurable cost progress, not whenever phi > 0.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §10  COST MATRICES AND TWO-PHASE SWITCHING
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s10">
+  <span class="slug">§10</span>
+  <h2>Cost Matrices Q, R, G, U and the Two-Phase Switching</h2>
+  <div class="rule"></div>
+</div>
+
+<p style="font-weight:600; color:var(--text);">Q and R: the MPC stage costs</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Matrix</th><th>Size</th><th>Role</th><th>Tuning note</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\(Q_k \in \{Q_0, \ldots, Q_N\}\)</td>
+        <td>\(n_x \times n_x\)</td>
+        <td>Penalises state error \(\tilde{\mathbf{x}}_k = \mathbf{x}_k - \mathbf{x}^\text{goal}\). Diagonal. Large entries on object pose rows; small entries on EE rows.</td>
+        <td>\(Q_N \gg Q_k\) so terminal cost concentrates pull at end of horizon. Both switch values at the phase boundary (see below).</td>
+      </tr>
+      <tr>
+        <td>\(R_k\)</td>
+        <td>\(n_u \times n_u\)</td>
+        <td>Penalises control effort \(\|\mathbf{u}_k\|^2\). Diagonal. Prevents the optimizer from commanding arbitrarily large forces.</td>
+        <td>Small: aggressive pushing. Large: gentle motion.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  A <span class="term">discount factor</span> \(\gamma \in (0,1]\) is applied: \(Q_k = \gamma^k \cdot Q\).
+  This means the penalty on state error gets smaller for timesteps further in the future (e.g., if \(\gamma = 0.95\), the penalty at step 10 is only \(0.95^{10} \approx 0.60\) of the original). This makes the solver focus more
+  on what can actually be influenced in the near term, since distant predictions are less reliable anyway.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">G and U: the ADMM consensus penalty matrices</p>
+
+<p>
+  \(G\) and \(U\) are the penalty matrices applied to the
+  \(\boldsymbol{\lambda}\) and \(\boldsymbol{\eta}\) components of the consensus
+  residual \(\mathbf{z}_k - \boldsymbol{\delta}_k + \mathbf{w}_k\) in the
+  augmented Lagrangian:
+</p>
+
+<div class="eq">
+  \[
+    \Sigma_k = \text{blockdiag}\!\bigl(G_x,\; G_k,\; R_k,\; U_k\bigr)
+  \]
+</div>
+
+<p>
+  where the four blocks correspond to the \((\mathbf{x}, \boldsymbol{\lambda}, \mathbf{u}, \boldsymbol{\eta})\)
+  components of \(\mathbf{z}_k\). In the z-update QP, this appears as extra quadratic
+  terms on \(\boldsymbol{\lambda}_k\) and \(\boldsymbol{\eta}_k\) that pull them
+  toward the complementarity-feasible \(\boldsymbol{\delta}_k\). Tuning \(G\) and
+  \(U\) controls how strongly the z-update respects the complementarity projection —
+  higher values force faster convergence to the complementarity-feasible set but may
+  slow down the objective reduction. They are tunable via YAML config, and uniform
+  vectors of \(N\) matrices are constructed in the controller:
+</p>
+
+<pre>
+G_ = <span class="ty">std::vector&lt;MatrixXd&gt;</span>(N_, sampling_c3_options_.G);
+U_ = <span class="ty">std::vector&lt;MatrixXd&gt;</span>(N_, sampling_c3_options_.U);
+</pre>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Two-phase cost switching</p>
+
+<p>
+  The controller monitors the XY distance between the current object position and
+  the goal. Once it falls below <code>cost_switching_threshold_distance</code>,
+  a flag <code>crossed_cost_switching_threshold_</code> is set and the cost matrices
+  switch:
+</p>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">Phase 1 — Position Mode</div>
+    <p>
+      Object is far from goal. Only XY position error is penalised in Q (orientation
+      entries zeroed out). The planning timestep is <code>planning_dt_position</code>
+      (longer dt → longer horizon, reaching farther to plan contact). The cost
+      computation type for sample selection is <code>cost_type_position</code>.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--green);">Phase 2 — Pose Mode</div>
+    <p>
+      Object is close to goal. Full 6-DOF pose error (position + orientation) is
+      penalised. The planning timestep switches to <code>planning_dt_pose</code>
+      (shorter dt → finer resolution for precise placement). The cost computation
+      type switches to <code>cost_type</code> (typically a more accurate simulation-based
+      cost).
+    </p>
+  </div>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Cost computation types for sample selection</p>
+
+<p>
+  After each C3 solve, the cost of the resulting plan is evaluated to compare
+  candidate samples. Six strategies are available:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Type</th><th>What it does</th><th>Speed</th><th>Accuracy</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>kUseC3Plan</code></td>
+        <td>Evaluates the C3 planned trajectory directly using \(Q, R\). No simulation.</td>
+        <td class="yes">Fastest</td>
+        <td class="cond">Optimistic — the plan may be unrealizable</td>
+      </tr>
+      <tr>
+        <td><code>kSimLCS</code></td>
+        <td>Rolls the LCS forward from the initial condition using C3's planned controls. The resulting trajectory may differ from C3's plan if contact modes differ.</td>
+        <td class="cond">Medium</td>
+        <td class="cond">Better — catches mode inconsistencies</td>
+      </tr>
+      <tr>
+        <td><code>kSimLCSReplaceC3EEPlan</code></td>
+        <td>Simulates the LCS but uses the C3 planned EE trajectory and the simulated object trajectory.</td>
+        <td class="cond">Medium</td>
+        <td class="cond">Hybrid</td>
+      </tr>
+      <tr>
+        <td><code>kSimImpedance</code></td>
+        <td>Simulates the closed-loop system: PD control on EE position + feedforward \(\boldsymbol{\lambda}^\text{des}\), rolled through the LCS. Most realistic cost.</td>
+        <td class="no">Slowest</td>
+        <td class="yes">Most accurate</td>
+      </tr>
+      <tr>
+        <td><code>kSimImpedanceReplaceC3EEPlan</code></td>
+        <td>Same as kSimImpedance but substitutes C3's planned EE trajectory for the simulated EE trajectory.</td>
+        <td class="no">Slow</td>
+        <td class="yes">High</td>
+      </tr>
+      <tr>
+        <td><code>kSimImpedanceObjectCostOnly</code></td>
+        <td>Same as kSimImpedance but zeroes the EE and control cost terms — only object state error contributes.</td>
+        <td class="no">Slow</td>
+        <td class="yes">High — purely object-focused</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §11  SOFTWARE ARCHITECTURE: WHICH FILE DOES WHAT
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s11">
+  <span class="slug">§11</span>
+  <h2>Software Architecture: Which File Does What</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The implementation is split across two code bases: the external C3 library
+  (imported as a Bazel module from <code>github.com/DAIRLab/c3</code>,
+  commit <code>5c08cb2e</code>) and the dairlib repo itself.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>File / Location</th><th>What it does</th><th>Key classes / functions</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>c3/multibody/lcs_factory.h</code><br/><em>(C3 library)</em></td>
+        <td>Builds the LCS matrices \(A,B,D,E,F,H,\mathbf{c},\mathbf{d}\) from a Drake MultibodyPlant using AutoDiff. Called once per control step per candidate sample.</td>
+        <td><code>LCSFactory::CreateLinearizedLCS()</code>,<br/><code>LCSFactory::GetNumContactVariables()</code></td>
+      </tr>
+      <tr>
+        <td><code>c3/core/lcs.h</code><br/><em>(C3 library)</em></td>
+        <td>Lightweight container holding the LCS matrices for one operating point. Carries the \(N\)-step trajectory of matrices (one linearisation per step if needed, or the same matrix repeated).</td>
+        <td><code>LCS</code> struct, <code>LCS::A()</code>, <code>LCS::B()</code>, <code>LCS::D()</code>, etc.</td>
+      </tr>
+      <tr>
+        <td><code>c3/core/c3.h</code><br/><em>(C3 library)</em></td>
+        <td>Base class for ADMM solvers. Manages the z/δ/w variables, the ADMM iteration loop, and solver options. Subclassed by C3Plus, C3QP, C3MIQP.</td>
+        <td><code>C3::Solve(x0)</code>, <code>C3::GetStateSolution()</code>, <code>C3::GetForceSolution()</code>, <code>C3::GetFullSolution()</code></td>
+      </tr>
+      <tr>
+        <td><code>c3/core/c3_plus.h</code><br/><em>(C3 library)</em></td>
+        <td>C3+ subclass — overrides the δ-update with the fast linear switching projection. This is the default solver used in Push Anything.</td>
+        <td><code>C3Plus::SolveProjection()</code></td>
+      </tr>
+      <tr>
+        <td><code>c3/core/c3_qp.h</code><br/><em>(C3 library)</em></td>
+        <td>C3QP subclass — δ-update solved as a small QP per timestep using OSQP.</td>
+        <td><code>C3QP::SolveProjection()</code></td>
+      </tr>
+      <tr>
+        <td><code>c3/core/c3_miqp.h</code><br/><em>(C3 library)</em></td>
+        <td>C3MIQP subclass — δ-update solved as a MIQP with binary contact mode variables.</td>
+        <td><code>C3MIQP::SolveProjection()</code></td>
+      </tr>
+      <tr>
+        <td><code>solvers/osqp_options_default.yaml</code><br/><em>(dairlib)</em></td>
+        <td>OSQP solver settings loaded at startup. Controls max iterations, tolerance, warm-starting. Applied to both the z-update QP inside ADMM and any QP-based δ-update.</td>
+        <td>Loaded via <code>drake::yaml::LoadYamlFile&lt;SolverOptionsFromYaml&gt;</code></td>
+      </tr>
+      <tr>
+        <td><code>systems/controllers/sampling_based_c3_controller.h/cc</code><br/><em>(dairlib)</em></td>
+        <td>The outer control loop. At each step: reads current state, generates candidate EE positions, builds LCS for each, runs parallel C3 solves, selects best candidate, switches C3/repos modes, outputs desired trajectory to OSC.</td>
+        <td><code>SamplingC3Controller::ComputePlan()</code>, <code>CalcCost()</code>, <code>CreateLCSObjectsForSamples()</code></td>
+      </tr>
+      <tr>
+        <td><code>examples/sampling_c3/generate_samples.h/cc</code><br/><em>(dairlib)</em></td>
+        <td>Mesh-based sample generation — area-weighted face sampling, outward projection, collision checking.</td>
+        <td><code>GenerateSampleStates()</code></td>
+      </tr>
+      <tr>
+        <td><code>examples/sampling_c3/reposition.h/cc</code><br/><em>(dairlib)</em></td>
+        <td>Repositioning trajectory generator — straight-line motion to candidate EE position, collision-free, no contact reasoning.</td>
+        <td><code>Reposition::ComputeTrajectory()</code></td>
+      </tr>
+      <tr>
+        <td><code>systems/controllers/osc/</code><br/><em>(dairlib)</em></td>
+        <td>Operational Space Controller — takes desired EE trajectory from C3 and converts it to joint torques via \(\boldsymbol{\tau} = J^\top \mathbf{f}_\text{des} + N\boldsymbol{\tau}_0\), running on a dedicated real-time computer at ~1 kHz. (See <a href="grasp_theory_critique.html#s7">§7</a> of the companion document.)</td>
+        <td><code>OperationalSpaceController</code>, <code>EndEffectorForce</code></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">The complete call graph for one control step</p>
+
+<div class="pipeline" style="flex-wrap:wrap; gap:0.5rem;">
+  <div class="pipe-box" style="min-width:130px;">
+    <div class="pipe-label">Step 1</div>
+    <div class="pipe-name">Read sensors</div>
+    <div class="pipe-detail"><code>x_lcs_curr</code> from state estimator (pose tracking)</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box" style="min-width:150px;">
+    <div class="pipe-label">Step 2</div>
+    <div class="pipe-name">Update cost matrices</div>
+    <div class="pipe-detail">Recompute Q_, R_, G_, U_ from current error + phase flag</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box" style="min-width:150px;">
+    <div class="pipe-label">Step 3</div>
+    <div class="pipe-name">Generate samples</div>
+    <div class="pipe-detail">Mesh-normal sampling on object faces, collision check</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box" style="min-width:160px;">
+    <div class="pipe-label">Step 4 (parallel)</div>
+    <div class="pipe-name">LCS + C3 solve</div>
+    <div class="pipe-detail">AutoDiff → A,B,D,E,F,H → ADMM (z/δ/w) → z_sol per sample</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box" style="min-width:130px;">
+    <div class="pipe-label">Step 5</div>
+    <div class="pipe-name">Select best</div>
+    <div class="pipe-detail">CalcCost + travel_cost → argmin → best candidate</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box" style="min-width:130px;">
+    <div class="pipe-label">Step 6</div>
+    <div class="pipe-name">Output to OSC</div>
+    <div class="pipe-detail">x_des trajectory + λ_des feedforward via LCM</div>
+  </div>
+</div>
+
+<hr/>
+
+<p style="font-weight:600; color:var(--text);">Summary: The optimization problem form</p>
+
+<p>
+  To directly answer the question about which convex optimization form is used:
+</p>
+
+<div class="card green">
+  <div class="card-label">The convex form is a QP</div>
+  <p>
+    The full non-convex QPCC is never solved as-is. ADMM splits it into two steps,
+    and the hard part (the z-update) is a <strong>standard convex Quadratic Program (QP)</strong>
+    solved with OSQP. It is not an SOCP — there are no second-order cone constraints.
+    The quadratic objective comes from the MPC cost (\(Q\) and \(R\) terms) plus the
+    ADMM augmented Lagrangian penalty (\(G\) and \(U\) terms). The constraints are all
+    linear: linearised dynamics, box bounds on inputs and states, EE velocity limits.
+    The complementarity constraints are removed from this QP entirely and handled
+    separately by the δ-update projection step, which in C3+ is a \(O(n_\lambda)\)
+    closed-form operation and in C3MIQP is a Mixed-Integer QP.
+  </p>
+</div>
+
+<blockquote>
+  <p>
+    QPCC → (ADMM) → z-update = convex QP (OSQP) + δ-update = complementarity projection
+    (closed-form for C3+, small QP for C3QP, MIQP for C3MIQP). Neither step is an
+    SOCP. The overall algorithm is first-order (no Hessians of nonlinear functions),
+    which is why it can run at real-time rates even with 19 contact pairs and
+    multi-object scenarios.
+  </p>
+</blockquote>
+
+</main>
+
+<footer>
+  dairlib &nbsp;/&nbsp; c3_solver_internals.html &nbsp;·&nbsp;
+  Companion: <a href="grasp_theory_critique.html">grasp_theory_critique.html</a>
+</footer>
+
+</body>
+</html>

@@ -1,6 +1,6 @@
 from pydrake.all import *
 
-from pydairlib.multibody import (addFlatTerrain, makeNameToPositionsMap)
+from pydairlib.multibody import (AddFlatTerrain, MakeNameToPositionsMap)
 import pydairlib.common
 
 
@@ -36,7 +36,7 @@ class TrifingerDemoController(LeafSystem):
 builder = DiagramBuilder()
 sim_dt = 2e-4
 plant, scene_graph = AddMultibodyPlantSceneGraph(builder, sim_dt)
-addFlatTerrain(plant=plant, scene_graph=scene_graph, mu_static=1.0,
+AddFlatTerrain(plant=plant, scene_graph=scene_graph, mu_static=1.0,
                mu_kinetic=1.0)
 
 # The package addition here seems necessary due to how the URDF is defined
@@ -58,8 +58,9 @@ controller = builder.AddSystem(TrifingerDemoController(plant))
 builder.Connect(plant.get_state_output_port(), controller.get_input_port(0))
 builder.Connect(controller.get_output_port(0), plant.get_actuation_input_port())
 
-# Constuct the simulator and visualizer
-DrakeVisualizer.AddToBuilder(builder=builder, scene_graph=scene_graph)
+# Construct the visualizer (browser-based, visit http://localhost:7000)
+meshcat = StartMeshcat()
+MeshcatVisualizer.AddToBuilder(builder, scene_graph, meshcat)
 
 # Data logging [x;u]
 output_dt = 1e-3
@@ -88,7 +89,7 @@ plant_context = diagram.GetMutableSubsystemContext(
 
 # Set the initial state
 q = np.zeros(nq)
-q_map = makeNameToPositionsMap(plant)
+q_map = MakeNameToPositionsMap(plant)
 q[q_map['finger_base_to_upper_joint_0']] = 0
 q[q_map['finger_upper_to_middle_joint_0']] = -1
 q[q_map['finger_middle_to_lower_joint_0']] = -1.5
@@ -98,12 +99,13 @@ q[q_map['finger_middle_to_lower_joint_120']] = -1.5
 q[q_map['finger_base_to_upper_joint_240']] = 0
 q[q_map['finger_upper_to_middle_joint_240']] = -1
 q[q_map['finger_middle_to_lower_joint_240']] = -1.5
-q[q_map['base_qw']] = 1
-q[q_map['base_qx']] = 0
-q[q_map['base_qz']] = 0
-q[q_map['base_x']] = 0
-q[q_map['base_y']] = 0
-q[q_map['base_z']] = .05
+q[q_map['cube_qw']] = 1
+q[q_map['cube_qx']] = 0
+q[q_map['cube_qy']] = 0
+q[q_map['cube_qz']] = 0
+q[q_map['cube_x']] = 0
+q[q_map['cube_y']] = 0
+q[q_map['cube_z']] = .05
 plant.SetPositions(plant_context, q)
 
 # Simulate for 3 seconds
@@ -111,3 +113,7 @@ simulator.AdvanceTo(3)
 
 # numpy array of data (nq+nv+nu) x n_time
 data = logger.FindLog(simulator.get_context()).data()
+
+# Keep the meshcat server alive so you can view the result
+print("Simulation done. Open http://localhost:7000 to view. Press Enter to exit.")
+input()

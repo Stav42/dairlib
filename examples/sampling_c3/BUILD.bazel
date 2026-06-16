@@ -299,6 +299,34 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "allegro_hand_utils",
+    srcs = ["allegro_hand_utils.cc"],
+    hdrs = ["allegro_hand_utils.h"],
+    data = [
+        "@drake_models//:allegro_hand_description",
+    ],
+    deps = [
+        "//common:find_resource",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_binary(
+    name = "allegro_cube_visualizer",
+    srcs = ["allegro_cube_visualizer.cc"],
+    data = [
+        ":urdfs",
+        "@drake_models//:allegro_hand_description",
+    ],
+    deps = [
+        ":allegro_hand_utils",
+        "//common:find_resource",
+        "@drake//:drake_shared_library",
+        "@gflags",
+    ],
+)
+
 py_binary(
     name = "xbox_script",
     srcs = ["xbox_script.py"],
