@@ -314,7 +314,12 @@ cc_library(
 
 cc_binary(
     name = "allegro_cube_visualizer",
-    srcs = ["allegro_cube_visualizer.cc"],
+    srcs = [
+        "allegro_cube_visualizer.cc",
+        "cube_kinematics.h",
+        "meshcat_utils.h",
+        "pd_joint_controller.h",
+    ],
     data = [
         ":urdfs",
         "@drake_models//:allegro_hand_description",

@@ -1,6 +1,19 @@
 # dairlib
 Warning! This is very much "development-level" code and is provided as-is. APIs are likely to be unstable and, while we hope for the documentation to be thorough and accurate, we make no guarantees.
 
+# Create a new container with 7000:7000 port
+
+~/dair_lab/dairlib (push_anything_dev*) » docker run -it -p 7000:7000 -v /Users/salonivats/dair_lab/dairlib:/home/pushanything/dairlib --name push-anything-container-new push-anything-image
+
+# Running the docker container:
+
+docker start -ai push-anything-container-new
+
+# To run the Allegro visualizer:
+
+cd to /home/pushanything/dairlib
+bazel run //examples/sampling_c3:allegro_cube_visualizer -- --kp=100 --kd=10
+
 ## Current Continuous Integration Status
 * `main` branch build and unit tests (Ubuntu Jammy 22.04): [![Build Status](https://api.cirrus-ci.com/github/DAIRLab/dairlib.svg?task=build_jammy&script=test)](https://cirrus-ci.com/github/DAIRLab/dairlib)
 * `main` branch build and unit tests (Ubuntu Focal 24.04): [![Build Status](https://api.cirrus-ci.com/github/DAIRLab/dairlib.svg?task=build_focal&script=test)](https://cirrus-ci.com/github/DAIRLab/dairlib)
