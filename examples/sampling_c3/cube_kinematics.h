@@ -64,6 +64,18 @@ inline Eigen::VectorXd GetGraspPositions(
   return centres;
 }
 
+inline Eigen::VectorXd GetIntermediatePosition(
+  const drake::math::RigidTransform<double>& X_WC, double cube_size,
+  double a, double b, double c) {
+  const double h = cube_size / 2.0;
+  Eigen::VectorXd centres(9);
+  centres <<
+      X_WC * Eigen::Vector3d(a, -h-0.04, 0),   // index:  face 4 (-Y)
+      X_WC * Eigen::Vector3d(b, -h-0.04, 0),   // middle: face 4 (-Y)
+      X_WC * Eigen::Vector3d(c, +h+0.04, 0);   // thumb:  face 3 (+Y)
+  return centres;
+}
+
 // Given x-offsets a (index), b (middle), c (thumb) along their respective
 // faces and the chosen index finger magnitude, returns
 // [index_mag, middle_mag, thumb_mag, ratio].

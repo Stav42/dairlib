@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <limits>
 #include <memory>
 
@@ -19,6 +20,7 @@
 #include <drake/systems/framework/diagram_builder.h>
 #include <drake/systems/framework/leaf_system.h>
 #include <drake/systems/primitives/constant_vector_source.h>
+#include <drake/common/trajectories/piecewise_polynomial.h>
 
 #include "allegro_hand_utils.h"
 #include "common/find_resource.h"
@@ -41,11 +43,12 @@ using drake::multibody::Parser;
 using drake::systems::ConstantVectorSource;
 using drake::systems::DiagramBuilder;
 using drake::systems::Simulator;
+using drake::trajectories::PiecewisePolynomial;
 
 DEFINE_double(simulation_time, std::numeric_limits<double>::infinity(),
               "How long to simulate (seconds). Default: run forever.");
-DEFINE_double(kp, 50.0, "PD proportional gain (Nm/rad).");
-DEFINE_double(kd, 5.0, "PD derivative gain (Nm*s/rad).");
+DEFINE_double(kp, 15.0, "PD proportional gain (Nm/rad).");
+DEFINE_double(kd, 2.0, "PD derivative gain (Nm*s/rad).");
 DEFINE_double(settle_time, 2.0,
               "Seconds to let the cube fall and settle before solving IK.");
 
@@ -54,6 +57,8 @@ int DoMain(int argc, char* argv[]) {
 
   DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, 0.001);
+  // plant.set_discrete_contact_approximation(
+  //     drake::multibody::DiscreteContactApproximation::kSap);
 
   ModelInstanceIndex allegro_index =
       AddAllegroHandToPlant(&plant, &scene_graph);
@@ -122,8 +127,10 @@ int DoMain(int argc, char* argv[]) {
 
   const int num_allegro_joints = plant.num_positions(allegro_index);
 
-  // Placeholder zeros — updated after IK solves.
+  // Both sources start at zero; updated each poll step during Phase 2.
   auto* q_des_source = builder.AddSystem<ConstantVectorSource<double>>(
+      Eigen::VectorXd::Zero(num_allegro_joints));
+  auto* qdot_des_source = builder.AddSystem<ConstantVectorSource<double>>(
       Eigen::VectorXd::Zero(num_allegro_joints));
 
   auto* controller = builder.AddSystem<PdJointController>(
@@ -133,6 +140,8 @@ int DoMain(int argc, char* argv[]) {
                   controller->GetInputPort("state"));
   builder.Connect(q_des_source->get_output_port(),
                   controller->GetInputPort("q_desired"));
+  builder.Connect(qdot_des_source->get_output_port(),
+                  controller->GetInputPort("qdot_desired"));
   builder.Connect(controller->get_output_port(0),
                   plant.get_actuation_input_port(allegro_index));
 
@@ -174,9 +183,6 @@ int DoMain(int argc, char* argv[]) {
 
   AddFrameTriad(meshcat.get(), "/cube_frame", 0.005, 0.1);
 
-  const Eigen::Vector4d grasp_mags =
-      GetGraspMagnitudes(-0.02, 0.02, 0.0, 1.0);
-
   const double cube_size = 0.06;
   const double grasp_a = -0.02, grasp_b = 0.02, grasp_c = 0.0;
 
@@ -217,46 +223,63 @@ int DoMain(int argc, char* argv[]) {
   }
 
   // Save settled cube state before IK perturbs the plant context.
-  Eigen::VectorXd q_cube_settled = get_cube_pose();
-  Eigen::VectorXd v_cube_settled =
+  const Eigen::VectorXd q_cube_settled = get_cube_pose();
+  const Eigen::VectorXd v_cube_settled =
       plant.GetVelocities(plant_context, cube_index);
+  const RigidTransform<double> X_WC_settled =
+      CubePoseFromPositions(q_cube_settled);
 
-  // Solve IK from the settled cube pose to find finger joint targets.
-  Eigen::VectorXd grasp_positions = GetGraspPositions(
-      CubePoseFromPositions(q_cube_settled), cube_size, grasp_a, grasp_b, grasp_c);
+  // Fingertip targets in world frame.
+  // Contact targets are placed 5 mm inside each cube face so the PD maintains
+  // a small constant inward force at the surface → stable contact equilibrium.
+  const double penetration = 0.005;
+  const Eigen::VectorXd pregrasp_positions =
+      GetIntermediatePosition(X_WC_settled, cube_size, grasp_a, grasp_b, grasp_c);
+  const Eigen::VectorXd contact_positions =
+      GetGraspPositions(X_WC_settled, cube_size - 2 * penetration,
+                        grasp_a, grasp_b, grasp_c);
 
-  // Set a thumb pre-grasp configuration so IK starts near a feasible thumb pose.
-  // At q=0 the thumb is fully retracted; seed it with joints 12-15 at nominal
-  // values so IPOPT doesn't get stuck in the wrong local minimum.
-  {
+  // Seeds thumb joints 12-15 before each IK call so IPOPT doesn't start from
+  // the fully-retracted zero pose.
+  auto set_thumb_seed = [&]() {
     Eigen::VectorXd q_seed = Eigen::VectorXd::Zero(num_allegro_joints);
-    q_seed[12] = 1.0;  // CMC abduction — splay thumb toward the opposing face
-    q_seed[13] = 0.5;  // CMC flexion
-    q_seed[14] = 0.5;  // MCP flexion
-    q_seed[15] = 0.3;  // IP flexion
+    q_seed[12] = 1.0;
+    q_seed[13] = 0.5;
+    q_seed[14] = 0.5;
+    q_seed[15] = 0.3;
     plant.SetPositions(&plant_context, allegro_index, q_seed);
-  }
+  };
 
-  Eigen::VectorXd q_ik = SolveGraspIK(plant, &plant_context, grasp_positions);
+  // IK for pre-grasp (fingertips just outside each cube face).
+  set_thumb_seed();
+  plant.SetPositions(&plant_context,
+                     SolveGraspIK(plant, &plant_context, pregrasp_positions));
+  const Eigen::VectorXd q_pregrasp =
+      plant.GetPositions(plant_context, allegro_index);
 
-  // Extract just the Allegro joints from the full IK solution.
-  plant.SetPositions(&plant_context, q_ik);
-  Eigen::VectorXd q_allegro = plant.GetPositions(plant_context, allegro_index);
+  // IK for contact (fingertips at cube faces). Reset cube first in case it
+  // drifted during the pre-grasp IK solve.
+  plant.SetPositions(&plant_context, cube_index, q_cube_settled);
+  set_thumb_seed();
+  plant.SetPositions(&plant_context,
+                     SolveGraspIK(plant, &plant_context, contact_positions));
+  const Eigen::VectorXd q_contact =
+      plant.GetPositions(plant_context, allegro_index);
 
-  // Diagnostic: print where the thumb tip actually lands in world frame at q_desired.
+  // Diagnostic: check thumb tip FK at the contact IK solution.
   {
-    const Eigen::Vector3d p_thumb_target = grasp_positions.segment<3>(6);
+    const Eigen::Vector3d p_thumb_target = contact_positions.segment<3>(6);
     const Eigen::Vector3d p_thumb_fk =
         plant.EvalBodyPoseInWorld(
             plant_context,
             plant.GetBodyByName("link_15_tip", allegro_index)).translation();
-    std::cout << "thumb target (world):  " << p_thumb_target.transpose() << "\n";
-    std::cout << "thumb FK @ q_desired:  " << p_thumb_fk.transpose() << "\n";
-    std::cout << "thumb FK error:        "
+    std::cout << "thumb target (world): " << p_thumb_target.transpose() << "\n";
+    std::cout << "thumb FK @ q_contact: " << p_thumb_fk.transpose() << "\n";
+    std::cout << "thumb FK error:       "
               << (p_thumb_fk - p_thumb_target).norm() << " m\n";
   }
 
-  // Restore cube to its settled state and fingers to zero so PD can drive them.
+  // Restore settled state; PD will drive fingers from open (zero) along spline.
   plant.SetPositions(&plant_context, cube_index, q_cube_settled);
   plant.SetVelocities(&plant_context, cube_index, v_cube_settled);
   plant.SetPositions(&plant_context, allegro_index,
@@ -264,33 +287,64 @@ int DoMain(int argc, char* argv[]) {
   plant.SetVelocities(&plant_context, allegro_index,
                       Eigen::VectorXd::Zero(num_allegro_joints));
 
-  // Update q_desired now that IK has solved.
+  // Cubic spline: open (t=0) → pre-grasp (t=T1) → contact (t=T2).
+  // CubicShapePreserving with zero_end_point_derivatives gives smooth
+  // acceleration from rest and deceleration to rest at contact.
+  const double T_pregrasp = 2.0;
+  const double T_contact  = 4.0;
+
+  std::vector<Eigen::MatrixXd> traj_samples(3,
+      Eigen::MatrixXd(num_allegro_joints, 1));
+  traj_samples[0] = Eigen::VectorXd::Zero(num_allegro_joints);
+  traj_samples[1] = q_pregrasp;
+  traj_samples[2] = q_contact;
+
+  const auto traj = PiecewisePolynomial<double>::CubicShapePreserving(
+      {0.0, T_pregrasp, T_contact}, traj_samples,
+      /*zero_end_point_derivatives=*/true);
+
+  // Derivative of the spline gives reference velocity for feedforward damping.
+  // At t=0 and t=T_contact the derivative is zero (zero_end_point_derivatives).
+  const auto traj_dot = traj.derivative(1);
+
+  std::cout << "q_pregrasp: " << q_pregrasp.transpose() << "\n";
+  std::cout << "q_contact:  " << q_contact.transpose() << "\n";
+
   auto& source_context = diagram->GetMutableSubsystemContext(
       *q_des_source, &simulator.get_mutable_context());
-  q_des_source->get_mutable_source_value(&source_context)
-      .SetFromVector(q_allegro);
-
-  std::cout << "q_desired: " << q_allegro.transpose() << "\n";
+  auto& qdot_source_context = diagram->GetMutableSubsystemContext(
+      *qdot_des_source, &simulator.get_mutable_context());
 
   double next_print = FLAGS_settle_time + 1.0;
 
-  // Phase 2: PD drives fingers toward contact while cube stays settled.
+  // Phase 2: PD tracks the spline, then holds q_contact once the trajectory ends.
   for (double t = FLAGS_settle_time + poll_step;
        t < FLAGS_simulation_time; t += poll_step) {
     simulator.AdvanceTo(t);
+
+    const double local_t =
+        std::clamp(t - FLAGS_settle_time, 0.0, traj.end_time());
+    const Eigen::VectorXd q_ref = traj.value(local_t).col(0);
+    const Eigen::VectorXd qdot_ref = traj_dot.value(local_t).col(0);
+    q_des_source->get_mutable_source_value(&source_context)
+        .SetFromVector(q_ref);
+    qdot_des_source->get_mutable_source_value(&qdot_source_context)
+        .SetFromVector(qdot_ref);
+
     RigidTransform<double> X_WC = CubePoseFromPositions(get_cube_pose());
     meshcat->SetTransform("/cube_frame", X_WC);
     update_grasp_spheres(X_WC);
+
     if (t >= next_print) {
-      Eigen::VectorXd q_actual =
+      const Eigen::VectorXd q_actual =
           plant.GetPositions(plant_context, allegro_index);
       std::cout << "t=" << t << "\n"
-                << "  q_desired: " << q_allegro.transpose() << "\n"
-                << "  q_actual:  " << q_actual.transpose() << "\n"
-                << "  error:     " << (q_allegro - q_actual).transpose()
-                << "\n";
+                << "  q_ref:    " << q_ref.transpose() << "\n"
+                << "  q_actual: " << q_actual.transpose() << "\n"
+                << "  error:    " << (q_ref - q_actual).transpose() << "\n";
       next_print += 1.0;
     }
+
     int clicks = meshcat->GetButtonClicks("Respawn Cube");
     if (clicks > last_clicks) {
       last_clicks = clicks;

@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Three-Finger Grasp as a Contact-Implicit Trajectory Optimization</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script>
+  MathJax = {
+    tex: {
+      inlineMath:  [['\\(', '\\)']],
+      displayMath: [['\\[', '\\]']]
+    },
+    chtml: { scale: 1.05 }
+  };
+  </script>
+  <script id="MathJax-script" async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f7f6f2;
+      --white:     #ffffff;
+      --text:      #18181b;
+      --sub:       #374151;
+      --muted:     #9ca3af;
+      --border:    #e5e7eb;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+      --shadow:    0 1px 3px rgba(0,0,0,0.07), 0 6px 18px rgba(0,0,0,0.05);
+
+      --blue:      #1d4ed8;
+      --blue-bg:   #eff6ff;
+      --blue-bd:   #bfdbfe;
+
+      --green:     #166534;
+      --green-bg:  #f0fdf4;
+      --green-bd:  #86efac;
+
+      --red:       #991b1b;
+      --red-bg:    #fff5f5;
+      --red-bd:    #fca5a5;
+
+      --amber:     #92400e;
+      --amber-bg:  #fffbeb;
+      --amber-bd:  #fcd34d;
+
+      --indigo:    #4338ca;
+      --indigo-bg: #eef2ff;
+      --indigo-bd: #c7d2fe;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.78;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 4.5rem 2.5rem 3.5rem;
+      text-align: center;
+    }
+
+    .pill {
+      display: inline-block;
+      background: var(--indigo-bg);
+      color: var(--indigo);
+      border: 1px solid var(--indigo-bd);
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.3rem 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    header h1 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: clamp(2rem, 5vw, 2.9rem);
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      max-width: 760px;
+      margin: 0 auto 1.1rem;
+    }
+
+    header p.lead {
+      color: #6b7280;
+      max-width: 600px;
+      margin: 0 auto;
+      font-size: 0.97rem;
+      line-height: 1.65;
+    }
+
+    /* ── Main ────────────────────────────────────────────── */
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 3rem 2.5rem 5rem;
+    }
+
+    /* ── Section headers ─────────────────────────────────── */
+    .sec {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin: 3.2rem 0 1.4rem;
+    }
+
+    .sec .slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+
+    .sec h2 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.025em;
+      flex-shrink: 0;
+    }
+
+    .sec .rule { flex: 1; height: 1px; background: var(--border); }
+
+    /* ── Prose ───────────────────────────────────────────── */
+    p { margin-bottom: 0.95rem; color: var(--sub); }
+    p:last-child { margin-bottom: 0; }
+    strong { color: var(--text); font-weight: 600; }
+    em { font-style: italic; }
+
+    ul, ol { padding-left: 1.5rem; margin-bottom: 0.95rem; }
+    li { margin-bottom: 0.3rem; color: var(--sub); }
+
+    /* ── Cards ───────────────────────────────────────────── */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card.blue   { border-left: 3px solid var(--blue);   background: var(--blue-bg);  border-color: var(--blue-bd); }
+    .card.green  { border-left: 3px solid var(--green);  background: var(--green-bg); border-color: var(--green-bd); }
+    .card.red    { border-left: 3px solid var(--red);    background: var(--red-bg);   border-color: var(--red-bd); }
+    .card.amber  { border-left: 3px solid var(--amber);  background: var(--amber-bg); border-color: var(--amber-bd); }
+    .card.indigo { border-left: 3px solid var(--indigo); background: var(--indigo-bg);border-color: var(--indigo-bd); }
+
+    .card-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+    .card.blue   .card-label { color: var(--blue); }
+    .card.green  .card-label { color: var(--green); }
+    .card.red    .card-label { color: var(--red); }
+    .card.amber  .card-label { color: var(--amber); }
+    .card.indigo .card-label { color: var(--indigo); }
+
+    .card h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.55rem;
+    }
+
+    /* ── Critique items ──────────────────────────────────── */
+    .critique {
+      background: var(--white);
+      border: 1px solid var(--amber-bd);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1.1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .cnum {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.9rem;
+      height: 1.9rem;
+      border-radius: 50%;
+      background: var(--amber);
+      color: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.7rem;
+    }
+
+    .critique h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--amber);
+      margin-bottom: 0.55rem;
+    }
+
+    /* ── Math ────────────────────────────────────────────── */
+    .eq {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+      text-align: center;
+    }
+
+    .eq-set {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--indigo);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem 1.2rem 1.7rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .eq-set p {
+      margin: 0;
+      line-height: 2.4;
+      color: var(--sub);
+      font-size: 0.95rem;
+    }
+
+    /* ── Code ────────────────────────────────────────────── */
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.84em;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 0.12em 0.42em;
+      border-radius: 4px;
+      color: #374151;
+    }
+
+    /* ── Tables ──────────────────────────────────────────── */
+    .tbl-wrap {
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      margin: 1.1rem 0;
+    }
+
+    table { width: 100%; border-collapse: collapse; background: var(--white); font-size: 0.9rem; }
+    thead tr { background: #f9fafb; }
+    th {
+      padding: 0.7rem 1.1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #6b7280;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 0.65rem 1.1rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--sub); }
+    tr:last-child td { border-bottom: none; }
+
+    .yes    { color: var(--green); font-weight: 600; }
+    .no     { color: var(--red);   font-weight: 600; }
+    .cond   { color: var(--amber); font-weight: 600; }
+
+    /* ── Two-column grid ─────────────────────────────────── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 560px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Three-column grid ───────────────────────────────── */
+    .three-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 700px) { .three-col { grid-template-columns: 1fr; } }
+
+    /* ── Blockquote ──────────────────────────────────────── */
+    blockquote {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-bg);
+      border-radius: 0 8px 8px 0;
+      padding: 0.9rem 1.3rem;
+      margin: 1.2rem 0;
+    }
+    blockquote p { color: #1e3a8a; font-style: italic; }
+
+    /* ── Divider ─────────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+    /* ── Table of Contents ───────────────────────────────── */
+    #toc {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 1.5rem 0;
+    }
+
+    #toc .toc-title {
+      max-width: 1200px;
+      margin: 0 auto 0.9rem;
+      padding: 0 2.5rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    #toc .toc-list {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 2.5rem;
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.15rem 2rem;
+    }
+
+    #toc .toc-list li { margin: 0; }
+
+    #toc .toc-list a {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.88rem;
+      color: var(--sub);
+      transition: background 0.12s, color 0.12s;
+    }
+
+    #toc .toc-list a:hover {
+      background: var(--indigo-bg);
+      color: var(--indigo);
+    }
+
+    .toc-slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      flex-shrink: 0;
+      min-width: 2rem;
+    }
+
+    #toc .toc-list a:hover .toc-slug { color: var(--indigo); }
+
+    /* ── Links ───────────────────────────────────────────── */
+    a { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+    a:hover { color: var(--indigo); }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--white);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════════════════════ -->
+<header>
+  <div class="pill">Robotics &nbsp;·&nbsp; Contact-Implicit Trajectory Optimization</div>
+  <h1>Three-Finger Grasp as a Contact-Implicit Trajectory Optimization</h1>
+  <p class="lead">
+    A formal statement of the grasp-synthesis problem: fixed-horizon closure with
+    per-finger position and force targets, a quadratic control cost, and full
+    Stewart&ndash;Trinkle friction-cone contact constraints as C3 formulates them.
+    Companion to
+    <a href="grasp_theory_critique.html">the grasp-theory document</a> and
+    <a href="c3_solver_internals.html">the C3 solver walkthrough</a>.
+  </p>
+</header>
+
+<!-- ── Table of Contents ── -->
+<nav id="toc" aria-label="Table of contents">
+  <p class="toc-title">Contents</p>
+  <ol class="toc-list">
+    <li><a href="#s0"><span class="toc-slug">§0</span>Setup, Conventions, and the Three Fingers</a></li>
+    <li><a href="#s1"><span class="toc-slug">§1</span>Decision Variables</a></li>
+    <li><a href="#s2"><span class="toc-slug">§2</span>The Objective Function</a></li>
+    <li><a href="#s3"><span class="toc-slug">§3</span>The Target Forces &alpha; from Force Closure</a></li>
+    <li><a href="#s4"><span class="toc-slug">§4</span>Contact &amp; Friction — the Stewart&ndash;Trinkle Cone</a></li>
+    <li><a href="#s5"><span class="toc-slug">§5</span>Dynamics, Schedule &amp; The Complete Problem</a></li>
+    <li><a href="#s6"><span class="toc-slug">§6</span>How It Is Solved — The C3 Mapping</a></li>
+    <li><a href="#s7"><span class="toc-slug">§7</span>Refinements &amp; Cautions</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ══════════════════════════════════════════════════════════
+     §0  SETUP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s0">
+  <span class="slug">§0</span>
+  <h2>Setup, Conventions, and the Three Fingers</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  We synthesise a grasp of a free-floating cube with the Allegro hand by solving a
+  single trajectory optimization over a horizon of \(N = 100\) timesteps. The
+  <strong>ring finger is ignored entirely</strong>; only three fingers participate:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Finger</th><th>Symbol</th><th>Tip body</th><th>Cube face (from <code>cube_kinematics.h</code>)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Index</td>  <td>\(I\)</td><td><code>link_3_tip</code></td>  <td>\(-Y\) face</td></tr>
+      <tr><td>Middle</td> <td>\(M\)</td><td><code>link_7_tip</code></td>  <td>\(-Y\) face</td></tr>
+      <tr><td>Thumb</td>  <td>\(T\)</td><td><code>link_15_tip</code></td> <td>\(+Y\) face (opposing)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Index and middle press one face; the thumb opposes them on the other — the
+  two-versus-one antipodal squeeze whose force balance is derived in
+  <a href="grasp_theory_critique.html#s5">§5 of the grasp-theory document</a>.
+  Throughout, an index \(i \in \{I, M, T\}\) ranges over the three fingers and
+  \(k \in \{0, 1, \dots, N-1\}\) over the horizon.
+</p>
+
+<div class="card indigo">
+  <div class="card-label">State</div>
+  <h3>\(\mathbf{x}_k = (\mathbf{q}_k,\ \dot{\mathbf{q}}_k)\)</h3>
+  <p>
+    \(\mathbf{q}_k\) stacks the Allegro joint angles (index, middle, thumb) and the
+    cube's free-body pose (position + quaternion); \(\dot{\mathbf{q}}_k\) the
+    corresponding generalised velocities. This is exactly the LCS state of
+    <a href="c3_solver_internals.html#s2">§2 of the solver document</a>.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §1  DECISION VARIABLES
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s1">
+  <span class="slug">§1</span>
+  <h2>Decision Variables</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The timestep \(\Delta t\) is a <strong>fixed parameter</strong>, as in C3 — not a
+  decision variable. The optimizer solves over the full trajectory of the following:
+</p>
+
+<div class="eq-set">
+  <p>\(\mathbf{q}_{0:N}\) &emsp; — configuration trajectory (hand joints + cube pose), inside \(\mathbf{x}_k\)</p>
+  <p>\(\mathbf{u}_{0:N-1}\) &emsp; — joint-torque controls applied to the three fingers</p>
+  <p>\(\lambda_{n,k}^{i} \equiv f_k^{i} \in \mathbb{R}_{\ge 0}\) &emsp; — <strong>normal</strong> contact-force magnitude of finger \(i\)</p>
+  <p>\(\boldsymbol{\beta}_k^{i} \in \mathbb{R}_{\ge 0}^{n_d}\) &emsp; — <strong>tangential friction weights</strong>, one per edge of the \(n_d\)-sided friction pyramid</p>
+  <p>\(\gamma_k^{i} \in \mathbb{R}_{\ge 0}\) &emsp; — sliding-speed slack (one per contact)</p>
+  <p>\(\mathbf{x}_k^{i} \in \mathbb{R}^3\) &emsp; — fingertip contact points in the world frame, tied to \(\mathbf{q}_k\) by FK (§4)</p>
+</div>
+
+<div class="card amber">
+  <div class="card-label">The contact variable bundle</div>
+  <p>
+    Following C3, all per-finger contact quantities are stacked into one vector
+    \(\boldsymbol{\lambda}_k\), and the three fingers concatenate into the full
+    \(\boldsymbol{\lambda}_k\) that drives the dynamics:
+  </p>
+  <div class="eq" style="background:transparent;border:none;box-shadow:none;margin:0.4rem 0;">
+    \[
+      \boldsymbol{\lambda}_k^{i} = \bigl(\,\lambda_{n,k}^{i},\ \boldsymbol{\beta}_k^{i},\ \gamma_k^{i}\,\bigr),
+      \qquad
+      \boldsymbol{\lambda}_k = \bigl(\boldsymbol{\lambda}_k^{I},\ \boldsymbol{\lambda}_k^{M},\ \boldsymbol{\lambda}_k^{T}\bigr).
+    \]
+  </div>
+  <p>
+    The scalar \(f_k^{i}\) used in the objective is precisely the normal entry
+    \(\lambda_{n,k}^{i}\). The tangential force is recovered from the weights as
+    \(\mathbf{f}_{t,k}^{i} = D^{i}\boldsymbol{\beta}_k^{i}\), where the columns of
+    \(D^{i} = [\,\mathbf{d}_1^{i}\ \cdots\ \mathbf{d}_{n_d}^{i}\,]\) are the friction-pyramid
+    direction vectors spanning the contact tangent plane (§4).
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §2  OBJECTIVE
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s2">
+  <span class="slug">§2</span>
+  <h2>The Objective Function</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The cost sums three intentions over the fixed horizon — reaching the target grasp
+  points, exerting the target forces, and keeping the control effort small:
+</p>
+
+<div class="eq">
+  \[
+    J \;=\; \sum_{k=0}^{N-1}
+    \Bigl[\, \underbrace{\textstyle\sum_{i} w_p\,\bigl\|\mathbf{x}_k^{i}-\mathbf{x}_\star^{i}\bigr\|^2}_{\text{position tracking}}
+    \;+\; \underbrace{\textstyle\sum_{i} w_f\,\bigl(f_k^{i}-\alpha_i\bigr)^2}_{\text{force tracking}}
+    \;+\; \underbrace{\mathbf{u}_k^\top R\,\mathbf{u}_k}_{\text{control cost}} \,\Bigr]
+  \]
+</div>
+
+<p>
+  The targets \(\mathbf{x}_\star^{I},\mathbf{x}_\star^{M},\mathbf{x}_\star^{T}\in\mathbb{R}^3\)
+  are the grasp contact points from <code>GetGraspPositions</code>
+  (<code>cube_kinematics.h</code>), defined relative to the cube so
+  \(\mathbf{x}_\star^{i} = X_{WC}(\mathbf{q}_k)\,\mathbf{r}^{i}\) tracks the cube pose;
+  \(w_p, w_f &gt; 0\) and \(R \succ 0\) trade off the three intentions.
+</p>
+
+<div class="three-col">
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Term 1 — position tracking</div>
+    <p>
+      Drives each fingertip \(\mathbf{x}_k^{i} = \mathrm{FK}_i(\mathbf{q}_k)\) toward its
+      target grasp point \(\mathbf{x}_\star^{i}\) — the fingers <em>converge to the
+      contact geometry</em> rather than only modulating force once they touch.
+    </p>
+  </div>
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Term 2 — force tracking</div>
+    <p>
+      Drives each normal force \(f_k^{i}\) toward its force-closure target
+      \(\alpha_i\) (§3), so the converged grasp exerts a balanced squeeze, not an
+      arbitrary one.
+    </p>
+  </div>
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Term 3 — control cost</div>
+    <p>
+      The quadratic \(\mathbf{u}_k^\top R\,\mathbf{u}_k\) penalises joint-torque effort —
+      the standard C3 \(R\)-cost. It regularises the controls, damps chattering, and
+      keeps the QP well conditioned.
+    </p>
+  </div>
+</div>
+
+<blockquote>
+  <p>
+    The cost specifies the grasp on both axes: <em>where</em> to touch (drive
+    \(\mathbf{x}_k^{i}\) to \(\mathbf{x}_\star^{i}\)) and <em>how hard</em> to squeeze
+    (drive \(f_k^{i}\) to \(\alpha_i\)), while the \(R\)-cost keeps the effort modest.
+    The face pairing is fixed by the contact pairs and enforced through complementarity;
+    the position term selects the precise point on each face.
+  </p>
+</blockquote>
+
+<!-- ══════════════════════════════════════════════════════════
+     §3  TARGET FORCES
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s3">
+  <span class="slug">§3</span>
+  <h2>The Target Forces &alpha; from Force Closure</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The targets \(\alpha_I, \alpha_M, \alpha_T\) are <em>not</em> free. They are the
+  internal-force magnitudes that produce a net-zero wrench on the cube — a pure squeeze
+  that holds without accelerating it. With the grasp matrix \(G\) of
+  <a href="grasp_theory_critique.html#s0">§0</a>, the squeeze lives in its nullspace:
+</p>
+
+<div class="eq">
+  \[
+    G\,\mathbf{f}_{\text{internal}} = \mathbf{0},
+    \qquad
+    \mathbf{f}_{\text{internal}} = \bigl(f^{I}\hat{\mathbf{n}}_I,\ f^{M}\hat{\mathbf{n}}_M,\ f^{T}\hat{\mathbf{n}}_T\bigr).
+  \]
+</div>
+
+<p>
+  For index+middle (on \(-Y\)) opposing the thumb (on \(+Y\)), force balance along the
+  squeeze axis gives the relation already encoded in <code>GetGraspMagnitudes</code>
+  (<code>cube_kinematics.h</code>):
+</p>
+
+<div class="eq">
+  \[
+    \alpha_T = \alpha_I + \alpha_M,
+    \qquad
+    \alpha_M = \rho\,\alpha_I,
+    \qquad
+    \rho = \frac{a - c}{c - b},
+  \]
+</div>
+
+<p>
+  where \(a, b\) are the index/middle offsets on the \(-Y\) face and \(c\) the thumb
+  offset on \(+Y\). One free scalar (the overall squeeze magnitude \(\alpha_I\)) is
+  chosen large enough that <em>friction</em> resists gravity — \(\mu\,\alpha \gtrsim m g\) —
+  and the remaining two targets follow. That gravity is carried by the tangential
+  (friction) force, not the normal force, is exactly why the friction components of §4
+  must be modelled and not assumed (<a href="grasp_theory_critique.html#s5">§5, Case 2</a>).
+</p>
+
+<!-- ══════════════════════════════════════════════════════════
+     §4  FRICTION
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s4">
+  <span class="slug">§4</span>
+  <h2>Contact &amp; Friction — the Stewart&ndash;Trinkle Cone</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Each finger's contact is modelled exactly as C3 does
+  (<a href="c3_solver_internals.html#s1">§1 of the solver document</a>): a normal force,
+  a polyhedral (pyramid) approximation of the friction cone with explicit tangential
+  weights, and a sliding slack — all coupled by three complementarity relations.
+</p>
+
+<!-- 4.1 the friction cone -->
+<p style="font-weight:600; color:var(--text);">The friction cone and its polyhedral approximation</p>
+<p>
+  The exact Coulomb condition couples the tangential force magnitude to the normal
+  force:
+</p>
+<div class="eq">
+  \[
+    \bigl\|\mathbf{f}_{t,k}^{i}\bigr\| \;\le\; \mu\, f_k^{i},
+    \qquad f_k^{i} \ge 0 \quad\text{(can only push)}.
+  \]
+</div>
+<p>
+  C3 replaces the circular cone by an \(n_d\)-sided pyramid so the constraint is linear.
+  The tangential force is a nonnegative combination of fixed direction vectors
+  \(\mathbf{d}_j^{i}\) spanning the tangent plane, and the cone bound becomes a single
+  linear "friction budget":
+</p>
+<div class="eq">
+  \[
+    \mathbf{f}_{t,k}^{i} = \sum_{j=1}^{n_d} \beta_{k,j}^{i}\,\mathbf{d}_j^{i} = D^{i}\boldsymbol{\beta}_k^{i},
+    \qquad
+    \boldsymbol{\beta}_k^{i} \ge \mathbf{0},
+    \qquad
+    \mathbf{e}^\top\boldsymbol{\beta}_k^{i} \;\le\; \mu\, f_k^{i},
+  \]
+</div>
+<p>
+  where \(\mathbf{e} = (1,\dots,1)^\top\). The slack in this budget,
+  \(\mu f_k^{i} - \mathbf{e}^\top\boldsymbol{\beta}_k^{i} \ge 0\), is "remaining friction
+  capacity"; it is the quantity complementary to sliding below.
+</p>
+
+<!-- 4.2 the three complementarities -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The three complementarity relations per contact</p>
+<p>
+  Let \(\phi_k^{i} = \phi^{i}(\mathbf{q}_k)\) be the signed gap between tip \(i\) and its
+  cube face, \(J_t^{i}\) the tangential contact Jacobian, and \(\gamma_k^{i}\) the sliding
+  speed. The Stewart&ndash;Trinkle conditions are:
+</p>
+
+<div class="eq-set">
+  <p>\(0 \le f_k^{i} \;\perp\; \phi_k^{i} \ge 0\) &emsp; — <strong>normal:</strong> push only when touching</p>
+  <p>\(0 \le \boldsymbol{\beta}_k^{i} \;\perp\; \bigl(\gamma_k^{i}\mathbf{e} + \Delta t\,J_t^{i}\dot{\mathbf{q}}_k\bigr) \ge 0\) &emsp; — <strong>tangential:</strong> friction opposes the sliding direction</p>
+  <p>\(0 \le \gamma_k^{i} \;\perp\; \bigl(\mu f_k^{i} - \mathbf{e}^\top\boldsymbol{\beta}_k^{i}\bigr) \ge 0\) &emsp; — <strong>budget:</strong> slide only when friction is saturated</p>
+</div>
+
+<div class="three-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">Normal</div>
+    <p style="font-size:0.9rem;">
+      Either the gap is zero (contact, force allowed) or the force is zero (separated).
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">Tangential</div>
+    <p style="font-size:0.9rem;">
+      A friction weight \(\beta_{k,j}^{i}\) is active only in directions where the
+      contact is actually sliding; \(\gamma_k^{i}\) lifts the relative velocity to be
+      \(\ge 0\) in every pyramid direction.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">Budget</div>
+    <p style="font-size:0.9rem;">
+      The contact sticks (\(\gamma_k^{i}=0\)) while friction capacity remains; it begins
+      to slide only once the budget \(\mu f_k^{i}-\mathbf{e}^\top\boldsymbol{\beta}_k^{i}\)
+      hits zero.
+    </p>
+  </div>
+</div>
+
+<!-- 4.3 packaged form -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Packaged into the LCS gap vector</p>
+<p>
+  Stacking the right-hand sides of the three relations for all three fingers gives the
+  gap vector \(\boldsymbol{\eta}_k\), complementary to \(\boldsymbol{\lambda}_k\), exactly
+  the object the solver works with:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\eta}_k = E\,\mathbf{x}_k + F\,\boldsymbol{\lambda}_k + H\,\mathbf{u}_k + \mathbf{c},
+    \qquad
+    0 \;\le\; \boldsymbol{\lambda}_k \;\perp\; \boldsymbol{\eta}_k \;\ge\; 0.
+  \]
+</div>
+<p>
+  Note the tangential row carries the fixed factor \(\Delta t\) (the timestep that scales
+  velocity into displacement, \(E_t = \Delta t\) in the solver). Since \(\Delta t\) is a
+  constant parameter, this row stays linear and the LCS is exactly C3's.
+</p>
+
+<!-- ══════════════════════════════════════════════════════════
+     §5  DYNAMICS, SCHEDULE & COMPLETE PROBLEM
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s5">
+  <span class="slug">§5</span>
+  <h2>Dynamics, Schedule &amp; The Complete Problem</h2>
+  <div class="rule"></div>
+</div>
+
+<!-- 5.1 dynamics -->
+<p style="font-weight:600; color:var(--text);">Dynamics — the linearised LCS</p>
+<p>
+  The nonlinear contact dynamics \(\mathbf{x}_{k+1} = f(\mathbf{x}_k,\mathbf{u}_k)\) are
+  linearised at the current operating point by Drake AutoDiff into the constant matrices
+  \(A, B, D, \mathbf{d}\) (<a href="c3_solver_internals.html#s3">§3 of the solver
+  document</a>), with the fixed timestep \(\Delta t\) already folded in — exactly C3's
+  form:
+</p>
+<div class="eq">
+  \[
+    \mathbf{x}_{k+1} = A\,\mathbf{x}_k + B\,\mathbf{u}_k + D\,\boldsymbol{\lambda}_k + \mathbf{d},
+    \qquad \forall k.
+  \]
+</div>
+<p>
+  \(D\) is the bridge that turns the contact forces \(\boldsymbol{\lambda}_k\) into cube
+  acceleration. Because nothing in the problem multiplies two decision variables, the
+  dynamics remain affine and the LCS is untouched relative to the stock C3 controller.
+</p>
+
+<!-- 5.2 schedule + fk -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Contact schedule and fingertip kinematics</p>
+<p>
+  The first 80 of 100 steps are a free-space approach with no contact; the squeeze is
+  confined to the last 20 steps. Fingertip points are tied to the configuration by
+  forward kinematics:
+</p>
+<div class="eq">
+  \[
+    \boldsymbol{\lambda}_k^{i} = \mathbf{0}\ \ (k = 0,\dots,79),
+    \qquad
+    \mathbf{x}_k^{i} = \mathrm{FK}_i(\mathbf{q}_k).
+  \]
+</div>
+
+<!-- 5.3 complete -->
+<div class="card blue">
+  <div class="card-label">Grasp-synthesis QPCC — fixed horizon, with friction cone</div>
+  <div class="eq-set" style="background:transparent;border:none;box-shadow:none;margin:0.4rem 0;">
+    <p>\(\displaystyle \min_{\substack{\mathbf{x}_{0:N},\ \mathbf{u}_{0:N-1} \\ \boldsymbol{\lambda}_{0:N-1},\ \boldsymbol{\eta}_{0:N-1}}} \ \sum_{k=0}^{N-1}\Bigl[\, \mathbf{u}_k^\top R\,\mathbf{u}_k + \sum_{i}\bigl( w_p\|\mathbf{x}_k^{i}-\mathbf{x}_\star^{i}\|^2 + w_f(f_k^{i}-\alpha_i)^2 \bigr) \,\Bigr]\)</p>
+    <p>\(\text{subject to, for all } k \text{ and } i\in\{I,M,T\}:\)</p>
+    <p>\(\quad \mathbf{x}_{k+1} = A\mathbf{x}_k + B\mathbf{u}_k + D\boldsymbol{\lambda}_k + \mathbf{d} \qquad\textbf{[dynamics]}\)</p>
+    <p>\(\quad \boldsymbol{\eta}_k = E\mathbf{x}_k + F\boldsymbol{\lambda}_k + H\mathbf{u}_k + \mathbf{c} \qquad\textbf{[gap definition]}\)</p>
+    <p>\(\quad 0 \le \boldsymbol{\lambda}_k \perp \boldsymbol{\eta}_k \ge 0 \qquad\textbf{[normal + tangential + budget complementarity]}\)</p>
+    <p>\(\quad \mathbf{e}^\top\boldsymbol{\beta}_k^{i} \le \mu f_k^{i},\quad \boldsymbol{\beta}_k^{i} \ge \mathbf{0},\quad f_k^{i}\ge 0 \qquad\textbf{[friction pyramid]}\)</p>
+    <p>\(\quad \mathbf{x}_k^{i} = \mathrm{FK}_i(\mathbf{q}_k) \qquad\textbf{[fingertip kinematics]}\)</p>
+    <p>\(\quad \boldsymbol{\lambda}_k^{i} = \mathbf{0},\quad k = 0,\dots,79 \qquad\textbf{[contact schedule]}\)</p>
+    <p>\(\quad \mathbf{x}_0 = \hat{\mathbf{x}},\quad \alpha_T = \alpha_I + \alpha_M,\quad \alpha_M = \rho\,\alpha_I \qquad\textbf{[initial state + force-closure targets]}\)</p>
+  </div>
+</div>
+
+<p>
+  This is a Quadratic Program with Complementarity Constraints over the
+  friction-pyramid-augmented \(\boldsymbol{\lambda}\) — the same problem class
+  <em>and the same LCS</em> as the Push-Anything controller, differing only in the cost
+  (position + force tracking plus the \(R\)-cost) and the explicit contact schedule.
+</p>
+
+<!-- ══════════════════════════════════════════════════════════
+     §6  SOLVING
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s6">
+  <span class="slug">§6</span>
+  <h2>How It Is Solved — The C3 Mapping</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The complementarity constraint is non-convex, so the problem is solved by ADMM exactly
+  as in <a href="c3_solver_internals.html#s4">§4&ndash;§8 of the solver document</a>. The
+  friction-pyramid variables \((\boldsymbol{\beta},\gamma)\) are already part of
+  \(\boldsymbol{\lambda}\) there, so they need no special handling. The split is:
+</p>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">z-update (QP)</div>
+    <p>
+      A convex QP over \((\mathbf{x},\mathbf{u},\boldsymbol{\lambda},\boldsymbol{\eta})\)
+      carrying the cost (now including the \(\mathbf{u}_k^\top R\,\mathbf{u}_k\) term), the
+      linear dynamics, the gap equation, the friction-budget inequality, and the schedule
+      \(\boldsymbol{\lambda}_k=\mathbf{0}\) for \(k&lt;80\). Solved with OSQP.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--indigo);">&delta;-update (projection)</div>
+    <p>
+      Projects onto \(0\le\boldsymbol{\lambda}\perp\boldsymbol{\eta}\ge0\) per step — the
+      non-convex piece, now including the tangential and budget blocks. Reconciled with
+      the QP by the dual \(\mathbf{w}\) until consensus.
+    </p>
+  </div>
+</div>
+
+<p>
+  With \(\Delta t\) fixed, the problem stays a pure QPCC — the inner solve is exactly the
+  stock C3 z/&delta;/w iteration, unchanged. The only additions are the \(R\)-cost and the
+  tracking terms in the z-update QP. The LCS matrices \(A,B,D,E,F,H,\mathbf{c},\mathbf{d}\)
+  are rebuilt by AutoDiff at each re-linearisation, since \(G\), the gaps, and the contact
+  Jacobians all move as the cube and fingers move
+  (<a href="grasp_theory_critique.html#s3">critique 4</a>).
+</p>
+
+<!-- ══════════════════════════════════════════════════════════
+     §7  REFINEMENTS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s7">
+  <span class="slug">§7</span>
+  <h2>Refinements &amp; Cautions</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The formulation above is faithful to the proposal. Three precise points make it
+  well posed and solvable.
+</p>
+
+<!-- 1 -->
+<div class="critique">
+  <div class="cnum">1</div>
+  <h3>The pyramid is an inner approximation of the true cone</h3>
+  <p>
+    \(\mathbf{e}^\top\boldsymbol{\beta} \le \mu f_n\) with \(n_d\) edges under-approximates the
+    circular cone \(\|\mathbf{f}_t\|\le\mu f_n\): the realisable friction is slightly
+    direction-dependent and never exceeds the true cone. Use \(n_d = 4\) (fast, coarse) up
+    to \(8\) (smoother, more variables) per contact. If you need the exact cone, the
+    second-order-cone form is available but turns the inner solve into an SOCP rather than
+    a QP — usually not worth it here.
+  </p>
+</div>
+
+<!-- 2 -->
+<div class="critique">
+  <div class="cnum">2</div>
+  <h3>The 80/20 schedule pre-empts what C3 is good at</h3>
+  <p>
+    Forcing \(\boldsymbol{\lambda}_k = \mathbf{0}\) for \(k &lt; 80\) hands the optimizer a
+    fixed contact time. That safe choice does solve "the fingers arrive together" — all
+    three are released into contact at the same \(k\). But contact-implicit MPC's whole
+    advantage is <em>discovering</em> contact timing through complementarity. If grasps fail
+    because 20 steps is too few to build \(\alpha\), relax to a soft schedule (allow force
+    after step 80, do not forbid it earlier) rather than hard-zeroing.
+  </p>
+</div>
+
+<!-- 3 -->
+<div class="critique">
+  <div class="cnum">3</div>
+  <h3>\(\mathbf{x}_k^{i}\) carries a cost now — the FK equality is mandatory</h3>
+  <p>
+    With the position-tracking term, the fingertip points are not decorative: the cost
+    pulls \(\mathbf{x}_k^{i}\) toward \(\mathbf{x}_\star^{i}\). The equality
+    \(\mathbf{x}_k^{i} = \mathrm{FK}_i(\mathbf{q}_k)\) must be enforced as a hard constraint —
+    otherwise the optimizer satisfies the cheap position cost by floating the contact point
+    to the target in mid-air while \(\mathbf{q}_k\) stays put. Since \(\mathbf{x}_k^{i}\) is a
+    deterministic function of \(\mathbf{q}_k\), the cleanest formulation substitutes
+    \(\mathrm{FK}_i(\mathbf{q}_k)\) directly into the cost (and into the gaps \(\phi^i\) and
+    grasp matrix \(G\)), eliminating \(\mathbf{x}_k^{i}\) as a variable. \(\mathrm{FK}_i\) is
+    nonlinear, so the position term is a nonlinear least-squares cost — linearise it at each
+    re-linearisation alongside the LCS matrices, consistent with §6.
+  </p>
+</div>
+
+<div class="card green">
+  <div class="card-label">Bottom line</div>
+  <p>
+    The structure is sound and maps cleanly onto the existing C3 stack — the LCS and the
+    fixed timestep \(\Delta t\) are exactly C3's. It is the Push-Anything QPCC with
+    (i) a position + force tracking cost plus the standard \(\mathbf{u}^\top R\,\mathbf{u}\)
+    control cost, and (ii) explicit Stewart&ndash;Trinkle friction-pyramid variables and
+    constraints. Pick a pyramid resolution (item 1), and enforce the schedule and FK
+    equality (items 2–3), and the problem is well posed.
+  </p>
+</div>
+
+</main>
+
+<footer>
+  Companion to grasp_theory_critique.html and c3_solver_internals.html · Three-finger grasp trajectory optimization
+</footer>
+
+</body>
+</html>

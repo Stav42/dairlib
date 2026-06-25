@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Grasp Theory</title>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+  <style>
+    body { font-family: Georgia, serif; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.7; color: #1a1a1a; }
+    h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }
+    h2 { margin-top: 2em; color: #222; }
+    h3 { color: #444; margin-top: 1.5em; }
+    .note { background: #f5f5f0; border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 0.95em; }
+    table { border-collapse: collapse; margin: 1em 0; }
+    td, th { border: 1px solid #ccc; padding: 8px 14px; }
+    th { background: #eee; }
+  </style>
+</head>
+<body>
+
+<h1>Three-Finger Grasp: Force Analysis</h1>
+
+<p>
+  We grasp the cube with three fingers: <strong>index</strong>, <strong>middle</strong>, and <strong>thumb</strong>.
+  The index and middle fingers each apply a normal force whose magnitude we choose freely.
+  The thumb force is then fully determined by the requirement that the net force and net moment on the cube are both zero.
+  Gravity is ignored for now.
+</p>
+
+<hr>
+
+<h2>1. Contact Geometry</h2>
+
+<p>
+  The cube has side length \(L = 0.06\,\text{m}\) and its center of mass at the origin.
+  We use the cube body frame throughout.
+  All forces are normal to their respective faces — i.e., pointing inward, perpendicular to the surface.
+</p>
+
+<table>
+  <tr><th>Finger</th><th>Face</th><th>Face normal (inward)</th><th>Contact point</th><th>Force</th></tr>
+  <tr><td>Index</td><td>Face 4 (&minus;Y)</td><td>\(+\hat{\mathbf{y}}\)</td><td>\(\mathbf{p}_I = (a,\;{-L/2},\;0)\)</td><td>\(\mathbf{f}_I = \alpha_I\,\hat{\mathbf{y}}\)</td></tr>
+  <tr><td>Middle</td><td>Face 4 (&minus;Y)</td><td>\(+\hat{\mathbf{y}}\)</td><td>\(\mathbf{p}_M = (b,\;{-L/2},\;0)\)</td><td>\(\mathbf{f}_M = \alpha_M\,\hat{\mathbf{y}}\)</td></tr>
+  <tr><td>Thumb</td><td>Face 3 (\(+Y\))</td><td>\(-\hat{\mathbf{y}}\)</td><td>\(\mathbf{p}_T = (c,\;{+L/2},\;0)\)</td><td>\(\mathbf{f}_T = -\alpha_T\,\hat{\mathbf{y}}\)</td></tr>
+</table>
+
+<p>
+  Here \(a, b\) are the x-offsets of the index and middle finger contacts along face 4, and \(c\) is the
+  x-offset of the thumb contact along face 3. All contacts are at \(z = 0\) (mid-height of the cube).
+  The scalars \(\alpha_I, \alpha_M, \alpha_T > 0\) are the force magnitudes.
+</p>
+
+<div class="note">
+  <strong>Why face 3 for the thumb?</strong>
+  Face 4 (&minus;Y) and face 3 (+Y) are directly opposite. The index and middle fingers both push in
+  \(+\hat{\mathbf{y}}\); the only way a single contact force can cancel their combined \(+Y\) component
+  is to push in \(-\hat{\mathbf{y}}\), which is the inward normal of face 3. An adjacent face (e.g. face 1)
+  would produce a force in \(\pm\hat{\mathbf{x}}\), which cannot cancel a \(+Y\) net force.
+</div>
+
+<hr>
+
+<h2>2. Force Balance</h2>
+
+<p>Requiring zero net force:</p>
+\[
+\mathbf{f}_I + \mathbf{f}_M + \mathbf{f}_T = \mathbf{0}
+\]
+\[
+\alpha_I\,\hat{\mathbf{y}} + \alpha_M\,\hat{\mathbf{y}} - \alpha_T\,\hat{\mathbf{y}} = \mathbf{0}
+\]
+
+<p>This has only a \(Y\)-component, giving one scalar equation:</p>
+\[
+\boxed{\alpha_T = \alpha_I + \alpha_M}
+\]
+
+<p>The thumb magnitude is simply the sum of the index and middle magnitudes.</p>
+
+<hr>
+
+<h2>3. Moment Balance</h2>
+
+<p>Define moment arms from the cube center: \(\mathbf{r}_k = \mathbf{p}_k\).
+Since all forces are in \(\hat{\mathbf{y}}\) and all contacts are at \(z=0\), every cross product
+\(\mathbf{r}_k \times \mathbf{f}_k\) has only a \(Z\)-component:</p>
+
+\[
+\mathbf{r}_k \times \mathbf{f}_k
+= \begin{pmatrix} x_k \\ y_k \\ 0 \end{pmatrix}
+  \times
+  \begin{pmatrix} 0 \\ f_k \\ 0 \end{pmatrix}
+= \begin{pmatrix} 0 \\ 0 \\ x_k\,f_k \end{pmatrix}
+\]
+
+<p>So the moment balance reduces to a single scalar equation in \(Z\):</p>
+\[
+a\,\alpha_I + b\,\alpha_M + c\,(-\alpha_T) = 0
+\]
+
+<p>Substituting \(\alpha_T = \alpha_I + \alpha_M\):</p>
+\[
+a\,\alpha_I + b\,\alpha_M = c\,(\alpha_I + \alpha_M)
+\]
+\[
+(a - c)\,\alpha_I = (c - b)\,\alpha_M
+\]
+\[
+\boxed{\frac{\alpha_I}{\alpha_M} = \frac{c - b}{a - c}}
+\]
+
+<p>
+  This is the key constraint: the ratio of index to middle finger force is set entirely by the
+  x-positions of the three contacts relative to each other.
+</p>
+
+<h3>Special case: symmetric contacts</h3>
+
+<p>
+  If the index and middle fingers are placed symmetrically about the face centre
+  (\(a = -\Delta,\; b = +\Delta\)) and the thumb is at the face centre (\(c = 0\)), then:
+</p>
+\[
+\frac{\alpha_I}{\alpha_M} = \frac{0 - \Delta}{-\Delta - 0} = 1 \quad\Longrightarrow\quad \alpha_I = \alpha_M
+\]
+<p>
+  Equal finger forces, and \(\alpha_T = 2\alpha_I\). The thumb must push twice as hard as each finger.
+</p>
+
+<hr>
+
+<h2>4. Summary</h2>
+
+<p>Given contact positions \(a, b, c\), the grasp is fully determined by a single free scalar — choose
+\(\alpha_I\) freely, then:</p>
+
+\[
+\alpha_M = \alpha_I \cdot \frac{a - c}{c - b}, \qquad \alpha_T = \alpha_I + \alpha_M
+\]
+
+<p>All three forces lie along \(\hat{\mathbf{y}}\) or \(-\hat{\mathbf{y}}\), so they are automatically
+in the x-y plane and there are no out-of-plane force or moment components to satisfy.</p>
+
+<div class="note">
+  <strong>Note on gravity.</strong> When gravity is added, it introduces a \(-Z\) force that cannot be
+  balanced by these purely \(\pm Y\) normal forces. Balancing gravity requires tangential (friction)
+  force components in \(+Z\) at the contact points. This is addressed in a future section.
+</div>
+
+<p>The <em>manipulation force</em> (to move the cube) lives in the
+<strong>nullspace of the grasp map</strong> — forces that produce net body motion without
+violating the grasp constraints. This is addressed in a separate section.</p>
+
+<hr>
+
+<h2>5. From Forces to Execution</h2>
+
+<p>
+  The previous sections established <em>what</em> forces to apply. This section covers
+  <em>how</em> to realise those forces on the physical hand — first by positioning the
+  fingers at the contact points, then by converting desired fingertip forces into joint
+  torques.
+</p>
+
+<h3>5a. Target Contact Points in World Frame</h3>
+
+<p>
+  The contact points are defined in the cube body frame and must be transformed to the
+  world frame each timestep using the current cube pose \(X_{WC}\):
+</p>
+\[
+\mathbf{p}_k^W = X_{WC} \cdot \mathbf{p}_k^C
+\]
+<p>
+  For the index and middle fingers on face 4 (\(-Y\) face) with x-offsets \(a\) and \(b\),
+  and the thumb on face 3 (\(+Y\) face) with offset \(c\):
+</p>
+\[
+\mathbf{p}_I^C = \begin{pmatrix} a \\ -L/2 \\ 0 \end{pmatrix}, \quad
+\mathbf{p}_M^C = \begin{pmatrix} b \\ -L/2 \\ 0 \end{pmatrix}, \quad
+\mathbf{p}_T^C = \begin{pmatrix} c \\ +L/2 \\ 0 \end{pmatrix}
+\]
+<p>
+  These world-frame positions are recomputed every control step as the cube moves.
+  In code this is already handled by <code>GetFaceCentrePositions</code> plus the offset.
+</p>
+
+<h3>5b. Positioning the Fingers (Inverse Kinematics)</h3>
+
+<p>
+  To place fingertip \(k\) at \(\mathbf{p}_k^W\), we solve an inverse kinematics (IK)
+  problem over the 16 Allegro joint angles \(\mathbf{q}\):
+</p>
+\[
+\text{find } \mathbf{q} \text{ such that } \mathrm{FK}_k(\mathbf{q}) = \mathbf{p}_k^W
+\quad \text{for } k \in \{I, M, T\}
+\]
+<p>
+  where \(\mathrm{FK}_k\) is the forward kinematics map for fingertip \(k\).
+  In Drake this is done with <code>drake::multibody::InverseKinematics</code>:
+</p>
+<ol>
+  <li>Construct an <code>InverseKinematics</code> object on the plant.</li>
+  <li>Add a <code>PositionConstraint</code> for each fingertip frame, pinning it to
+      a small ball around \(\mathbf{p}_k^W\).</li>
+  <li>Call <code>Solve(ik.prog())</code> to get joint angles \(\mathbf{q}^*\).</li>
+  <li>Feed \(\mathbf{q}^*\) as the desired configuration to the PD controller
+      (or set them directly as the initial condition before contact).</li>
+</ol>
+
+<div class="note">
+  <strong>IK vs. hand-tuned joints.</strong>
+  For a fixed cube pose you can hand-tune joint angles once and hard-code them.
+  IK is needed when the cube can be at an arbitrary pose — it recomputes the
+  joint target every time \(X_{WC}\) changes.
+</div>
+
+<h3>5c. Converting Fingertip Forces to Joint Torques</h3>
+
+<p>
+  Once in contact, the desired fingertip force \(\mathbf{f}_k \in \mathbb{R}^3\) is
+  converted to joint torques via the <strong>geometric Jacobian</strong>
+  \(J_k \in \mathbb{R}^{3 \times n}\) of the fingertip translational velocity
+  with respect to joint velocities:
+</p>
+\[
+\boldsymbol{\tau}_k = J_k^\top \mathbf{f}_k
+\]
+<p>
+  The total torque command sent to the hand is the sum over all three contacts:
+</p>
+\[
+\boldsymbol{\tau}_\text{grasp} = J_I^\top \mathbf{f}_I + J_M^\top \mathbf{f}_M + J_T^\top \mathbf{f}_T
+\]
+<p>
+  In Drake, \(J_k\) is computed with
+  <code>plant.CalcJacobianTranslationalVelocity(context, JacobianWrtVariable::kV,
+  fingertip_frame, p_tip, world_frame, world_frame, &J)</code>.
+</p>
+
+<div class="note">
+  <strong>Why \(J^\top\)?</strong>
+  The principle of virtual work states that the joint torques required to produce
+  a given endpoint force equal \(J^\top f\). This is the transpose (not the inverse)
+  of the Jacobian.
+</div>
+
+<h3>5d. Control Loop</h3>
+
+<p>Each timestep the following steps execute in order:</p>
+<ol>
+  <li>Read current cube pose \(X_{WC}\) via <code>EvalBodyPoseInWorld</code>.</li>
+  <li>Compute world-frame contact points \(\mathbf{p}_k^W = X_{WC}\,\mathbf{p}_k^C\).</li>
+  <li>Compute force magnitudes from <code>GetGraspMagnitudes</code>;
+      express each force in world frame
+      (e.g. \(\mathbf{f}_I = \alpha_I\,R_{WC}\,\hat{\mathbf{y}}\)).</li>
+  <li>Compute fingertip Jacobians \(J_I, J_M, J_T\) at the current joint state.</li>
+  <li>Compute grasp torques \(\boldsymbol{\tau}_\text{grasp} = \sum_k J_k^\top \mathbf{f}_k\).</li>
+  <li>Add \(\boldsymbol{\tau}_\text{grasp}\) to the PD torques (or replace PD once in contact).</li>
+</ol>
+
+<p>
+  Steps 3–6 can be implemented as a new Drake <code>LeafSystem</code> that takes the
+  plant state as input and outputs joint torques, sitting alongside the existing
+  <code>PdJointController</code>.
+</p>
+
+</body>
+</html>

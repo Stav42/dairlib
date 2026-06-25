@@ -13,6 +13,8 @@ class PdJointController : public drake::systems::LeafSystem<double> {
         DeclareVectorInputPort("state", 2 * num_joints).get_index();
     desired_port_ =
         DeclareVectorInputPort("q_desired", num_joints).get_index();
+    qdot_desired_port_ =
+        DeclareVectorInputPort("qdot_desired", num_joints).get_index();
     DeclareVectorOutputPort("torques", num_joints,
                             &PdJointController::CalcTorques);
   }
@@ -24,7 +26,9 @@ class PdJointController : public drake::systems::LeafSystem<double> {
     const Eigen::VectorXd q = state.head(num_joints_);
     const Eigen::VectorXd v = state.tail(num_joints_);
     const Eigen::VectorXd q_des = get_input_port(desired_port_).Eval(context);
-    output->SetFromVector(kp_ * (q_des - q) - kd_ * v);
+    const Eigen::VectorXd qdot_des =
+        get_input_port(qdot_desired_port_).Eval(context);
+    output->SetFromVector(kp_ * (q_des - q) + kd_ * (qdot_des - v));
   }
 
   const int num_joints_;
@@ -32,6 +36,7 @@ class PdJointController : public drake::systems::LeafSystem<double> {
   const double kd_;
   int state_port_;
   int desired_port_;
+  int qdot_desired_port_;
 };
 
 }  // namespace dairlib
