@@ -422,6 +422,8 @@
     <li><a href="#s5"><span class="toc-slug">§5</span>Dynamics, Schedule &amp; The Complete Problem</a></li>
     <li><a href="#s6"><span class="toc-slug">§6</span>How It Is Solved — The C3 Mapping</a></li>
     <li><a href="#s7"><span class="toc-slug">§7</span>Refinements &amp; Cautions</a></li>
+    <li><a href="#s8"><span class="toc-slug">§8</span>Implementation Status, Problems &amp; the Phase 1 + Phase 2 Pivot</a></li>
+    <li><a href="#s9"><span class="toc-slug">§9</span>Hybrid Controller — Exact Implementation Steps</a></li>
   </ol>
 </nav>
 
@@ -927,6 +929,337 @@
     control cost, and (ii) explicit Stewart&ndash;Trinkle friction-pyramid variables and
     constraints. Pick a pyramid resolution (item 1), and enforce the schedule and FK
     equality (items 2–3), and the problem is well posed.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §8  IMPLEMENTATION STATUS, PROBLEMS, AND THE PIVOT
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s8">
+  <span class="slug">§8</span>
+  <h2>Implementation Status, Problems &amp; the Phase 1 + Phase 2 Pivot</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  This section records what was actually built, the problems encountered (both the
+  solver issues we fixed and the one fundamental wall we hit), and the recommended
+  change of approach.
+</p>
+
+<!-- 8.1 what we built -->
+<p style="font-weight:600; color:var(--text);">8.1 &nbsp;·&nbsp; What we built</p>
+<div class="card blue">
+  <div class="card-label">Current approach</div>
+  <p>
+    We forked the <code>c3</code> solver and added a <strong>force-reference cost</strong>
+    \(\sum_k (\boldsymbol{\lambda}_k - \boldsymbol{\lambda}_k^\star)^\top W (\boldsymbol{\lambda}_k - \boldsymbol{\lambda}_k^\star)\)
+    (methods <code>SetForceTrackingWeight</code> / <code>UpdateForceTarget</code>), weighting
+    only the three normal-force entries so the squeeze magnitudes track \(\alpha_I,\alpha_M,\alpha_T\).
+    A test program (<code>allegro_grasp_c3.cc</code>) builds the Allegro+cube plant, places
+    the fingertips on the cube via IK, linearizes to an LCS, and runs one C3 solve with a
+    heavy cube-pose anchor \(Q\) plus this force cost. The intent: command \(\alpha_M\) and
+    read back the planned normal forces, then sweep \(\alpha_M\) to find the squeeze that
+    lets friction resist gravity.
+  </p>
+</div>
+
+<!-- 8.2 solver problems fixed -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">8.2 &nbsp;·&nbsp; Numerical problems encountered (and fixed)</p>
+<p>
+  Getting a single solve to run took a sequence of fixes, all symptoms of an
+  ill-conditioned, stiff MPC for a torque-controlled hand:
+</p>
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Symptom</th><th>Root cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>OSQP "non-convex" in the ADMM <em>projection</em> step</td>
+        <td>The projection Hessian's \(\lambda\)-block is the LCS matrix \(F\), whose symmetric part is not PSD for a frictional contact</td>
+        <td>Regularize the projection solver (\(\sigma = 1.0\), equilibration) in the c3 fork</td>
+      </tr>
+      <tr>
+        <td>Main QP <code>IterationLimit</code> → zero fallback</td>
+        <td>\(\lvert B\rvert \approx 1638\): torque acting on light finger joints makes a hugely ill-scaled input matrix</td>
+        <td>Input rescaling \(\tilde{\mathbf{u}} = \mathbf{u}/s_u\) so \(\lvert B\rvert\!\to\!\lvert A\rvert\); scale \(R\) by \(s_u^2\)</td>
+      </tr>
+      <tr>
+        <td><code>SolverSpecificError</code></td>
+        <td>A hand-rolled OSQP option set dropped polishing/\(\rho\)/\(\alpha\)</td>
+        <td>Restore C3's tuned default options; loosen <code>eps</code> to 1e-3</td>
+      </tr>
+      <tr>
+        <td>Stiff contact dynamics</td>
+        <td>Fingertip collision spheres penetrated the cube by ~17 mm</td>
+        <td>Back the fingertips off to a ~3 mm contact gap</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<p>
+  After these, the solve converges and produces nonzero contact forces — the
+  plant → LCS → C3 → force-cost pipeline works end to end.
+</p>
+
+<!-- 8.3 the fundamental wall -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">8.3 &nbsp;·&nbsp; The fundamental wall: C3 cannot command the squeeze</p>
+
+<div class="critique">
+  <div class="cnum">!</div>
+  <h3>The grip squeeze is an internal force, and C3 is blind to it</h3>
+  <p>
+    The squeeze is an <strong>internal force</strong>: equal-and-opposite presses from
+    opposing fingers that <em>cancel</em>, producing <strong>zero net wrench</strong> on
+    the cube. Formally it lives in the <strong>nullspace of the grasp map \(G\)</strong>
+    (see <a href="grasp_theory_critique.html#s3">the grasp-theory critique</a>).
+  </p>
+  <div class="eq">
+    \[
+      G\,\mathbf{f}_{\text{squeeze}} = \mathbf{0}
+      \quad\Longrightarrow\quad
+      \text{the cube's motion is identical for any squeeze magnitude.}
+    \]
+  </div>
+  <p>
+    C3 chooses contact forces only by how they drive the <strong>state</strong> (the cube
+    pose), which responds solely to the <em>net</em> wrench. Since the squeeze produces no
+    net wrench, <strong>C3 is structurally blind to it</strong> — it has no reason to
+    prefer any squeeze level. Our force-reference cost tries to pin it anyway, but it is a
+    soft preference competing against the state anchor.
+  </p>
+  <p style="font-weight:600; color:var(--text);">Confirmed empirically:</p>
+  <ul>
+    <li>Raising the force-cost weight <strong>100&times;</strong> barely moved the normal
+        forces (they crept from \(-0.16\) toward \(-0.05\), i.e. toward the target by a
+        sliver) — the cost is wired correctly but overwhelmingly dominated.</li>
+    <li>Removing the state anchor to let the force cost win instead <strong>broke
+        solvability</strong> (the anchor was also providing the regularization that makes
+        the QP solvable) → <code>IterationLimit</code> → zero.</li>
+  </ul>
+  <p>
+    So we are in a vise: the state anchor is <em>required</em> for the problem to solve, yet
+    it <em>dictates</em> the forces and steamrolls the squeeze command. <strong>A
+    state-tracking MPC cannot command an internal grip force</strong> — not a bug, but the
+    nature of the tool.
+  </p>
+</div>
+
+<!-- 8.4 the pivot -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">8.4 &nbsp;·&nbsp; The pivot: a two-phase (hybrid position/force) controller</p>
+
+<p>
+  A grasp has two sub-tasks that need <em>opposite</em> kinds of control, and no single
+  controller does both well:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Sub-task</th><th>Needs</th><th>Good at it</th><th>Bad at it</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Bring all fingers to contact <strong>simultaneously</strong> (timing)</td>
+        <td>planning ahead / coordination</td>
+        <td class="yes">C3 / trajectory optimization</td>
+        <td class="no">force control (fingers arrive raggedly; the first to land shoves the cube)</td>
+      </tr>
+      <tr>
+        <td>Squeeze with force \(\alpha\) once in contact</td>
+        <td>reacting to contact with a set force</td>
+        <td class="yes">force / PD control (\(\boldsymbol{\tau}=J^\top\mathbf{f}\))</td>
+        <td class="no">C3 (squeeze is invisible, §8.3)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The resolution is the classic <strong>hybrid position/force control</strong> split —
+  divide the grasp in <em>time</em>:
+</p>
+
+<div class="two-col">
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Phase 1 — Reach (free space)</div>
+    <p>
+      Use a <strong>coordinated trajectory</strong> (C3 / planning) to bring all three
+      fingertips to the cube surface <em>arriving at the same instant</em>. Position/
+      trajectory controlled; no squeezing yet. This solves the timing problem.
+    </p>
+  </div>
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Phase 2 — Squeeze (in contact)</div>
+    <p>
+      The moment all three fingers report contact, <strong>switch to force control</strong>
+      \(\boldsymbol{\tau} = J^\top \mathbf{f}\) and command the squeeze \(\alpha\). This
+      directly sets the grip force — the quantity C3 cannot.
+    </p>
+  </div>
+</div>
+
+<p>
+  The switch trigger is "all three contacts closed" (gap \(\approx 0\) / small measured
+  force). Phase 1 covers the timing that force control is bad at; Phase 2 covers the
+  squeeze that C3 is blind to. Each tool does only what it is good at, and the friction-vs-
+  gravity question is then answered directly by sweeping \(\alpha\) in Phase 2 (or by
+  simulating and observing whether the cube is held).
+</p>
+
+<div class="card amber">
+  <div class="card-label">Status &amp; recommendation</div>
+  <p>
+    The C3 force-reference machinery is built and the solve works, but §8.3 shows it cannot
+    serve as the squeeze command. Recommended next step: keep C3 (or a simpler coordinated
+    plan) for <strong>Phase 1</strong>, and build the \(\boldsymbol{\tau}=J^\top\mathbf{f}\)
+    <strong>Phase 2</strong> squeeze controller with a contact-triggered handoff between them.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §9  HYBRID CONTROLLER — IMPLEMENTATION STEPS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s9">
+  <span class="slug">§9</span>
+  <h2>Hybrid Controller — Exact Implementation Steps</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  A concrete build plan for the Phase 1 + Phase 2 controller of <a href="#s8">§8.4</a>.
+  It is built on top of <code>allegro_cube_visualizer.cc</code>, which already has the
+  Allegro+cube plant, the Meshcat visualization, the simulation loop, and a PD joint
+  controller. We add one controller system with two modes and a contact-triggered switch.
+</p>
+
+<!-- 9.0 architecture -->
+<p style="font-weight:600; color:var(--text);">9.0 &nbsp;·&nbsp; Architecture</p>
+<div class="card indigo">
+  <div class="card-label">One system, two modes</div>
+  <p>
+    A new <code>HybridGraspController</code> (a Drake <code>LeafSystem</code>): input port =
+    Allegro state \((\mathbf{q},\dot{\mathbf{q}})\); output port = joint torques. It holds a
+    discrete <strong>mode</strong> (<code>kReach</code> / <code>kSqueeze</code>) and per-finger
+    contact flags. Each control step it computes the contact gaps, updates the mode, and
+    emits torques from whichever phase is active. The cube pose is read from the plant
+    context (sim) so gaps and contact normals are known exactly.
+  </p>
+</div>
+
+<!-- 9.1 phase 1 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">9.1 &nbsp;·&nbsp; Phase 1 — coordinated reach (position control)</p>
+<p>Goal: bring all three fingertips to the cube surface without shoving the cube.</p>
+<ol>
+  <li><strong>Contact configuration.</strong> Compute \(\mathbf{q}_{\text{contact}}\) with
+      <code>SolveGraspIK</code> (<code>cube_kinematics.h</code>), targeting the fingertips
+      <em>exactly at</em> each face — <code>GetGraspPositions(X_WC, cube_size, a, b, c)</code>,
+      <strong>no inward penetration</strong>. (Penetration is Phase 2's job; targeting the
+      surface means an early-arriving finger rests with ~0 force and does not push the cube.)</li>
+  <li><strong>Pre-grasp configuration.</strong> Compute \(\mathbf{q}_{\text{pregrasp}}\) with
+      the fingertips offset a few cm outside the faces (<code>GetIntermediatePosition</code>).</li>
+  <li><strong>Synchronized trajectory.</strong> Build one cubic spline
+      \(\mathbf{q}_{\text{ref}}(t)\): open \(\to \mathbf{q}_{\text{pregrasp}} \to \mathbf{q}_{\text{contact}}\),
+      with a single common end time, using
+      <code>PiecewisePolynomial::CubicShapePreserving</code> (as the visualizer already does).
+      All fingers are scheduled to reach the surface together.</li>
+  <li><strong>Track it</strong> with the existing <code>PdJointController</code> law
+      \(\boldsymbol{\tau} = K_p(\mathbf{q}_{\text{ref}}-\mathbf{q}) + K_d(\dot{\mathbf{q}}_{\text{ref}}-\dot{\mathbf{q}})\),
+      plus gravity compensation (9.3, step 4) so the fingers do not sag.</li>
+</ol>
+<div class="card green" style="margin-bottom:0;">
+  <div class="card-label">Why this fixes the timing</div>
+  <p>
+    Targets are <em>at</em> the surface, so contact never produces a shove — fingers that
+    arrive early simply rest there. The Phase-2 switch (9.2) waits until <em>all three</em>
+    are touching, so residual timing differences are absorbed by waiting rather than requiring
+    perfect simultaneity.
+  </p>
+</div>
+
+<!-- 9.2 handoff -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">9.2 &nbsp;·&nbsp; The handoff trigger (contact detection)</p>
+<ol>
+  <li><strong>Per-finger gap by FK.</strong> Each step, get the fingertip world position
+      \(\mathbf{p}_i = \) <code>plant.EvalBodyPoseInWorld(ctx, tip_i).translation()</code> and the
+      cube pose \(X_{WC}\). The signed gap to finger \(i\)'s face is
+      \(\phi_i = (\mathbf{p}_i - \mathbf{p}^{\text{face}}_i)\cdot \hat{\mathbf{n}}_i\), where
+      \(\hat{\mathbf{n}}_i\) is the inward face normal and \(\mathbf{p}^{\text{face}}_i\) the face point.</li>
+  <li><strong>Contact flag.</strong> Finger \(i\) is "in contact" when \(\phi_i \le \varepsilon\)
+      (e.g. \(\varepsilon = 1\) mm). (Alternatively read normal force from
+      <code>plant.get_contact_results_output_port()</code>.)</li>
+  <li><strong>Switch.</strong> When all three flags are true for a few consecutive steps
+      (debounce), set mode \(\to\) <code>kSqueeze</code> and latch it.</li>
+</ol>
+
+<!-- 9.3 phase 2 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">9.3 &nbsp;·&nbsp; Phase 2 — squeeze (force control, \(\boldsymbol{\tau}=J^\top\mathbf{f}\))</p>
+<ol>
+  <li><strong>Squeeze magnitudes.</strong> From <code>GetGraspMagnitudes</code>: with offsets
+      \(\rho=1\), \(\alpha_I=\alpha_M=\) <code>--alpha_m</code>, \(\alpha_T=\alpha_I+\alpha_M\).</li>
+  <li><strong>Desired contact forces</strong> (world frame), pointing inward along each face
+      normal:
+      <div class="eq" style="margin:0.6rem 0;">
+        \[ \mathbf{f}_I = \alpha_I\,\hat{\mathbf{n}}_I,\quad \mathbf{f}_M = \alpha_M\,\hat{\mathbf{n}}_M,\quad \mathbf{f}_T = \alpha_T\,\hat{\mathbf{n}}_T \]
+      </div>
+      For the axis-aligned cube: \(\hat{\mathbf{n}}_I=\hat{\mathbf{n}}_M=+\hat{\mathbf{y}}\) (−Y face),
+      \(\hat{\mathbf{n}}_T=-\hat{\mathbf{y}}\) (+Y face). If the cube rotates, transform the
+      cube-frame normals by \(X_{WC}\).</li>
+  <li><strong>Map forces to torques.</strong> For each finger get the fingertip translational
+      Jacobian and accumulate:
+      <div class="eq" style="margin:0.6rem 0;">
+        \[ \boldsymbol{\tau}_{\text{squeeze}} = \sum_{i\in\{I,M,T\}} J_i(\mathbf{q})^\top \mathbf{f}_i \]
+      </div>
+      via <code>plant.CalcJacobianTranslationalVelocity(ctx, kV, tip_i, [0,0,0], world, world, &amp;Ji)</code>
+      (a \(3\times n_v\) matrix; \(J_i^\top \mathbf{f}_i\) gives an \(n_v\) torque vector).</li>
+  <li><strong>Gravity compensation.</strong> Add \(\boldsymbol{\tau}_g = -\,\)<code>plant.CalcGravityGeneralizedForces(ctx)</code>
+      so the hand holds its pose against gravity.</li>
+  <li><strong>Total + ramp.</strong> \(\boldsymbol{\tau} = \boldsymbol{\tau}_{\text{squeeze}} + \boldsymbol{\tau}_g\),
+      selecting the Allegro rows for the actuation port. Ramp \(\alpha\) from 0 to target over
+      ~0.5 s on entering <code>kSqueeze</code> for a smooth grip.</li>
+</ol>
+<div class="card amber" style="margin-bottom:0;">
+  <div class="card-label">Note — friction is what holds gravity</div>
+  <p>
+    The commanded \(\mathbf{f}_i\) are horizontal squeeze (normal) forces; they do not directly
+    resist gravity. The cube is held by <em>friction</em> at the contacts, bounded by
+    \(\mu\,\alpha\). The whole point of sweeping \(\alpha\) is to find where
+    \(\mu\cdot(\text{total normal force}) \gtrsim m g\) (analytically \(\alpha_M \approx 0.6\) N for
+    \(m=0.2\) kg, \(\mu=0.8\)).</p>
+</div>
+
+<!-- 9.4 wiring -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">9.4 &nbsp;·&nbsp; Wiring into the simulation</p>
+<ol>
+  <li>Start from a copy of <code>allegro_cube_visualizer.cc</code>; keep the plant, ground/
+      cube spawn, Meshcat, and sim loop.</li>
+  <li>Replace the PD-only controller with <code>HybridGraspController</code>. Connect
+      <code>plant.get_state_output_port(allegro_index) → controller.state</code> and
+      <code>controller.torques → plant.get_actuation_input_port(allegro_index)</code>.</li>
+  <li>Give the controller the plant + a context handle (or pass the cube pose in) so it can
+      evaluate FK, gaps, Jacobians, and gravity each step.</li>
+  <li>Expose <code>--alpha_m</code>, \(K_p,K_d\), the contact threshold \(\varepsilon\), and the
+      squeeze ramp time as gflags.</li>
+</ol>
+
+<!-- 9.5 test -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">9.5 &nbsp;·&nbsp; Test &amp; the &alpha; sweep</p>
+<ol>
+  <li>Run with Meshcat open. Watch Phase 1: all three fingers reach the cube together and rest.</li>
+  <li>Watch the switch to Phase 2 and the grip ramp in.</li>
+  <li>Sweep <code>--alpha_m</code> (e.g. 0.3 → 2.0 N). For each, observe whether the cube is
+      <strong>held</strong> or <strong>slips</strong> out under gravity. The smallest
+      \(\alpha_m\) that holds is the empirical friction threshold — compare to the analytic
+      \(\approx 0.6\) N.</li>
+  <li>Optional: enable the contact-force visualizer to confirm the normal forces match \(\alpha\).</li>
+</ol>
+
+<div class="card blue">
+  <div class="card-label">Deliverable</div>
+  <p>
+    One new file (e.g. <code>allegro_grasp_hybrid.cc</code>) + a <code>HybridGraspController</code>
+    system + a BUILD target. Phase 1 reuses the existing IK / spline / PD pieces; Phase 2 is the
+    \(J^\top\mathbf{f}\) + gravity-compensation law. The contact-triggered switch ties them
+    together. This finally makes \(\alpha_m\) a direct, sweepable grip command — the thing C3
+    could not provide.
   </p>
 </div>
 
