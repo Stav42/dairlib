@@ -12,3 +12,6 @@ attic/multibody/solver_log/
 *.csv
 /examples/Cassie/saved_trajectories/
 /MODULE.bazel.lock
+
+# Local editable fork of the c3 bazel module (force-reference cost)
+/c3_src/

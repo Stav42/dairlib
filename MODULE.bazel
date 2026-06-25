@@ -88,10 +88,17 @@ archive_override(
 )
 
 bazel_dep(name = "c3")
-git_override(
+# Local fork of DAIRLab/c3 (pinned 5c08cb2) with an added force-reference cost
+# (UpdateForceTarget / SetForceTrackingWeight). To revert to upstream, restore
+# the git_override below and remove c3_src/.
+#   git_override(
+#       module_name = "c3",
+#       remote = "https://github.com/DAIRLab/c3.git",
+#       commit = "5c08cb2e14b1ab10e024cb46e8504970cffcd5ea",
+#   )
+local_path_override(
     module_name = "c3",
-    remote = "https://github.com/DAIRLab/c3.git",
-    commit = "5c08cb2e14b1ab10e024cb46e8504970cffcd5ea"
+    path = "c3_src",
 )
 
 
