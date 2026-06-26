@@ -333,6 +333,25 @@ cc_binary(
 )
 
 cc_binary(
+    name = "allegro_grasp_hybrid",
+    srcs = [
+        "allegro_grasp_hybrid.cc",
+        "cube_kinematics.h",
+        "meshcat_utils.h",
+    ],
+    data = [
+        ":urdfs",
+        "@drake_models//:allegro_hand_description",
+    ],
+    deps = [
+        ":allegro_hand_utils",
+        "//common:find_resource",
+        "@drake//:drake_shared_library",
+        "@gflags",
+    ],
+)
+
+cc_binary(
     name = "allegro_grasp_c3",
     srcs = [
         "allegro_grasp_c3.cc",
