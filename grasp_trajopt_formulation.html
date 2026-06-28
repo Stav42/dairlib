@@ -249,6 +249,41 @@
       font-size: 0.95rem;
     }
 
+    /* ── Collapsible ─────────────────────────────────────── */
+    details.collap {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--indigo);
+      border-radius: 10px;
+      margin: 1.1rem 0;
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+    details.collap > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 1rem 1.5rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--indigo);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    details.collap > summary::-webkit-details-marker { display: none; }
+    details.collap > summary::before {
+      content: "\25B8";
+      font-size: 0.8rem;
+      transition: transform 0.15s ease;
+    }
+    details.collap[open] > summary::before { transform: rotate(90deg); }
+    details.collap .collap-body {
+      padding: 0.2rem 1.7rem 1.3rem;
+      border-top: 1px solid var(--border);
+      color: var(--sub);
+    }
+    details.collap .collap-body > *:first-child { margin-top: 0.9rem; }
+
     /* ── Code ────────────────────────────────────────────── */
     code {
       font-family: 'JetBrains Mono', monospace;
@@ -424,6 +459,11 @@
     <li><a href="#s7"><span class="toc-slug">§7</span>Refinements &amp; Cautions</a></li>
     <li><a href="#s8"><span class="toc-slug">§8</span>Implementation Status, Problems &amp; the Phase 1 + Phase 2 Pivot</a></li>
     <li><a href="#s9"><span class="toc-slug">§9</span>Hybrid Controller — Exact Implementation Steps</a></li>
+    <li><a href="#s10"><span class="toc-slug">§10</span>As-Built Hybrid Controller — Behaviour &amp; the Force-Tracking Gap</a></li>
+    <li><a href="#s11"><span class="toc-slug">§11</span>Closing the Loop in C3 Space — Let the Grip Force Emerge from "Don't Fall"</a></li>
+    <li><a href="#s12"><span class="toc-slug">§12</span>Pinned-Reach + C3-Squeeze — A Practical Two-Phase Architecture</a></li>
+    <li><a href="#s13"><span class="toc-slug">§13</span>Lessons from Sampling-Based C3 (Push-Anything) — Why It Never Goes Unbounded</a></li>
+    <li><a href="#s14"><span class="toc-slug">§14</span>Expected Simulation Behaviour — What the As-Built Code Should Do</a></li>
   </ol>
 </nav>
 
@@ -1260,6 +1300,1240 @@
     \(J^\top\mathbf{f}\) + gravity-compensation law. The contact-triggered switch ties them
     together. This finally makes \(\alpha_m\) a direct, sweepable grip command — the thing C3
     could not provide.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §10  AS-BUILT HYBRID CONTROLLER — BEHAVIOUR & THE FORCE GAP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s10">
+  <span class="slug">§10</span>
+  <h2>As-Built Hybrid Controller — Behaviour &amp; the Force-Tracking Gap</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  §9 was the plan; this section records what was actually built in
+  <code>examples/sampling_c3/allegro_grasp_hybrid.cc</code>, how it behaves when run, and the
+  one structural reason it does not yet hold the cube: <strong>nothing closes a loop on the
+  force actually delivered at the grasp points.</strong>
+</p>
+
+<!-- 10.1 as-built -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">10.1 &nbsp;·&nbsp; What was actually built (vs. the §9 plan)</p>
+<p>
+  The controller is not a wired <code>LeafSystem</code>; it is an explicit 1&nbsp;kHz control
+  loop inside <code>DoMain</code> that mutates the actuation input port each step via
+  <code>FixValue</code>. Several deviations from §9 were forced by numerical reality:
+</p>
+<ul>
+  <li><strong>Cube held by kinematic pinning, not a support wrench.</strong> Each step the cube
+      is teleported back to its reference pose (positions + velocities reset) during reach and
+      the early grip, then released. This is a perfect weld with none of the stiffness blow-up
+      of an explicit support spring on the light, free cube.</li>
+  <li><strong>Per-finger freeze-on-contact.</strong> When a finger first registers contact
+      (above a force threshold, and only after <code>contact_enable_t</code>), its joints are
+      latched into <code>q_freeze[i]</code> and held there while the others keep reaching.</li>
+  <li><strong>Pre-grasp / contact IK + static preview.</strong> Two IK solves (fingertips
+      1&nbsp;cm outside the faces, then 5&nbsp;mm inside) define the reach spline waypoints. A
+      pause-and-publish preview lets the operator verify the poses in Meshcat before running.</li>
+  <li><strong>Phase 2 = posture hold + \(J^\top\mathbf{f}\).</strong> The squeeze law was
+      augmented: alongside \(\boldsymbol{\tau}=J^\top\mathbf{f}\) it now re-uses the reach gains
+      \((K_p,K_d)\) to hold each finger at its latched <code>q_freeze</code> pose, so the
+      fingertips stay on the faces while the grip rides on top.</li>
+</ul>
+
+<!-- 10.2 behaviour timeline -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">10.2 &nbsp;·&nbsp; Observed behaviour, in order</p>
+<div class="two-col">
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">What works</div>
+    <p>
+      With the reach gains raised, all three fingertips <strong>do reach the grasp points</strong>
+      (tip error \(\sim\)1&nbsp;cm) and freeze in a valid force-closure pose. The
+      \(J^\top\mathbf{f}\) map is verified <em>inward</em> on all three fingers (alignment
+      \(\approx 0.9\)–\(0.98\) with the line to the cube centre), and \(\alpha_m\) is a direct,
+      sweepable grip command — the thing C3 could never give.
+    </p>
+  </div>
+  <div class="card amber" style="margin-bottom:0;">
+    <div class="card-label">What breaks</div>
+    <p>
+      The fingers <strong>jitter</strong> during the reach (high-gain PD on the light distal
+      joints). After the switch the grip is applied but the fingertips slowly
+      <strong>drift off the faces</strong> — tip error climbs from \(\sim\)1&nbsp;cm to
+      \(>\)12&nbsp;cm. When the cube is unpinned it is no longer gripped, so it
+      <strong>falls and the grasp is lost.</strong>
+    </p>
+  </div>
+</div>
+
+<!-- 10.3 the core diagnosis -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">10.3 &nbsp;·&nbsp; The core gap — the applied force is never tracked</p>
+<p>
+  Every term in the controller is <strong>open-loop in force</strong>. The \(J^\top\mathbf{f}\)
+  law converts a <em>commanded</em> fingertip force \(\mathbf{f}=\alpha\,\hat{\mathbf n}\) into
+  joint torques, but nothing ever measures the <em>actual</em> normal force at the contact and
+  corrects toward \(\alpha\). There is no error signal
+  \(\big(\alpha - \lambda_{\text{n,measured}}\big)\) anywhere in the loop. Consequently:
+</p>
+<ul>
+  <li>At the switch the fingertips are pressed 5&nbsp;mm <em>into</em> the cube; the pinned cube
+      pushes back with a reaction much larger than the commanded \(\alpha\) (1–2&nbsp;N). The
+      net force is outward, so the fingers retreat.</li>
+  <li>The posture hold pulls toward <code>q_freeze</code>, but <code>q_freeze</code> and the
+      \(J^\top\mathbf{f}\) push are two <strong>independent</strong> objectives that fight near
+      the surface; their equilibrium is a finger sitting <em>off</em> the face, not a regulated
+      contact force at the face.</li>
+  <li>Because the true contact force is never observed, the loop cannot tell the difference
+      between "gripping at \(\alpha\)" and "not touching at all" — and drifts into the latter.</li>
+</ul>
+
+<div class="card amber">
+  <div class="card-label">Diagnosis</div>
+  <p>
+    The hybrid controller solved <em>timing</em> (coordinated reach) and gave us a direct grip
+    <em>command</em> \(\alpha_m\), but it does not <strong>regulate the grip force at the grasp
+    points</strong>. Position hold and open-loop \(J^\top\mathbf{f}\) are not a substitute for
+    feedback on \(\lambda_{\text{n}}\). This is the same quantity §3–§4 model as the contact
+    impulse \(\boldsymbol{\lambda}\) — exactly what the C3 / Stewart–Trinkle contact model
+    exposes and what a force-tracking formulation must close a loop on.
+  </p>
+</div>
+
+<!-- 10.4 next -->
+<div class="card blue">
+  <div class="card-label">Where this points next</div>
+  <p>
+    The missing piece is a <strong>force-tracking law at the grasp points</strong>: read the
+    measured contact normal force (from <code>ContactResults</code> / the LCS contact impulse
+    \(\boldsymbol{\lambda}\)) and drive it to \(\alpha\), rather than commanding \(\alpha\)
+    blind. Whether that loop is closed by an explicit force-feedback term on top of the hybrid
+    controller, or by folding the squeeze back into C3's \(\boldsymbol{\lambda}\) with the
+    force-reference cost (§8), is the next design decision. The next section will develop it.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §11  CLOSING THE LOOP IN C3 SPACE
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s11">
+  <span class="slug">§11</span>
+  <h2>Closing the Loop in C3 Space — Let the Grip Force Emerge from "Don't Fall"</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  §10 showed the hybrid controller never closes a loop on the delivered force. The proposal
+  here is to put the <em>whole</em> grasp-and-hold inside C3, but to stop trying to
+  <em>command</em> the squeeze. Instead, require the cube to stay where it is under gravity and
+  let C3 discover the contact forces that achieve it. The grip force becomes an
+  <strong>emergent output</strong> of "the cube must not fall," not an input we dial.
+</p>
+
+<!-- 11.1 the reframing -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">11.1 &nbsp;·&nbsp; The reframing: require equilibrium, read off the force</p>
+<p>
+  Everything so far pinned the cube during the grip and only released it at the end — so during
+  the solve the cube never actually needed holding, and the squeeze was free-floating. Remove
+  the pin. Let gravity act on the cube inside the C3 dynamics, and put a state cost that anchors
+  the cube's <strong>world</strong> pose at its reference. Now the optimiser cannot leave the
+  cube unsupported: the only thing that can cancel \(mg\) is contact friction, and friction is
+  produced only at the fingertips.
+</p>
+
+<!-- 11.2 why this escapes the nullspace trap -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">11.2 &nbsp;·&nbsp; Why this escapes the §8.3 nullspace trap</p>
+<p>
+  §8.3 is still true: the internal squeeze produces <em>zero net wrench</em> on the cube, so by
+  itself it is invisible to a state cost. What changes is the <strong>friction cone coupling</strong>.
+  To hold the cube, the tangential (friction) impulses must supply the weight,
+</p>
+<p style="text-align:center;">
+  \( \textstyle\sum_i \lambda_{\text{t}}^{i} \;=\; mg \), &emsp; subject to &emsp;
+  \( \lVert \lambda_{\text{t}}^{i}\rVert \le \mu\,\lambda_{\text{n}}^{i} \).
+</p>
+<p>
+  Combining the two gives a hard <strong>lower bound on the normal force</strong>:
+  \( \sum_i \mu\,\lambda_{\text{n}}^{i} \ge mg \). The squeeze is no longer pure-nullspace —
+  gravity makes a <em>portion</em> of it observable as the minimum normal force needed to keep
+  friction inside its cone. That minimum is exactly the friction-vs-\(mg\) threshold we set out
+  to find. C3, which already models the Stewart–Trinkle cone (§4) and the cube dynamics (§5),
+  has every term needed to enforce this.
+</p>
+
+<div class="card amber" style="margin-top:1rem;">
+  <div class="card-label">The residual freedom is real — and that is what the force cost is for</div>
+  <p>
+    Only the <em>lower bound</em> on \(\lambda_{\text{n}}\) is pinned by gravity. Any squeeze
+    <em>above</em> that bound still adds zero net wrench and is invisible to the state cost — the
+    same nullspace as before. So C3 needs a tie-breaker to choose a unique grip. That is precisely
+    the role of the <strong>force-reference cost</strong> already built into the fork (§8):
+    \(W_\lambda\lVert\boldsymbol{\lambda}-\boldsymbol{\lambda}_{\text{des}}\rVert^2\) on the
+    normal entries. Set \(\boldsymbol{\lambda}_{\text{des}}\) to a target slightly above the
+    threshold (a safety margin) with a <em>small</em> \(W_\lambda\) — enough to regularise the
+    nullspace, not so much that it overrides the equilibrium requirement.
+  </p>
+</div>
+
+<!-- 11.3 the formulation -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">11.3 &nbsp;·&nbsp; The formulation, concretely</p>
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label">Decision objects (per knot)</div>
+    <ul style="margin:0;">
+      <li>\(\mathbf{x}=(\mathbf{q},\dot{\mathbf{q}})\): hand <em>and</em> free cube, cube
+          <strong>unpinned</strong>.</li>
+      <li>\(\mathbf{u}\): joint torques (input-scaled, §“\(|B|\) blow-up” fix).</li>
+      <li>\(\boldsymbol{\lambda}\): Stewart–Trinkle impulses at the 3 fingertip–cube contacts —
+          \(\gamma_i,\ \lambda_{\text{n}}^{i},\ \lambda_{\text{t}}^{i}\).</li>
+    </ul>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label">Cost terms</div>
+    <ul style="margin:0;">
+      <li>\(Q\): anchor the cube’s <strong>world</strong> pose (position + orientation) at
+          reference — this is what forbids "tracked while falling."</li>
+      <li>\(R\): quadratic on \(\mathbf{u}\) (no minimum-time term).</li>
+      <li>\(W_\lambda\): small force reference on the normal impulses (the tie-breaker / margin).</li>
+    </ul>
+  </div>
+</div>
+<p style="margin-top:1rem;">
+  Dynamics and complementarity are the standard LCS (§5–§6), with two non-negotiables:
+  <strong>(a)</strong> gravity on the cube is in the affine drift \(\mathbf d\); and
+  <strong>(b)</strong> the cube anchor in \(Q\) is in the world frame, never cube-relative. The
+  LCS is re-linearised each MPC step about the current contact configuration so the friction
+  cone is evaluated where the fingers actually are.
+</p>
+
+<!-- 11.3b  how the D matrix is built (collapsible) -->
+<details class="collap">
+  <summary>How is the \(D\) matrix actually built when we form the LCS?</summary>
+  <div class="collap-body">
+    <p>
+      \(D\) is the one block of the LCS (§5) that §5 never writes out — and, unlike \(A,B,\mathbf d\),
+      it is <strong>not</strong> produced by AutoDiff. It is assembled in closed form from the
+      contact Jacobians and the mass matrix. The reason is worth being explicit about, because
+      \(\boldsymbol\lambda\) is a complementarity variable, not a state — so there is no gradient
+      tape on which to "track" it (see the call-out below).
+    </p>
+    <p>
+      Start from the semi-implicit time-stepping of the coupled hand-plus-cube dynamics, with the
+      contact <em>force</em> \(\boldsymbol\lambda_k=(\gamma_k,\mathbf f_k,\boldsymbol\beta_k)\)
+      entering as an <strong>exogenous applied force</strong> — injected through the contact
+      Jacobians, never solved for inside this equation:
+    </p>
+    <div class="eq">
+      \[
+        M(\mathbf q_k)\,\bigl(\dot{\mathbf q}_{k+1}-\dot{\mathbf q}_k\bigr)
+        \;=\; \Delta t\,\Bigl(\boldsymbol\tau_k^{\text{app}}
+        \;+\; \underbrace{J_n^\top \mathbf f_k \;+\; J_t^\top \boldsymbol\beta_k}_{\text{contact force}}\Bigr).
+      \]
+    </div>
+    <p>
+      \(M\) is the joint-space mass matrix of hand <em>and</em> free cube; \(J_n,J_t\) are the
+      stacked normal / tangential contact Jacobians (the tangential rows already carry the §4
+      friction-pyramid directions, so the pyramid matrix \(D^{\!\beta}\) is folded into \(J_t\)).
+      \(\boldsymbol\tau_k^{\text{app}}\) gathers the applied joint torques, Coriolis and gravity —
+      and its <strong>cube-gravity</strong> piece is exactly what lands in the affine drift
+      \(\mathbf d\) of 11.3, item (a). Solve for the next velocity and integrate the configuration
+      forward through the velocity map \(N(\mathbf q)\):
+    </p>
+    <div class="eq">
+      \[
+        \dot{\mathbf q}_{k+1} = \dot{\mathbf q}_k^{\text{free}}
+          + \Delta t\,M^{-1}\bigl(J_n^\top \mathbf f_k + J_t^\top \boldsymbol\beta_k\bigr),
+        \qquad
+        \mathbf q_{k+1} = \mathbf q_k + \Delta t\,N(\mathbf q_k)\,\dot{\mathbf q}_{k+1}.
+      \]
+    </div>
+    <p>
+      The coefficient of \(\boldsymbol\lambda_k\) in
+      \(\mathbf x_{k+1}=(\mathbf q_{k+1},\dot{\mathbf q}_{k+1})\) is \(D\). Only \(\mathbf f\) and
+      \(\boldsymbol\beta\) carry force; the sliding slack \(\gamma\) never enters the dynamics, so
+      its columns are <strong>structurally zero</strong>:
+    </p>
+    <div class="eq">
+      \[
+        D = \begin{bmatrix} \Delta t^{2}\,N(\mathbf q)\,M^{-1}\,\bar J^\top \\[4pt]
+                            \Delta t\,M^{-1}\,\bar J^\top \end{bmatrix},
+        \qquad
+        \bar J^\top = \Bigl[\; \underbrace{\mathbf 0}_{\gamma}\;\big|\;
+          \underbrace{J_n^\top}_{\mathbf f}\;\big|\;
+          \underbrace{J_t^\top}_{\boldsymbol\beta}\;\Bigr].
+      \]
+    </div>
+    <p>Reading the structure off directly:</p>
+    <ul style="margin:0;">
+      <li>The bottom block \(\Delta t\,M^{-1}\bar J^\top\) is the <strong>velocity</strong> update;
+          the top block is the <strong>position</strong> update — the same thing carried one step
+          further through \(\Delta t\,N(\mathbf q)\), the velocity-to-\(\dot{\mathbf q}\) map.</li>
+      <li>The \(M^{-1}\) is precisely why the tiny finger inertias wreck the conditioning (the
+          \(|B|\sim10^3\) caveat in 11.5): a unit force on a light fingertip produces a large
+          \(\Delta\dot{\mathbf q}\), so \(D\) and \(B\) share the same scaling fix \(s_u\).</li>
+      <li>The \(\gamma\) columns are zero in \(D\) by construction — the slack lives only in the
+          gap vector \(\boldsymbol\eta\) (the \(E,F\) rows of §4), never in the dynamics.</li>
+    </ul>
+    <div class="card blue" style="margin:1.1rem 0 0;">
+      <div class="card-label">What \(D\) does when there is no contact</div>
+      <p>
+        \(D\) is purely <em>geometric</em>. The contact evaluators
+        (<code>ComputeContactJacobian</code>) still return a positive gap \(\phi_i>0\) and a
+        well-defined witness-point Jacobian even when a fingertip is nowhere near the cube, so the
+        columns of \(D=\Delta t\,M^{-1}\bar J^\top\) stay <strong>populated</strong> — \(D\) has no
+        idea whether the contact is live. What switches the force off is the
+        <strong>complementarity, not \(D\)</strong>: the normal row carries that positive gap,
+      </p>
+      <p style="text-align:center;margin:0.3rem 0;">
+        \(0 \le \mathbf f_k \;\perp\; \bigl(\phi_k + \dots\bigr) \ge 0
+          \;\;\Longrightarrow\;\; \phi_k>0 \;\Rightarrow\; \mathbf f_k=\mathbf 0,\)
+      </p>
+      <p>
+        and the empty friction budget \(\mu\mathbf f_k=\mathbf 0\) then forces
+        \(\boldsymbol\beta_k=\mathbf 0\). With \(\boldsymbol\lambda_k=\mathbf 0\) the product
+        \(D\boldsymbol\lambda_k\) vanishes and the knot collapses to the <em>contact-free</em>
+        dynamics \(\mathbf x_{k+1}=A\mathbf x_k+B\mathbf u_k+\mathbf d\) — exactly the
+        \(A,B,\mathbf d\) that AutoDiff produced. For the first 80 free-space knots the §5 contact
+        schedule makes this explicit, hard-pinning \(\boldsymbol\lambda_k=\mathbf 0\) so those
+        complementarity rows are dropped from the solve entirely.
+      </p>
+      <p style="margin-bottom:0;">
+        The catch is <strong>conditioning</strong>: while the fingers are separated every contact
+        row sits on its inactive branch \((\mathbf f=\mathbf 0,\ \phi>0)\), so no force couples into
+        the state and C3 has almost no gradient by which to <em>discover</em> contact — the
+        ill-conditioned "no active contact" regime flagged in §12. That is the argument for the
+        pinned-reach handoff: enter C3 only once all three fingertips satisfy \(\phi_i\approx0\), so
+        the very first LCS already has its contact rows active and the friction cone live.
+      </p>
+    </div>
+    <div class="card amber" style="margin:1.1rem 0 0;">
+      <div class="card-label">Why \(\boldsymbol\lambda\) is never AutoDiffed</div>
+      <p style="margin:0;">
+        Because \(\boldsymbol\lambda\) is a complementarity variable, not a state, it is never seeded
+        as an AutoDiff variable, and \(D\) is <em>not</em> a
+        \(\partial\mathbf x_{k+1}/\partial\boldsymbol\lambda\) gradient. In the fork
+        (<code>LCSFactory::GenerateLCS</code>) AutoDiff is seeded only on
+        \((\mathbf q,\dot{\mathbf q},\mathbf u)\)
+        (<code>InitializeAutoDiff(q_v_u)</code>) and applied to the <em>contact-free</em>
+        acceleration \(\mathbf f = M^{-1}(\boldsymbol\tau_g+\boldsymbol\tau_u+\mathbf f_{\text{app}}-C)\);
+        its gradient gives \(A,B,\mathbf d\). \(D\) is then built by hand —
+        <code>M.ldlt().solve(Jn.transpose())</code> and the \(J_t\) analogue (with \(M\) taken at its
+        operating-point value via <code>ExtractValue(M)</code>), scaled by \(\Delta t\) and
+        \(\Delta t^{2}N(\mathbf q)\). No linearisation is needed for the \(\boldsymbol\lambda\)-block
+        because the force-to-state map is <em>already exactly affine</em> in \(\boldsymbol\lambda\) —
+        which is precisely what makes this a <strong>Linear</strong> complementarity system.
+        Re-linearising each MPC step (11.3) just re-evaluates \(J_n,J_t,M\) at the new finger / cube
+        configuration.
+      </p>
+    </div>
+  </div>
+</details>
+
+<!-- 11.4 what it buys -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">11.4 &nbsp;·&nbsp; What this buys</p>
+<div class="two-col">
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Force is regulated, not commanded</div>
+    <p>
+      If the cube starts to slip, the world-pose error grows and C3 responds by raising finger
+      torque → more normal force → more friction → the cube is recaptured. The loop closes on the
+      thing we actually care about (the cube staying put), with \(\boldsymbol{\lambda}\) the
+      internal variable doing the work.
+    </p>
+  </div>
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">The threshold is computed, not swept</div>
+    <p>
+      With \(W_\lambda\) small, C3’s \(R\)-cost drives the grip toward the <em>minimum</em>
+      \(\lambda_{\text{n}}\) that keeps friction in its cone — i.e. it <strong>solves for</strong>
+      the \(\alpha_M\!\approx\!0.6\)–1&nbsp;N threshold directly, instead of us hand-sweeping it.
+    </p>
+  </div>
+</div>
+
+<!-- 11.5 risks -->
+<div class="card amber" style="margin-top:1rem;">
+  <div class="card-label">Risks &amp; required care</div>
+  <ul style="margin:0;">
+    <li><strong>World-frame anchor is mandatory.</strong> A cube-relative grasp cost lets C3 hold
+        the relative geometry while the cube falls (the §8 "tracked while falling" critique).</li>
+    <li><strong>Conditioning.</strong> The tiny finger inertias gave \(|B|\sim10^3\); reuse the
+        input scaling \(s_u\) and \(R\!\to\!s_u^2R\) already derived.</li>
+    <li><strong>Projection convexity.</strong> The Stewart–Trinkle \(F\) is not PSD; keep the
+        C3QP OSQP regularisation (sigma/scaling) from the fork.</li>
+    <li><strong>The squeeze can still wander</strong> if \(W_\lambda=0\). It must be nonzero to
+        pin the nullspace — the open question is how small it can be before the grip drifts, and
+        how large before it overrides the gravity-driven minimum.</li>
+    <li><strong>Real-time.</strong> Full hand+cube LCS with re-linearisation each step is heavier
+        than the hybrid loop; the ADMM iteration budget needs checking at control rate.</li>
+  </ul>
+</div>
+
+<!-- 11.6 next -->
+<div class="card blue">
+  <div class="card-label">First experiment to settle the question</div>
+  <p>
+    Before committing the full MPC, run the single-solve test (the existing
+    <code>allegro_grasp_c3.cc</code> harness) with the cube <strong>unpinned and under gravity</strong>,
+    a world-frame cube anchor in \(Q\), and \(W_\lambda=0\). Read the converged
+    \(\lambda_{\text{n}}^{i}\). If they sit at \(\approx mg/\mu\) and the cube holds, the
+    gravity-driven lower bound works and C3-space is viable. If \(\lambda_{\text{n}}\) collapses
+    to zero (cube falls in-solve), the equilibrium is not being enforced and we fall back to an
+    explicit force-feedback term on the hybrid controller of §10.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §12  PINNED-REACH + C3-SQUEEZE
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s12">
+  <span class="slug">§12</span>
+  <h2>Pinned-Reach + C3-Squeeze — A Practical Two-Phase Architecture</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  §11 argued that releasing the kinematic pin and letting gravity act turns the squeeze force into
+  something C3 can regulate. But the pin is also what makes the reach phase tractable: without it,
+  C3 would have to simultaneously move the fingers <em>and</em> prevent the cube from tumbling before
+  any contact has even been made. That is a much harder problem with a poorly-conditioned LCS
+  (no active contacts → near-zero rows in the contact Jacobian).
+</p>
+<p>
+  The practical answer is to keep the two phases structurally separate. Let the existing
+  PD-and-spline controller own the reach, with the cube pinned. Then, at the moment all three
+  fingers have made contact, hand control off to C3 with the pin released. C3 only needs to solve
+  the force-regulation problem — the hard geometric work (getting fingertips onto cube faces) is
+  already done.
+</p>
+
+<!-- 12.1 state machine -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">12.1 &nbsp;·&nbsp; The Two-Phase State Machine</p>
+
+<table style="width:100%;border-collapse:collapse;margin-top:0.75rem;font-size:0.92rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);text-align:left;">
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Phase</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Controller</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Cube</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Exit condition</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><strong>kPregrasp / kReach</strong></td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">PD + cubic spline</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Kinematically pinned</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">All 3 fingertips report \(\lambda_n^i > \epsilon\)</td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><strong>Handoff (one step)</strong></td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Latch \(\mathbf{q}_\text{freeze}\), build LCS</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Pin released</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">— (instantaneous)</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><strong>kSqueeze</strong></td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">C3 (ADMM)</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Free, gravity acting</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Cube drops / experiment end</td>
+    </tr>
+  </tbody>
+</table>
+
+<p style="margin-top:1rem;">
+  The pin release happens <em>exactly</em> at the handoff step, not gradually. At that instant, C3
+  sees a cube with nonzero gravitational drift — and must immediately find a contact force schedule
+  that keeps it up. Because the fingers are already touching the cube faces (confirmed by the contact
+  trigger), the contact Jacobian rows are populated and the LCS is well-posed from step one.
+</p>
+
+<!-- 12.2 what C3 sees -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">12.2 &nbsp;·&nbsp; What C3 Sees at Handoff — the LCS at the Contact Configuration</p>
+
+<p>
+  At the handoff instant, the full system state is
+  \[
+    \mathbf{x}_0 = \bigl[\,\mathbf{q}_\text{hand},\; \mathbf{v}_\text{hand},\;
+                           \mathbf{q}_\text{cube},\; \mathbf{v}_\text{cube}\bigr] \in \mathbb{R}^{45}
+  \]
+  where \(\mathbf{q}_\text{hand}\approx\mathbf{q}_\text{freeze}\) (all 16 joints) and
+  \(\mathbf{v} \approx 0\) (both hand and cube, since the reach was settling).
+  The cube pose \(\mathbf{q}_\text{cube}=\mathbf{q}_\text{cube}^0\) is the reference pose
+  (world-frame anchor target).
+</p>
+<p>
+  The LCS is built by linearizing Drake's continuous dynamics at \((\mathbf{x}_0, \mathbf{u}_0=\boldsymbol{\tau}_g)\)
+  — the gravity-compensating torque — over one time step \(h\):
+  \[
+    \mathbf{x}_{k+1} = A\,\mathbf{x}_k + B\,\mathbf{u}_k + \mathbf{d} + D\,\boldsymbol{\lambda}_k,
+    \quad \boldsymbol{\lambda}_k \ge 0, \;
+    E\,\mathbf{x}_k + F\,\boldsymbol{\lambda}_k + c \ge 0,\;
+    \boldsymbol{\lambda}_k^\top(\cdots)=0.
+  \]
+  The crucial terms:
+</p>
+<ul>
+  <li><strong>\(\mathbf{d} = h\,M^{-1} \mathbf{f}_\text{grav}\)</strong> — gravity enters the drift, so
+      the cube accelerates downward unless contact forces cancel it.</li>
+  <li><strong>\(D\)</strong> — the contact-Jacobian transpose columns; one per finger, already
+      populated because fingers are on the cube faces at \(\mathbf{x}_0\).</li>
+  <li><strong>\(E, F, c\)</strong> — the complementarity rows encoding the Stewart–Trinkle cone,
+      linearized at \(\mathbf{x}_0\). The gap function \(c_i \approx 0\) for each active contact
+      (fingers are touching, not penetrating).</li>
+</ul>
+
+<div class="card green" style="margin-top:1rem;">
+  <div class="card-label">Why linearizing at contact is better-conditioned</div>
+  <p>
+    During reach (no contact), the \(D\) columns for finger–cube contacts are <em>zero</em> — the
+    fingers have not touched the cube yet. The LCS cannot express any contact force. Handing off to
+    C3 only after contact means the very first C3 LCS already has all three \(D\) columns nonzero,
+    the friction cone complementarity is active, and the solver immediately sees the full force–state
+    coupling. The handoff also provides a natural warm-start: \(\boldsymbol{\lambda}^* \approx mg/(3\mu)\)
+    for each finger.
+  </p>
+</div>
+
+<!-- 12.3 cost matrices -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">12.3 &nbsp;·&nbsp; Cost Matrices for the Squeeze Phase</p>
+
+<p>Three terms drive the C3 objective in kSqueeze, in priority order:</p>
+
+<table style="width:100%;border-collapse:collapse;margin-top:0.75rem;font-size:0.91rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);">
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Matrix</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">What it penalises</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Role</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);font-family:'JetBrains Mono',monospace;">Q</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">\(\|\mathbf{q}_\text{cube} - \mathbf{q}_\text{cube}^0\|^2\) in <strong>world frame</strong></td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Keeps cube from falling. Forces friction lower bound \(\sum\mu\lambda_n \ge mg\).</td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);font-family:'JetBrains Mono',monospace;">R</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">\(\|\mathbf{u} - \boldsymbol{\tau}_g\|^2\)</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Keeps joint torques near gravity comp. Prevents runaway squeeze.</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);font-family:'JetBrains Mono',monospace;">W<sub>λ</sub></td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">\(\|\boldsymbol{\lambda}\|^2\) (all contact forces)</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Tie-breaker for the squeeze nullspace. Keep small — just enough to prevent drift above the gravity-driven lower bound.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="card amber" style="margin-top:1rem;">
+  <div class="card-label">Q must be world-frame — not cube-relative</div>
+  <p>
+    If \(Q\) is expressed in the cube's own body frame, C3 can satisfy it while the cube translates
+    downward (the relative geometry stays fixed). The cost must penalise the cube's world-frame
+    position directly: \(Q = \text{blkdiag}(0_{16\times16},\, 0_{16\times16},\, Q_c,\, 0_{6\times6})\)
+    where \(Q_c\) selects the translational part of the cube pose. This is the exact same issue
+    flagged in §8.3 — any relative cost allows the "tracked while falling" failure.
+  </p>
+</div>
+
+<!-- 12.4 hand posture inside C3 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">12.4 &nbsp;·&nbsp; Keeping Fingers on the Cube Inside C3</p>
+
+<p>
+  The posture-hold term from the hybrid controller (§10) has a direct analogue in C3's state cost.
+  Add a block to \(Q\) that penalises hand-joint deviation from \(\mathbf{q}_\text{freeze}\):
+  \[
+    Q_\text{hand} = k_\text{hold}\,I_{16\times16}
+  \]
+  in the \(\mathbf{q}_\text{hand}\) sub-block of \(Q\). This keeps the fingers pressed against the
+  cube faces while C3 finds the optimal torques, playing the same role as the
+  \(k_p(\mathbf{q}_\text{freeze}-\mathbf{q}_\text{hand})\) term — but now <em>inside</em> the
+  ADMM optimisation rather than bolted on outside it.
+</p>
+<p>
+  The value of \(k_\text{hold}\) should be in the same order as the existing PD gain
+  (\(k_p = 10\)) translated to the cost scale of \(Q\). A sweep from \(k_\text{hold}=5\) to
+  \(k_\text{hold}=50\) while watching \(\|\mathbf{q}_\text{hand}-\mathbf{q}_\text{freeze}\|\) in
+  simulation is the fastest calibration path.
+</p>
+
+<!-- 12.5 implementation path -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">12.5 &nbsp;·&nbsp; Implementation Path</p>
+
+<div class="card blue" style="margin-bottom:1rem;">
+  <div class="card-label">Step 1 — Single-solve diagnostic (§11.6, unchanged)</div>
+  <p>
+    Run <code>allegro_grasp_c3.cc</code> with the fingers already at
+    \(\mathbf{q}_\text{freeze}\), cube unpinned and under gravity, world-frame \(Q\),
+    \(W_\lambda=0\). If the converged \(\lambda_n^i \approx mg/\mu \approx 1.2\,\text{N}\),
+    the gravity-driven lower bound is working. This is the go/no-go gate.
+  </p>
+</div>
+
+<div class="card blue" style="margin-bottom:1rem;">
+  <div class="card-label">Step 2 — Replace kSqueeze with C3 in the hybrid binary</div>
+  <p>
+    In <code>allegro_grasp_hybrid.cc</code>, at the state-machine transition to kSqueeze:
+  </p>
+  <ol style="margin:0.5rem 0 0 1.5rem;">
+    <li>Release the cube pin (<code>cube_pinned = false</code>).</li>
+    <li>Build the LCS by calling Drake's <code>LinearizeContactDynamics</code> (or the
+        existing <code>MakeLinearizedLCS</code> helper in the c3 library) at
+        \(\mathbf{x}_0 = (\mathbf{q}_\text{freeze},\,0,\,\mathbf{q}_\text{cube}^0,\,0)\).</li>
+    <li>Construct \(Q\), \(R\), \(W_\lambda\) as above, pass to <code>C3QP</code>.</li>
+    <li>Each sim step: call <code>c3.Solve(x_current)</code>, extract \(\mathbf{u}^*[0]\),
+        apply to the hand's actuation port.</li>
+  </ol>
+  <p style="margin-top:0.5rem;">
+    The reach phase (<code>kPregrasp</code> / <code>kReach</code>) is untouched — the PD+spline
+    controller that is already working continues to own those modes.
+  </p>
+</div>
+
+<div class="card blue">
+  <div class="card-label">Step 3 — Re-linearise each step (optional, for longer horizons)</div>
+  <p>
+    For a 5–10 step horizon the single linearization at \(\mathbf{x}_0\) may drift. Re-linearise
+    at the current state each control cycle (iLQR-style). The added cost is one
+    <code>CalcMassMatrix</code> + <code>CalcJacobian</code> call per finger per step — cheap
+    relative to the ADMM solve itself.
+  </p>
+</div>
+
+<!-- 12.6 open questions -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">12.6 &nbsp;·&nbsp; Residual Open Questions</p>
+
+<div class="card amber" style="margin-bottom:0;">
+  <div class="card-label">What still needs to be decided</div>
+  <ul style="margin:0;">
+    <li><strong>ADMM horizon \(N\).</strong> Longer is better for squeeze regulation but heavier
+        per step. Start with \(N=3\) and check solve time at the simulator's control rate.</li>
+    <li><strong>\(W_\lambda\) tuning.</strong> Too small → squeeze wanders in its nullspace.
+        Too large → C3 minimises contact force and loses the grip. The §11 lower-bound argument
+        says the minimum viable \(W_\lambda\) is "just large enough that OSQP doesn't see the
+        nullspace as degenerate" — a value around \(10^{-3}\) to \(10^{-2}\) is a reasonable
+        starting bracket.</li>
+    <li><strong>Contact-frame convention.</strong> The C3 LCS expects \(\lambda = [\gamma, \lambda_n, \lambda_t]\)
+        in its own contact frame. Verify that the contact normals extracted from Drake's
+        proximity engine at the handoff instant agree with the \(\hat{n}_\text{cube}^i\) directions
+        used in the hybrid Jᵀf computation.</li>
+    <li><strong>Warm-start at each step.</strong> Initialise the ADMM with \(\boldsymbol{\lambda}
+        = [0,\, mg/(3\mu),\, 0]\) for each finger. This is the exact gravity-equilibrium value and
+        should cut the ADMM iteration count significantly.</li>
+  </ul>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §13  LESSONS FROM SAMPLING-BASED C3 (PUSH-ANYTHING)
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s13">
+  <span class="slug">§13</span>
+  <h2>Lessons from Sampling-Based C3 (Push-Anything) — Why It Never Goes Unbounded</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The §12 squeeze controller fails in a specific way: at the moment the kinematic pin is released,
+  C3's z-update QP returns <code>DualInfeasible</code> (an unbounded-primal certificate), falls back
+  to <em>zero torque</em>, and the cube drops. Yet Push-Anything — the
+  <code>franka_sampling_c3_controller</code> / <code>SamplingC3Controller</code> stack — runs the
+  <em>same</em> C3 machinery (the <code>LCSFactory</code> of §5, the ADMM solver of §6) on a planar
+  push task and never hits this. This section is self-contained. <strong>Part A</strong> explains, in
+  plain terms, exactly what the method does on every control tick — and answers two things that trip
+  up first readers: where the "many trajectories" come from, and what C3 does when the robot is not
+  touching the object. <strong>Part B</strong> distils six concrete reasons it stays robust, each
+  pointed at where it lives in the source
+  (<code>systems/controllers/sampling_based_c3_controller.cc</code>) and contrasted with the grasp
+  controller.
+</p>
+
+<div class="rule" style="margin:1.5rem 0 1.1rem;"></div>
+<p style="font-weight:700; color:var(--indigo); letter-spacing:0.05em; text-transform:uppercase; font-size:0.78rem;">Part A &nbsp;—&nbsp; How the method actually works</p>
+
+<!-- 13.1 the method end to end -->
+<p style="font-weight:600; color:var(--text); margin-top:1rem;">13.1 &nbsp;·&nbsp; The control loop, step by step</p>
+<p>
+  Push-Anything is ordinary C3 wrapped in a <strong>sampling-and-repositioning outer loop</strong>.
+  C3 is the inner optimiser that plans a push; the outer loop decides <em>where</em> to push from.
+  One full control tick:
+</p>
+<div class="eq-set" style="border-left-color:var(--indigo);">
+  <ol style="margin:0; padding-left:1.2rem; line-height:1.85; color:var(--sub);">
+    <li><strong>Read state.</strong> The robot end-effector (EE) position and the object's pose.</li>
+    <li><strong>Propose samples.</strong> A handful of candidate EE locations: the current EE spot,
+        plus a few contact points scattered just outside the object's surface, plus the previous
+        repositioning target. Call them \(K\) candidates.</li>
+    <li><strong>For each candidate, in parallel:</strong>
+      <ul style="margin:0.3rem 0; padding-left:1.1rem;">
+        <li>Build the LCS (§5), linearised with the EE at that candidate and the object at its
+            current pose.</li>
+        <li>Solve C3 (ADMM, §6) → <em>one</em> planned trajectory: states \(\mathbf x_{0:N}\), inputs
+            \(\mathbf u_{0:N-1}\), forces \(\boldsymbol\lambda\).</li>
+        <li><strong>Roll it out:</strong> forward-simulate the <em>regularised</em> LCS from
+            \(\mathbf x_0\) using the planned \(\mathbf u\) (optionally with an impedance controller
+            tracking the planned EE path) → an honest "dynamically feasible" trajectory.</li>
+        <li><strong>Score</strong> that rolled-out trajectory — mainly: how close did the
+            <em>object</em> get to its goal.</li>
+      </ul>
+    </li>
+    <li><strong>Pick the winner</strong> — the lowest-cost candidate.</li>
+    <li><strong>Choose a mode</strong> (with hysteresis, to avoid flip-flopping):
+      <ul style="margin:0.3rem 0; padding-left:1.1rem;">
+        <li><em>C3 mode</em> — if pushing from the current EE is making progress, execute the
+            winning C3 plan.</li>
+        <li><em>Repositioning mode</em> — if a different candidate is much better, a better contact
+            point is elsewhere: ignore C3 and move the EE there along a scripted, object-avoiding
+            spline (not C3).</li>
+      </ul>
+    </li>
+    <li><strong>Execute one step.</strong> Apply only the first input of the chosen plan (C3's
+        \(\mathbf u_0\), or the repositioning trajectory's current command).</li>
+    <li><strong>Repeat</strong> from step 1 on the next tick.</li>
+  </ol>
+</div>
+<div class="card blue">
+  <div class="card-label">Where does each rollout start from? — the sampled contact point itself</div>
+  <p>
+    Each sample's rollout (and the C3 solve feeding it) starts from <em>that sample's own</em> initial
+    state \(\mathbf x_0\), <strong>not</strong> from where the robot currently is. In code the rollout
+    begins at <code>x_plan[0]</code>, and C3 pins \(\mathbf x_{[0]}=\mathbf x_0=\)
+    <code>candidate_states[i]</code>. That candidate state is the current <em>measured</em> state with
+    exactly one thing changed: the <strong>EE position</strong> (the first three entries of
+    \(\mathbf x\)) is overwritten by the sample's contact location; the object pose and all velocities
+    stay at their current measured values
+    (<code>repositioning_target_state = x_lcs_curr; .head(3) = sample</code>).
+  </p>
+  <p style="margin-bottom:0;">
+    So for the <em>current-location</em> sample, \(\mathbf x_0\) is the real state. For every
+    <em>other</em> sample, \(\mathbf x_0\) is a <strong>hypothetical teleport</strong>: the EE placed
+    at that candidate contact point, the object left where it actually is. Each such sample therefore
+    answers a what-if — <em>"if the hand were already at this contact point, how well could it push
+    the object from here?"</em> — and scores the <strong>value of the location</strong>, not the
+    motion of getting there. That is exactly why repositioning is a separate layer: if a teleported
+    sample scores far better than the current spot, the controller knows a better contact point
+    exists and physically drives the EE there — supplying the motion the sample skipped. (For the
+    current sample, \(\mathbf x_0\) is additionally a short <em>prediction</em> ahead of the measured
+    state, <code>use_predicted_x0_c3</code>, to cover the control-loop delay.)
+  </p>
+</div>
+<p>
+  So the contact-rich optimisation (C3) and the "where do I even put the hand" decision (sampling +
+  repositioning) are <strong>two separate layers</strong>. That separation is the whole trick — and
+  it is what the grasp controller is missing.
+</p>
+
+<!-- 13.2 where the trajectories come from -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.2 &nbsp;·&nbsp; "Where do the many trajectories come from? I thought C3 returns one."</p>
+<p>
+  Correct — and your MPC mental model is right: <strong>one C3 solve returns exactly one
+  \((\mathbf x,\mathbf u)\) trajectory; you apply the first input, then re-solve next tick.</strong>
+  Push-Anything does precisely that. The "many trajectories" are <em>not</em> several outputs of a
+  single solve. They come from <strong>running C3 several times per tick — once per sample</strong>
+  (step 3 above): \(K\) candidate EE locations → \(K\) separate LCS builds → \(K\) separate C3 solves
+  → \(K\) candidate trajectories. The roll-out-and-score step is just the <strong>referee</strong>
+  that picks which of the \(K\) candidates to use this tick. Once it picks, it is back to textbook
+  MPC: execute the winner's first input, discard the rest, redo everything next tick.
+</p>
+<div class="card amber">
+  <div class="card-label">Why re-simulate instead of trusting C3's own predicted cost?</div>
+  <p style="margin-bottom:0;">
+    C3's QP is a <em>relaxation</em>: it softens the hard contact (complementarity) constraints so it
+    can solve fast. Its predicted trajectory can therefore be physically optimistic — it can "plan" a
+    grip with a <em>negative</em> normal force that cannot exist (recall the grasp's
+    \(\lambda_n=-1.5\) N). If you ranked candidates by C3's own predicted cost, you might crown one
+    that only looks good because C3 cheated on the physics. So you push the planned inputs through the
+    <em>regularised</em> LCS — an honest physics rollout — and score that. Now the comparison is fair,
+    and a plan secretly relying on impossible forces scores badly and loses.
+  </p>
+</div>
+
+<!-- 13.3 out of contact -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.3 &nbsp;·&nbsp; What C3 does when the robot is <em>not</em> touching the object</p>
+<p>
+  When the EE is out of contact, every contact gap \(\phi_i>0\). Complementarity then forces
+  \(\boldsymbol\lambda=\mathbf 0\) (positive gap ⇒ zero force — the §11 "no contact" box). The robot
+  exerts no force on the object, so within the LCS the object is <strong>decoupled</strong>: it
+  coasts on its own passive dynamics (on the table, it just sits still). What C3 plans then depends
+  entirely on whether it can <em>reach</em> contact inside its short horizon — \(N=5\) steps at
+  \(\Delta t\approx0.05\)–\(0.1\) s, i.e. only \(\sim0.25\)–\(0.5\) s of motion:
+</p>
+<div class="two-col">
+  <div class="card green" style="margin-bottom:0;">
+    <div class="card-label">Contact reachable within the horizon</div>
+    <p style="margin-bottom:0;">
+      C3 does the thing contact-implicit MPC exists for: it <strong>co-plans the approach, the moment
+      of contact, and the push in one shot</strong>. Complementarity lets \(\boldsymbol\lambda\)
+      switch <em>on</em> at the later knots where the gap closes, and C3 chooses an EE motion that
+      makes contact and then drives the object. This is strictly smarter than "path-plan, then
+      track" — it optimises <em>when</em> to touch.
+    </p>
+  </div>
+  <div class="card red" style="margin-bottom:0;">
+    <div class="card-label">Contact NOT reachable (EE too far)</div>
+    <p style="margin-bottom:0;">
+      \(\boldsymbol\lambda=\mathbf 0\) at every knot, so the object-cost gradient w.r.t. \(\mathbf u\)
+      is <strong>zero</strong> — nothing the robot can do in-horizon moves the object. C3 gets no
+      useful signal about the object and does <em>not</em> invent a long-range path to it; it falls
+      back to its robot-state cost (≈ stay put). This is the blind spot.
+    </p>
+  </div>
+</div>
+<div class="card amber" style="margin-top:1rem;">
+  <div class="card-label">But what actually <em>pulls</em> the robot toward contact? — your worry is well-founded</div>
+  <p>
+    You are right to doubt a smooth pull. While the gap \(\phi_i>0\), complementarity forces
+    \(\boldsymbol\lambda=\mathbf 0\), the object is frozen, and the object-tracking cost is therefore
+    <strong>flat</strong> with respect to any EE-approach motion — a plateau. A plain gradient step
+    toward the object lowers nothing, so first-order reasoning genuinely says "nothing leads there."
+    That is your intuition, and it is correct.
+  </p>
+  <p>
+    What can still find contact is the <strong>ADMM split of §6, not a gradient</strong>. C3
+    alternates between (i) a QP that treats \(\boldsymbol\lambda\) as a <em>free</em> variable — it
+    will gladly set \(\lambda>0\) to move the object and cut the cost — and (ii) a projection that
+    permits \(\lambda>0\) only where the gap is closed (\(0\le\lambda\perp\eta\)). The consensus
+    between them pressures the plan to <strong>close the gap</strong> — move the EE in — so the force
+    the QP wants becomes admissible. That coupling is what reaches toward contact; the contact
+    Jacobian \(E=\partial\phi/\partial\mathbf x\) (nonzero even out of contact) is what carries EE
+    motion into the gap row so the projection can eventually switch \(\lambda\) on.
+  </p>
+  <p style="margin-bottom:0;">
+    And here your worry bites exactly: this only fires if some knot's gap can actually reach zero
+    <em>within the horizon</em> — the EE must be within \(\sim\! N\Delta t\) of reach. If it is
+    farther, no knot closes, the projection can never admit the wanted force, the consensus gives up,
+    and the solution collapses to the trivial \(\boldsymbol\lambda=\mathbf 0\), EE-stays-put plateau.
+    Then there is genuinely nothing pulling it to contact. So "reach + contact + push" is real, but
+    only within roughly one horizon, and even there it is a fragile <em>mode discovery</em> rather
+    than a gradient. Beyond that you are simply right — which is the whole reason Push-Anything
+    <em>teleports</em> samples onto contact (13.1) and repositions, instead of asking C3 to find
+    contact from afar.
+  </p>
+</div>
+<p style="margin-top:1rem;">
+  So, directly to the question: <strong>it does not become a global path planner.</strong> Inside the
+  horizon it is full contact-implicit planning (better than tracking); outside it, it goes inert on
+  the object. Getting the EE from far to a contact point is <em>deliberately not C3's job</em> — that
+  is the repositioning module, a scripted spline-plus-tracking, which <em>is</em> the "basic path
+  planning and tracking" you intuited, living <em>outside</em> C3. For the grasp this is decisive:
+  three fingers far from the cube give all-positive gaps, \(\boldsymbol\lambda=\mathbf 0\), no
+  gradient — C3 cannot plan the reach. The §12 pinned-reach (PD + spline) <em>is</em> the grasp's
+  "repositioning": it does the basic path-planning/tracking to seat the fingers, and only then is C3
+  within a useful contact horizon.
+</p>
+
+<div class="rule" style="margin:1.6rem 0 1.1rem;"></div>
+<p style="font-weight:700; color:var(--indigo); letter-spacing:0.05em; text-transform:uppercase; font-size:0.78rem;">Part B &nbsp;—&nbsp; Six reasons it stays robust (and what to copy)</p>
+
+<!-- 13.0 the contrast at a glance -->
+<table style="width:100%;border-collapse:collapse;margin-top:1rem;font-size:0.9rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);text-align:left;">
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Concern</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Push-Anything (sampling C3)</th>
+      <th style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Grasp squeeze (§12)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Object support out of contact</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Rests on a <strong>table</strong> — passively stable</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><strong>Nothing</strong> — cube free-falls</td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">QP variable bounds</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Box bounds on \(\mathbf u\) <em>and</em> state</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">None (dynamics + \(\mathbf x_0\) only)</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">What gets executed</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Best of N <strong>rolled-out</strong> plans</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">C3's <strong>raw</strong> input solution</td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Contact eval</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><strong>Regularised</strong> LCS simulation</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Raw LCP / OSQP only</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Projection</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><code>C3+</code> (\(\alpha\!\to\!0\) complementarity)</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);"><code>C3QP</code></td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Solve failure</td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">High-cost sample → <strong>reposition</strong></td>
+      <td style="padding:0.5rem 0.75rem;border:1px solid var(--border);">Zero torque → <strong>cube drops</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- 13.4 passive support -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">13.4 &nbsp;·&nbsp; Structural: the object is passively supported</p>
+<p>
+  The push-T contact set is <code>(ee–ground, ee–T, T–ground)</code>
+  (<code>resolve_contacts_to_lists: [[0,1,3],[0,2,3]]</code>) on a planar workspace
+  (\(z\in[-0.01,0.3]\)). <strong>Gravity on the object is carried by the table, not by the
+  robot.</strong> When the pusher is out of contact the object simply sits still: the LCS/QP stays
+  well-posed, no contact force is needed to keep it up, and there is nothing unstable to stabilise.
+  The grasp has no such "table" — the cube is held <em>only</em> by the fingers, so losing contact
+  turns the plant into an unstable free body that C3 must catch through a degenerate contact. This
+  is the root asymmetry; every numerical safeguard below is what lets the well-posed case stay
+  robust, but none of them manufacture a missing support.
+</p>
+
+<!-- 13.5 box constraints -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.5 &nbsp;·&nbsp; The C3 QP is box-constrained on inputs <em>and</em> states</p>
+<div class="card green">
+  <div class="card-label">The direct cause of — and fix for — DualInfeasible</div>
+  <p>
+    Before each sample's solve the controller adds hard bounds
+    (<code>sampling_based_c3_controller.cc</code> ≈ lines 996–1053):
+    EE and object <strong>workspace limits</strong> and EE <strong>velocity limits</strong> as
+    <code>STATE</code> constraints, and <strong>horizontal/vertical input limits</strong>
+    \([-50,50]\) as <code>INPUT</code> constraints, all via
+    <code>AddLinearConstraint(...)</code>.
+  </p>
+  <p style="margin-bottom:0;">
+    <code>DualInfeasible</code> <em>is</em> primal unboundedness. With \(\mathbf u\) and the state
+    boxed, the feasible set's recession cone is trivial, so <strong>the QP can never be
+    unbounded</strong> — regardless of how ill-conditioned \(D,B\) are or how degenerate the
+    contact. The grasp squeeze C3 adds <strong>zero</strong> such constraints (only the dynamics
+    equality and \(\mathbf x_0\) fix), so \(\mathbf u\) and \(\boldsymbol\lambda\) are free and OSQP
+    chases an unbounded ray. (The squeeze code even has a <code>tau_max</code> clamp, but it is
+    commented out — and a post-hoc clamp is weaker than a bound <em>inside</em> the QP.) Adding
+    torque and finger-velocity bounds to the program is the single highest-leverage fix for the
+    crash.
+  </p>
+</div>
+
+<div class="card indigo">
+  <div class="card-label">Concretely: the constraints to add to the grasp \(\mathbf u\)</div>
+  <p>
+    In the grasp, \(\mathbf u\) is the 16 hand-joint torques, but C3 works in a <em>scaled</em> input
+    \(\tilde{\mathbf u}\): the squeeze code scales \(B\!\to\!s_uB\) and applies
+    \(\boldsymbol\tau = s_u\,\tilde{\mathbf u}\) (with \(s_u\!\approx\!0.1\) in the logs). So a
+    physical torque limit must be divided by \(s_u\) before it becomes a bound on C3's variable.
+    Per joint \(i\):
+  </p>
+  <p style="text-align:center; margin:0.4rem 0;">
+    \( -\,\dfrac{\tau_{\max,i}}{s_u} \;\le\; \tilde u_i \;\le\; \dfrac{\tau_{\max,i}}{s_u}
+       \qquad\Longleftrightarrow\qquad |\boldsymbol\tau_i|\le\tau_{\max,i}, \)
+  </p>
+  <p>added as 16 <code>INPUT</code> box constraints. Alongside, two <code>STATE</code> boxes:</p>
+  <ul style="margin:0;">
+    <li><strong>Finger joint-velocity limits</strong> \(|\dot q_i|\le\omega_{\max}\) — the analogue of
+        Push-Anything's EE-velocity cap; stops the QP planning explosive finger motions and is what
+        actually kills the velocity-direction unbounded rays.</li>
+    <li><strong>Finger joint-position limits</strong> \(q_i\in[q_i^{-},q_i^{+}]\) from the Allegro
+        URDF — keeps planned configurations physical.</li>
+  </ul>
+  <p style="margin-bottom:0;">
+    \(\boldsymbol\lambda\) needs no explicit bound: complementarity (projection) plus the §11.5
+    force-reference \(W_\lambda\) already pin it. Boxing \(\tilde{\mathbf u}\) alone removes the
+    unbounded ray; adding the velocity box makes it robust. Use the existing
+    <code>FLAGS_tau_max</code> for \(\tau_{\max}\) — it is already defined, just unused.
+  </p>
+</div>
+
+<!-- 13.6 rollout scoring -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.6 &nbsp;·&nbsp; It never executes C3's plan — it scores a dynamically-feasible rollout</p>
+<p>
+  This is the code behind 13.2. <code>CalcCost</code>
+  (<code>sampling_based_c3_controller.cc</code> ≈ lines 493–600) discards C3's own predicted states
+  and <strong>re-simulates the LCS forward from the planned inputs</strong>
+  (<code>SimulateLCSOverTrajectory</code> / <code>SimulatePDControlWithLCS</code>), then scores
+  <em>that</em> trajectory. The push-T config uses <code>kSimImpedanceObjectCostOnly</code> —
+  "simulate the EE as if tracked by an impedance controller, and score only whether the object moved
+  toward the goal." Concretely for the grasp: instead of applying
+  \(\boldsymbol\tau = s_u\,\texttt{GetInputSolution()}\) blindly, you would roll the planned torques
+  through the regularised LCS, and if the cube falls in that rollout, fall back to the PD preload
+  rather than executing a plan that only holds on paper.
+</p>
+
+<!-- 13.7 regularized sim -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.7 &nbsp;·&nbsp; The evaluation contact solve is regularised — what that means, from scratch</p>
+<p>
+  To "roll out" (13.2/13.6) means: take the planned inputs \(\mathbf u\) and step the physics forward
+  one tick at a time to see what <em>actually</em> happens. But stepping contact physics forward is
+  not a plain matrix multiply — at every single step you first have to <strong>solve for the contact
+  forces</strong>, and only then can you update the state.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:0.8rem;">Step 1 · Why finding contact forces is its own little solve</p>
+<p>
+  A contact force is not free to be anything. It obeys three "either/or" rules: a finger can only
+  <em>push</em> (\(\lambda\ge0\), never pull); it pushes only when actually <em>touching</em>
+  (gap \(=0\)); and if there is a gap (gap \(>0\)) the force must be <em>zero</em>. Packed together:
+  "for each contact, either the gap is zero or the force is zero — never both positive." That
+  either/or is the <strong>complementarity</strong> condition of §4, and finding the forces that
+  satisfy it is a small problem called a <strong>Linear Complementarity Problem (LCP)</strong>. Using
+  the same gap vector \(\boldsymbol\eta\) of §4, one simulation step asks: given the current state
+  \(\mathbf x\) and input \(\mathbf u\), find \(\boldsymbol\lambda\) with
+</p>
+<div class="eq">
+  \[
+    0 \;\le\; \boldsymbol\lambda \;\perp\; \underbrace{F\boldsymbol\lambda
+      + (E\mathbf x + H\mathbf u + \mathbf c)}_{\boldsymbol\eta} \;\ge\; 0 ,
+    \qquad\text{then}\qquad
+    \mathbf x_{\text{next}} = A\mathbf x + B\mathbf u + D\boldsymbol\lambda + \mathbf d .
+  \]
+</div>
+<p>
+  Here \(\mathbf q = E\mathbf x + H\mathbf u + \mathbf c\) is "how open each gap is right now," and
+  \(F\) is "how each contact force pushes on each gap." The code solves exactly this with a classic
+  pivoting routine (Drake's <code>MobyLcpSolver</code>, Lemke's algorithm) and then does the simple
+  linear state update.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:0.8rem;">Step 2 · Why the raw LCP "misfires" for grasping</p>
+<p>
+  Lemke's algorithm is only guaranteed to find a clean, unique answer when \(F\) is a "nice" matrix
+  (positive-definite-ish). For a <strong>frictional</strong> Stewart–Trinkle contact, \(F\) is
+  <em>not</em> nice — its symmetric part is not positive semidefinite (the §6 / §11.5 fact). When
+  \(F\) is not nice the LCP can have <strong>no solution, several solutions, or send the pivoting
+  search off to infinity</strong> and return garbage. This bites hardest at exactly the
+  configurations the grasp lives in: a fingertip <em>barely</em> touching (gap \(\approx0\), force
+  \(\approx0\)), a force sitting right on the edge of the friction cone, the cube on the verge of
+  slipping. There the LCP is on a knife-edge where a speck of numerical noise flips which contacts
+  are "on," so the raw solve returns jumpy or nonsensical forces. And if the force at one step is
+  garbage, the whole rolled-out trajectory is garbage, so the <em>cost</em> you read off it is
+  garbage — which destroys the whole point of scoring samples by their rollout (13.2/13.6).
+</p>
+
+<div class="card green">
+  <div class="card-label">Step 3 · What "regularising" does to fix it</div>
+  <p>
+    Regularising means: add a tiny positive number \(\varepsilon\) to the diagonal of \(F\) and solve
+    with \(F+\varepsilon I\) instead of \(F\). That nudge makes the matrix positive-definite, which
+    <strong>guarantees the LCP has exactly one solution</strong> and that Lemke's algorithm converges.
+    Physically it is like giving each contact a hair of <em>springiness</em> instead of a perfectly
+    rigid, knife-edge wall — the ambiguity disappears and the forces come out smooth and repeatable.
+  </p>
+  <p style="margin-bottom:0;">
+    You want \(\varepsilon\) as small as possible so the physics is barely changed, so the
+    "regularised Lemke" routine sweeps it: start at
+    \(\varepsilon = 10^{\,\texttt{min\_exp}}\) and only grow it (×10 at a time) if the smaller value
+    still fails. <code>min_exp = -8</code> sets the <em>floor</em> at \(\varepsilon = 10^{-8}\) — the
+    library default is \(10^{-20}\) ("try essentially no regularisation first"); Push-Anything raises
+    the floor to \(10^{-8}\) because for these contact-rich configs a vanishingly small nudge never
+    helps, so it skips straight to one that does. Net effect: the rollout <strong>always</strong>
+    returns a well-defined, continuous contact force, so sample costs are stable and comparable even
+    at the near-degenerate configurations.
+  </p>
+</div>
+
+<div class="card amber" style="margin-bottom:0;">
+  <div class="card-label">Same disease, two places — the link to §11.5</div>
+  <p style="margin-bottom:0;">
+    The non-nice \(F\) hurts in <em>two</em> separate solves, and both are cured the same way — a
+    small positive diagonal. On the <strong>planning</strong> side, inside C3's projection/QP, §11.5
+    says keep the OSQP \(\sigma\)/scaling regularisation. On the <strong>evaluation</strong> side,
+    inside the rollout's LCP, this is the \(\varepsilon I\) above. One regularises the
+    <em>optimiser</em>, the other regularises the <em>simulator</em>; identical idea, identical
+    reason. Practical consequence for the grasp: the squeeze controller does no rollout today (it
+    executes C3's raw plan), so it has no analogue — but the moment you add the rollout-gating of
+    13.6, you must use the <em>regularised</em> simulate, or your "honest" rollout will itself misfire
+    at exactly the grazing-contact configs you care about, and the honest cost will not be honest.
+  </p>
+</div>
+
+<!-- 13.8 C3+ projection -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.8 &nbsp;·&nbsp; It uses the <code>C3+</code> projection, not <code>C3QP</code></p>
+<p>
+  Push-Anything sets <code>projection_type: 'C3+'</code> with <code>qp_projection_alpha: 0.01</code>
+  (instantiated as <code>C3Plus</code>). Per its options file: <em>"as \(\alpha\to0\), any
+  complementarity constraint error in QP projection \(\to 0\)."</em> The grasp squeeze runs the
+  plain <code>C3QP</code>. The \(F\)-not-PSD projection degeneracy of §6 is handled more robustly by
+  <code>C3+</code>; it is a drop-in projection swap worth trying on the grasp.
+</p>
+
+<!-- 13.9 graceful degradation -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">13.9 &nbsp;·&nbsp; A failed solve is data, never a stop — sampling + repositioning</p>
+<p>
+  When a solve fails, Push-Anything still sets the same zero-input fallback the grasp hits — but
+  here that just makes the rollout show "object did not move" → a high cost → the sample loses the
+  parallel competition, and the mode logic (hysteresis between C3 and repositioning, ≈ lines
+  1145–1217) switches to a <strong>scripted repositioning trajectory</strong> that moves the EE to a
+  freshly-sampled contact location and tries again. Contact is established by a <em>non-C3</em>
+  motion controller; C3 only ever runs from a concrete, in-/near-contact \(\mathbf x_0\), one of
+  several sampled candidates. In the grasp, by contrast, the zero-torque fallback <em>is</em> the
+  command sent to the robot — and it is the cube's only support, so the fallback guarantees the
+  drop. There is no second candidate and no recovery controller.
+</p>
+
+<!-- 13.10 what to change -->
+<div class="card blue" style="margin-top:1.4rem;">
+  <div class="card-label">What to change in the grasp controller, ranked by immediacy</div>
+  <ol style="margin:0;">
+    <li><strong>Box the C3 program.</strong> Add the torque (<code>INPUT</code>) and
+        finger-velocity (<code>STATE</code>) bounds spelled out in 13.5 via
+        <code>AddLinearConstraint</code>. This should remove the <code>DualInfeasible</code> outright
+        — it is the exact mechanism Push-Anything relies on and is missing in the grasp.</li>
+    <li><strong>Gate execution on a rollout (13.6).</strong> Before applying
+        <code>GetInputSolution</code>, simulate the regularised LCS forward; if the cube falls in the
+        rollout, hold with the PD/<code>q_contact</code> preload instead of the C3 torque.</li>
+    <li><strong>Swap to <code>C3+</code> projection (13.8)</strong> and keep the regularised contact
+        evaluation (13.7).</li>
+    <li><strong>Never let zero-torque fallback be the cube's only support (13.4, 13.9).</strong> Keep
+        a PD/impedance controller owning "hold the cube," and let C3 only regulate the squeeze
+        magnitude on top of a supported cube — the §12 hybrid split is the structural analogue of
+        Push-Anything keeping the object on a table while C3 only optimises the push.</li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §14  EXPECTED SIMULATION BEHAVIOUR
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s14">
+  <span class="slug">§14</span>
+  <h2>Expected Simulation Behaviour — What the As-Built Code Should Do</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  This section traces <code>allegro_grasp_c3_squeeze.cc</code> as it currently stands — with the
+  changes from §11–§13 wired in (PD hold at <code>q_contact</code>, a 0.5 s pinned warm-up, a force
+  reference <code>w_lambda=100</code>, a torque box, and the <code>C3+</code> projection) — and
+  predicts, step by step, what you should see in Meshcat and on the console when you run it. It is a
+  prediction to <em>test against</em>: the "should" column is what the design intends; the failure
+  signatures are how you read a run that disagrees.
+</p>
+
+<table style="width:100%;border-collapse:collapse;margin-top:1rem;font-size:0.88rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);text-align:left;">
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Knob (current value)</th>
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Role</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><code>N=5</code>, <code>c3_dt=0.02</code></td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Horizon = 0.1 s — enough for <em>regulating</em> an existing grip (contact already made at handoff).</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><code>tau_max=100</code></td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Per-joint torque box (as <code>INPUT</code> bounds, ÷&nbsp;<code>s_u</code>) → QP stays bounded → no <code>DualInfeasible</code>.</td></tr>
+    <tr><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><code>w_lambda=100</code>, <code>alpha_m=1</code></td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Force reference on \(\lambda_n[3,4,5]\), targets \((1,1,2)\) N → seeds a real, positive grip.</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><code>w_cube=1000</code></td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">World-frame cube anchor — the load-bearing "don't fall" term.</td></tr>
+    <tr><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><code>C3+</code> projection</td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Robust complementarity projection for the non-PSD \(F\) (§13.8).</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">pin release = <code>handoff_t + 0.5</code></td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Cube held 0.5 s after handoff, then dropped into C3's care.</td></tr>
+  </tbody>
+</table>
+
+<!-- 14.1 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.4rem;">14.1 &nbsp;·&nbsp; Startup — IK and two static previews (sim is paused)</p>
+<p>
+  On launch the code solves two IK problems and prints
+  <code>IK contact total FK error</code> and <code>IK pregrasp total FK error</code> (both should be
+  sub-millimetre). Then it shows <strong>two static Meshcat previews that block on Enter</strong>:
+  first <code>q_pregrasp</code> (fingertips 1 cm <em>outside</em> the faces — where the sim starts),
+  then <code>q_contact</code> (fingertips 5 mm <em>inside</em> the faces — C3's target). Nothing
+  moves until you press Enter twice. After the second, it prints
+  <code>C3 dimensions: n_x=45 n_u=16 n_lambda=18 n_z=97</code> — note <strong>n_z=97</strong>, the
+  tell that <code>C3+</code> is active (it adds the \(n_\lambda\) extra \(\eta\) variables; plain C3
+  would print 79).
+</p>
+
+<!-- 14.2 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">14.2 &nbsp;·&nbsp; Phase 1 — Reach, cube pinned (≈ 0 → 1.1 s)</p>
+<p>
+  The sim starts at <code>q_pregrasp</code> with the cube kinematically pinned at \(z=0.58\). A PD law
+  tracks a cubic spline from <code>q_pregrasp</code> to <code>q_contact</code> (nominal duration
+  <code>t_contact=5</code> s), but because the spline <em>endpoint</em> is 5 mm inside the faces, the
+  fingers reach the surface and trigger contact <strong>early</strong> — expect
+  <code>finger i arrived</code> messages and the handoff at roughly <strong>t ≈ 1.0–1.2 s</strong>
+  (contact is ignored before <code>contact_enable_t=1.0</code> s). Throughout, <code>tip err</code>
+  prints ≈ 0.012 m — that is a fixed body-frame-to-fingertip offset, <em>not</em> a real gap, so do
+  not read it as "1 cm away"; the authoritative contact measure is the gap \(\phi\) at handoff.
+</p>
+
+<!-- 14.3 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">14.3 &nbsp;·&nbsp; Handoff (one step)</p>
+<p>
+  When all three fingers report contact you should see
+  <code>all fingers in contact → C3 handoff</code>, then the contact gaps
+  <code>φ [index, middle, thumb]</code> — all <strong>≤ 0</strong> (a few mm of penetration, e.g.
+  \(-0.003, -0.007, -0.004\)) confirming a real three-finger contact. The LCS norms print
+  <code>|A|≈165, |B|≈1600, |D|≈33</code> and the input scaling <code>s_u≈0.1</code> with
+  <code>|B| now≈165</code> (B shrunk so \(|B|\!\approx\!|A|\)). At this instant C3+ is built with the
+  cost matrices, the force reference on \(\lambda_n\), and the 16 torque-box <code>INPUT</code>
+  constraints at \(\pm\,100/s_u\). <code>handoff_t</code> is latched.
+</p>
+
+<!-- 14.4 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">14.4 &nbsp;·&nbsp; Phase 2a — Pinned warm-up, 0.5 s (≈ 1.1 → 1.6 s)</p>
+<div class="card green" style="margin-bottom:0.6rem;">
+  <div class="card-label">What should happen</div>
+  <p style="margin-bottom:0;">
+    The cube stays pinned at \(z=0.58\). C3+ runs every step (re-linearise → solve) but its torque is
+    <strong>not applied</strong> — the fingers are PD-held at <code>q_contact</code> (5 mm inside), so
+    they keep a genuine inward preload. The key thing to watch is the printed
+    <code>λ_n [idx,mid,thu]</code> (these come from C3+'s force solution): with the force reference
+    and <code>C3+</code> they should now be <strong>positive and near the targets \((1,1,2)\) N</strong>
+    — emphatically <em>not</em> the wild negatives (\(-1.5\) N) seen before §13. <code>cube z</code>
+    stays \(0.58\). This is the warm-up "charging up" a valid grip plan before the pin leaves.
+  </p>
+</div>
+
+<!-- 14.5 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">14.5 &nbsp;·&nbsp; Phase 2b — Pin release &amp; C3 squeeze (the moment of truth, t ≈ 1.6 s+)</p>
+<p>
+  At <code>handoff_t + 0.5</code> you should see <code>cube pin released</code>. From here C3+'s output
+  <em>is</em> applied (\(\boldsymbol\tau = s_u\,\texttt{GetInputSolution}()\), with a gravity-comp
+  fallback only if it is ~0). The cube is now free, held only by fingertip friction, and the
+  <code>w_cube=1000</code> anchor is the term fighting gravity. Two distinct things should be true if
+  the design is working — separate them when you read the run:
+</p>
+<div class="two-col">
+  <div class="card blue" style="margin-bottom:0;">
+    <div class="card-label">Primary expectation (high confidence)</div>
+    <p style="margin-bottom:0;">
+      <strong>No more <code>DualInfeasible</code>.</strong> The torque box makes the QP feasible set
+      bounded, so the unbounded-ray crash of §13.2 should be <em>gone</em> — the run continues past
+      pin release instead of spamming <code>SetFallbackSolution</code>. This is the change most likely
+      to show a clean, visible effect.
+    </p>
+  </div>
+  <div class="card amber" style="margin-bottom:0;">
+    <div class="card-label">Open question (lower confidence)</div>
+    <p style="margin-bottom:0;">
+      <strong>Does the cube actually hold?</strong> The grip must satisfy \(\sum_i\mu\lambda_n^i\ge mg\)
+      (with \(\mu=0.5\) and targets \((1,1,2)\) N, \(\sum\mu\lambda_n=2\) N — enough only if the cube
+      weighs \(\lesssim\!0.2\) kg). Expect \(z\) to hold near \(0.58\) if so; a slow sag or drop if the
+      regulated grip is too light or lopsided.
+    </p>
+  </div>
+</div>
+
+<!-- 14.6 -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">14.6 &nbsp;·&nbsp; How to read the run — success vs failure signatures</p>
+<table style="width:100%;border-collapse:collapse;margin-top:0.5rem;font-size:0.88rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);text-align:left;">
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Observation after pin release</th>
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Reading</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">No <code>DualInfeasible</code>; \(z\approx0.58\); \(\lambda_n\approx(1,1,2)\)</td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><strong>Full success</strong> — torque box + C3+ + force ref all doing their job; the grip emerges and holds.</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">No <code>DualInfeasible</code>, but \(z\) slowly sags / cube drifts</td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Crash fixed, grip too weak/uneven. Raise <code>alpha_m</code> or <code>w_cube</code>; the §13.6 rollout-gating is the principled next step.</td></tr>
+    <tr><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><code>DualInfeasible</code> still appears</td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Torque box not binding the unbounded direction — check <code>s_u</code> and that the 16 INPUT bounds were actually added; a state/velocity box (§13.5) may also be needed.</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">\(\lambda_n\) still goes negative</td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">C3+ projection not engaged (confirm <code>n_z=97</code>) or <code>w_lambda</code> too small relative to the solve's other terms.</td></tr>
+    <tr><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Per-tick solve time &gt; control period</td><td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">C3+ disables projection parallelism; with <code>admm_iter=15</code> it may lag. Drop <code>admm_iter</code> or <code>N</code>.</td></tr>
+  </tbody>
+</table>
+
+<div class="card blue" style="margin-top:1.2rem;">
+  <div class="card-label">Honest bottom line</div>
+  <p style="margin-bottom:0;">
+    The recent changes target the <em>crash</em>, and that is what should visibly change: the run
+    should now survive pin release without going <code>DualInfeasible</code>, with a positive,
+    regularised grip during the warm-up. Whether the cube then <em>stays put</em> indefinitely is the
+    genuinely open part — the architecture still hands an unsupported cube to C3 with no rollout-gating
+    (§13.6) and no non-C3 fallback owning "hold the cube" (§12 / §13.9). So the most likely honest
+    outcome of this build is: <strong>no crash, a real grip, and the cube either held or gently
+    sagging</strong> — at which point the next lever is the §13 list, not more flag-tuning.
   </p>
 </div>
 
