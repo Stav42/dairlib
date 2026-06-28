@@ -464,6 +464,7 @@
     <li><a href="#s12"><span class="toc-slug">§12</span>Pinned-Reach + C3-Squeeze — A Practical Two-Phase Architecture</a></li>
     <li><a href="#s13"><span class="toc-slug">§13</span>Lessons from Sampling-Based C3 (Push-Anything) — Why It Never Goes Unbounded</a></li>
     <li><a href="#s14"><span class="toc-slug">§14</span>Expected Simulation Behaviour — What the As-Built Code Should Do</a></li>
+    <li><a href="#s15"><span class="toc-slug">§15</span>The C3+ Optimization Problem in Full — Every Variable, Constant, and Term</a></li>
   </ol>
 </nav>
 
@@ -2534,6 +2535,231 @@
     (§13.6) and no non-C3 fallback owning "hold the cube" (§12 / §13.9). So the most likely honest
     outcome of this build is: <strong>no crash, a real grip, and the cube either held or gently
     sagging</strong> — at which point the next lever is the §13 list, not more flag-tuning.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §15  THE C3+ OPTIMIZATION PROBLEM IN FULL
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s15">
+  <span class="slug">§15</span>
+  <h2>The C3+ Optimization Problem in Full — Every Variable, Constant, and Term</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  This section writes out, completely, the optimization problem C3+ solves on <em>every control
+  step</em> of the squeeze phase (§14.5). It names every decision variable, every matrix and constant
+  that feeds it, says which piece belongs to what, gives the exact numbers used in the grasp, and
+  explains what each term is there to do. Dimensions are quoted for the default Stewart–Trinkle model;
+  the Anitescu numbers (§13) are noted where they differ.
+</p>
+
+<!-- 15.1 shape -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.1 &nbsp;·&nbsp; The shape of the problem</p>
+<p>
+  It is a <strong>finite-horizon Quadratic Program with Complementarity Constraints (QPCC)</strong>
+  over a short prediction horizon of \(N\) knots. "Quadratic program" because the cost is quadratic
+  and the dynamics are affine; "with complementarity constraints" because contact forces obey the
+  non-smooth either/or rules of §4. That complementarity is non-convex, so C3+ does not solve the QPCC
+  directly — it splits it with <strong>ADMM</strong> into a convex QP and a closed-form projection that
+  are reconciled over a fixed number of iterations (§15.5). On each control step the whole thing is
+  re-built (re-linearised) at the current measured state and solved from scratch; only the first input
+  is applied (standard MPC).
+</p>
+
+<!-- 15.2 decision variables -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.2 &nbsp;·&nbsp; The decision variables (what is being solved for)</p>
+<p>
+  For each knot \(k\) the solver carries four blocks, stacked into one per-knot vector
+  \(\mathbf z_k=(\mathbf x_k,\boldsymbol\lambda_k,\mathbf u_k,\boldsymbol\eta_k)\). The
+  <strong>\(\boldsymbol\eta_k\) block is what makes it "C3<em>+</em>"</strong>: ordinary C3 substitutes
+  the gap away, but C3+ keeps it as an explicit variable so the complementarity projection is clean.
+</p>
+<table style="width:100%;border-collapse:collapse;margin-top:0.6rem;font-size:0.88rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);text-align:left;">
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Variable</th>
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Dim (grasp)</th>
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Index range</th>
+      <th style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Meaning</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">\(\mathbf x_k\), \(k=0..N\)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">45</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">—</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Full state \((\mathbf q,\dot{\mathbf q})\): hand joints (16 q), cube pose (7: quat+xyz), hand vel (16), cube vel (6).</td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">\(\mathbf u_k\), \(k=0..N\!-\!1\)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">16</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">—</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);"><strong>Scaled</strong> joint torques \(\tilde{\mathbf u}\); the physical torque is \(\boldsymbol\tau=s_u\tilde{\mathbf u}\).</td>
+    </tr>
+    <tr>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">\(\boldsymbol\lambda_k\), \(k=0..N\!-\!1\)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">18 (Anitescu: 12)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">\([\gamma(3)\,|\,\lambda_n(3)\,|\,\beta(12)]\)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">Stewart–Trinkle contact impulses: sliding slacks \(\gamma\), normal forces \(\lambda_n\) (entries 3,4,5), friction-pyramid weights \(\beta\).</td>
+    </tr>
+    <tr style="background:#fafaf9;">
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">\(\boldsymbol\eta_k\), \(k=0..N\!-\!1\)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">18 (Anitescu: 12)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">same blocks as \(\boldsymbol\lambda\)</td>
+      <td style="padding:0.45rem 0.7rem;border:1px solid var(--border);">The gap vector — complementary partner of \(\boldsymbol\lambda\). Each entry is the "slack" that must be zero wherever its \(\boldsymbol\lambda\) entry is positive.</td>
+    </tr>
+  </tbody>
+</table>
+<p style="margin-top:0.5rem;">
+  Per-knot \(\mathbf z_k\in\mathbb R^{97}\) (\(=45+18+16+18\); Anitescu \(85\)). The full decision
+  vector is \(\{\mathbf x_{0:N},\,\boldsymbol\lambda_{0:N-1},\,\mathbf u_{0:N-1},\,\boldsymbol\eta_{0:N-1}\}\).
+</p>
+
+<!-- 15.3 data -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.3 &nbsp;·&nbsp; The problem data (constants fed in each step)</p>
+<p>
+  Two groups: the <strong>LCS</strong> (the linearised physics, rebuilt each step) and the
+  <strong>cost matrices</strong> (fixed for the whole C3 phase).
+</p>
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">LCS — the linearised dynamics &amp; contact</div>
+    <ul style="margin:0; font-size:0.9rem;">
+      <li>\(A\,(45\times45),\ B\,(45\times16),\ D\,(45\times18),\ \mathbf d\,(45)\) — the affine dynamics \(\mathbf x_{k+1}=A\mathbf x_k+B\mathbf u_k+D\boldsymbol\lambda_k+\mathbf d\). Gravity on the cube lives in \(\mathbf d\); \(B\) is pre-scaled by \(s_u\).</li>
+      <li>\(E\,(18\times45),\ F\,(18\times18),\ H\,(18\times16),\ \mathbf c\,(18)\) — the gap definition \(\boldsymbol\eta_k=E\mathbf x_k+F\boldsymbol\lambda_k+H\mathbf u_k+\mathbf c\).</li>
+      <li>Built by <code>LinearizePlantToLCS</code> at handoff and re-linearised every step (<code>--relinearize</code>).</li>
+    </ul>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--indigo);">Cost data</div>
+    <ul style="margin:0; font-size:0.9rem;">
+      <li>\(Q\,(45\times45)\) — state tracking weight, with target \(\mathbf x_\star\).</li>
+      <li>\(R\,(16\times16)\) — input weight.</li>
+      <li>\(W_\lambda\,(18\times18)\), \(\boldsymbol\lambda_{\text{des}}\,(18)\) — force reference.</li>
+      <li>\(G,\,U\,(97\times97)\) — the ADMM consensus / projection weights.</li>
+      <li>\(\mathbf x_\star\,(45)\) — desired state (cube at reference, fingers on faces).</li>
+      <li>\(\hat{\mathbf x}\) — the measured current state (initial-condition constant).</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 15.4 the problem -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.4 &nbsp;·&nbsp; The optimization problem, written out</p>
+<div class="card blue">
+  <div class="card-label">C3+ QPCC — squeeze phase, per control step</div>
+  <div class="eq-set" style="background:transparent;border:none;box-shadow:none;margin:0.3rem 0;">
+    <p>\(\displaystyle \min_{\substack{\mathbf x_{0:N},\ \mathbf u_{0:N-1}\\ \boldsymbol\lambda_{0:N-1},\ \boldsymbol\eta_{0:N-1}}}\ \sum_{k=0}^{N-1}\Bigl[\,(\mathbf x_k-\mathbf x_\star)^\top Q\,(\mathbf x_k-\mathbf x_\star) + \mathbf u_k^\top R\,\mathbf u_k + (\boldsymbol\lambda_k-\boldsymbol\lambda_{\text{des}})^\top W_\lambda(\boldsymbol\lambda_k-\boldsymbol\lambda_{\text{des}})\,\Bigr] + (\mathbf x_N-\mathbf x_\star)^\top Q\,(\mathbf x_N-\mathbf x_\star)\)</p>
+    <p>\(\text{subject to, for all } k:\)</p>
+    <p>\(\quad \mathbf x_{k+1} = A\mathbf x_k + B\mathbf u_k + D\boldsymbol\lambda_k + \mathbf d \qquad\textbf{[dynamics]}\)</p>
+    <p>\(\quad \boldsymbol\eta_k = E\mathbf x_k + F\boldsymbol\lambda_k + H\mathbf u_k + \mathbf c \qquad\textbf{[gap definition]}\)</p>
+    <p>\(\quad 0 \le \boldsymbol\lambda_k \ \perp\ \boldsymbol\eta_k \ge 0 \qquad\textbf{[complementarity — the non-convex part]}\)</p>
+    <p>\(\quad \mathbf x_0 = \hat{\mathbf x} \qquad\textbf{[initial state]}\)</p>
+    <p>\(\quad -\,\tau_{\max}/s_u \ \le\ \mathbf u_k \ \le\ \tau_{\max}/s_u \qquad\textbf{[torque box, per joint]}\)</p>
+  </div>
+</div>
+<p>
+  The cost weights state error, input effort, and force-reference error; the dynamics and gap rows are
+  hard equalities; the complementarity is the only non-convex constraint; the box keeps the feasible
+  set bounded (§13.2). Note the cost has <em>no</em> term on \(\boldsymbol\eta\) directly — \(\boldsymbol\eta\)
+  is pinned entirely by its equality to \(E\mathbf x+F\boldsymbol\lambda+H\mathbf u+\mathbf c\) and by the
+  complementarity.
+</p>
+
+<!-- 15.5 how C3+ solves it -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.5 &nbsp;·&nbsp; How C3+ actually solves it — the ADMM split</p>
+<p>
+  The complementarity is dropped from a convex QP and enforced separately by a projection; an
+  iteration reconciles the two. Three quantities per knot: \(\mathbf z\) (the QP copy), \(\boldsymbol\delta\)
+  (the projected copy), \(\mathbf w\) (the scaled dual). Repeated <code>admm_iter</code> = 15 times:
+</p>
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">z-update — convex QP (<code>SolveQP</code>, OSQP)</div>
+    <p style="font-size:0.9rem;margin-bottom:0;">
+      Minimise the cost + dynamics + gap-definition + box, <em>plus</em> the consensus penalty
+      \(\lVert \mathbf z_k-\boldsymbol\delta_k+\mathbf w_k\rVert^2_{G}\). Here \(\boldsymbol\lambda\) and
+      \(\boldsymbol\eta\) are <strong>free</strong> (complementarity ignored). This is where the torque
+      box and force reference act.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--indigo);">&delta;-update — projection (<code>SolveSingleProjection</code>)</div>
+    <p style="font-size:0.9rem;margin-bottom:0;">
+      Project \(\mathbf z+\mathbf w\) onto \(0\le\boldsymbol\lambda\perp\boldsymbol\eta\ge0\) per knot.
+      C3+ does this in <strong>closed form</strong>: for each contact, whichever of
+      \(\sqrt{w_\lambda}\,\boldsymbol\lambda\) and \(\sqrt{w_\eta}\,\boldsymbol\eta\) is larger wins,
+      the other is set to zero, then both are clipped at \(\ge0\). (Ordinary C3 solves a little QP/MIQP
+      here instead.)
+    </p>
+  </div>
+</div>
+<p style="margin-top:0.7rem;">
+  Then the <strong>dual update</strong> \(\mathbf w \leftarrow (\mathbf w+\mathbf z-\boldsymbol\delta)/\rho\)
+  and \(G \leftarrow \rho\,G\) with \(\rho=\)<code>rho_scale</code>=3, tightening the consensus each
+  iteration. After 15 iterations a final QP produces the trajectory; only \(\mathbf u_0\) (rescaled by
+  \(s_u\)) is applied to the robot. The \(\boldsymbol\eta\) weights \(w_\lambda,w_\eta\) used by the
+  projection come from the diagonal of \(U\); the consensus weight is \(G\).
+</p>
+
+<!-- 15.6 grasp instantiation -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.6 &nbsp;·&nbsp; The grasp instantiation — every actual number</p>
+<table style="width:100%;border-collapse:collapse;margin-top:0.5rem;font-size:0.86rem;">
+  <thead>
+    <tr style="background:var(--indigo-bg);text-align:left;">
+      <th style="padding:0.4rem 0.65rem;border:1px solid var(--border);">Symbol</th>
+      <th style="padding:0.4rem 0.65rem;border:1px solid var(--border);">Set to</th>
+      <th style="padding:0.4rem 0.65rem;border:1px solid var(--border);">Applies to</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(Q\) diagonal</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>k_hold=10</code> (hand q), <code>w_cube=1000</code> (cube pose+vel), <code>w_vel=0.1</code> (hand v)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">state tracking</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(R\)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(s_u^2\cdot\)<code>w_R</code>, <code>w_R=0.01</code></td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">input effort</td></tr>
+    <tr><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(W_\lambda\), \(\boldsymbol\lambda_{\text{des}}\)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>w_lambda=100</code> on normals (idx 3,4,5); target \((\alpha_I,\alpha_M,\alpha_T)=(1,1,2)\) N</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">grip seed / nullspace reg.</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(G,\,U\)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>w_G=1</code>, <code>w_U=1</code> × Identity\((97)\)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">ADMM consensus / projection</td></tr>
+    <tr><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(\mathbf x_\star\)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">cube at \(q_{\text{cube0}}\) (\(z=0.58\), identity quat), fingers at <code>q_contact</code>, all velocities 0</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">desired state</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">box</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>tau_max=100</code> Nm ⇒ \(\pm100/s_u\) per joint</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">input bound</td></tr>
+    <tr><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">horizon</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>N=5</code>, <code>c3_dt=0.02</code> ⇒ 0.1 s</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">prediction length</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">ADMM</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>admm_iter=15</code>, <code>rho_scale=3</code>, <code>gamma=1.0</code>, projection = <code>C3+</code></td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">solver</td></tr>
+    <tr><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">contact</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);"><code>mu=0.5</code>, <code>num_friction_directions=2</code>, model = Stewart–Trinkle</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">LCS contact</td></tr>
+    <tr style="background:#fafaf9;"><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">scalings</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">\(s_u\approx0.1\) (auto \(=|A|/|B|\)) on \(B,\mathbf u\); LCS \(|A|/|D|\) on \(\boldsymbol\lambda\)</td><td style="padding:0.4rem 0.65rem;border:1px solid var(--border);">conditioning (physics unchanged)</td></tr>
+  </tbody>
+</table>
+
+<!-- 15.7 behaviour -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">15.7 &nbsp;·&nbsp; What each piece does — the expected behaviour</p>
+<div class="card green" style="margin-bottom:0.6rem;">
+  <div class="card-label">The load-bearing term — \(w_{\text{cube}}\) in \(Q\)</div>
+  <p style="margin-bottom:0;">
+    \(Q\) anchors the cube's <em>world</em> pose and velocity at \(\mathbf x_\star\) with weight 1000.
+    Because gravity sits in \(\mathbf d\), the LCS predicts the cube falling unless contact force resists
+    it, so the only way to keep this big penalty small is to produce a grip. <strong>This is where
+    "hold the cube" is enforced</strong> — softly, as a cost, not a hard constraint (§ "where holding
+    is enforced"). The grip therefore <em>emerges</em> rather than being commanded.
+  </p>
+</div>
+<div class="card" style="margin-bottom:0.6rem;">
+  <div class="card-label">The supporting terms</div>
+  <ul style="margin:0; font-size:0.92rem;">
+    <li><strong>\(k_{\text{hold}}\) (10) in \(Q\)</strong> — keeps the fingers near <code>q_contact</code> (on the faces), so C3 cannot "hold" by wandering to some other configuration.</li>
+    <li><strong>\(R\) (\(s_u^2\cdot0.01\))</strong> — small penalty on torque; regularises \(\mathbf u\), prefers gentle inputs.</li>
+    <li><strong>\(W_\lambda\) (100) + \(\boldsymbol\lambda_{\text{des}}=(1,1,2)\)</strong> — seeds a positive normal grip and pins the §8.3 squeeze nullspace, so \(\lambda_n\) comes out near target instead of an arbitrary (or negative) value.</li>
+    <li><strong>torque box (\(\pm100/s_u\))</strong> — bounds the QP's feasible set, eliminating the <code>DualInfeasible</code> unbounded-ray failure (§13.2).</li>
+    <li><strong>complementarity</strong> — encodes "push only when touching, slide only when friction saturates"; the projection (§15.5) is what enforces it.</li>
+  </ul>
+</div>
+<div class="card amber" style="margin-bottom:0;">
+  <div class="card-label">What the whole thing should do — and its known limit</div>
+  <p style="margin-bottom:0;">
+    Each step, C3+ predicts the next 0.1 s, finds joint torques whose induced contact forces keep the
+    cube at \(z=0.58\) while respecting the friction cone, and applies the first torque. If the grip the
+    cost asks for satisfies \(\sum_i\mu\lambda_n^i\ge mg\), the cube holds and \(\lambda_n\to(1,1,2)\).
+    The structural caveat from §14 still applies: the "hold" is a <em>soft</em> penalty with no hard
+    floor and no non-C3 fallback, so an under-weighted or lopsided grip shows up as a slow sag rather
+    than a hard failure. Every knob above is a lever on that trade-off; the contact model itself
+    (Stewart–Trinkle vs Anitescu, §13/§ "models you can change") is the deepest one — and for this
+    static hold, Stewart–Trinkle is the correct choice.
   </p>
 </div>
 
