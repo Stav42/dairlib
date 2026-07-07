@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Are My Three Questions Correct?</title>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+  <style>
+    body { font-family: Georgia, serif; max-width: 880px; margin: 40px auto; padding: 0 24px; line-height: 1.7; color: #1a1a1a; }
+    h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }
+    h2 { margin-top: 2.2em; color: #222; }
+    h3 { color: #444; margin-top: 1.5em; }
+    code { background: #f0f0ec; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+    pre { background: #f7f7f4; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; overflow-x: auto; font-size: 0.86em; line-height: 1.5; }
+    .note { background: #f5f5f0; border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 0.95em; }
+    .verdict { display: inline-block; padding: 3px 12px; border-radius: 14px; font-family: -apple-system, Arial, sans-serif; font-size: 0.78em; font-weight: bold; letter-spacing: 0.5px; color: #fff; vertical-align: middle; }
+    .good { background: #2e7d32; }
+    .part { background: #ef6c00; }
+    .bad  { background: #c62828; }
+    .q { background: #eef3fb; border: 1px solid #cdd9ec; border-radius: 8px; padding: 12px 18px; margin: 20px 0 8px; }
+    table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+    td, th { border: 1px solid #ccc; padding: 8px 14px; text-align: left; }
+    th { background: #eee; }
+    .tl { font-size: 1.05em; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
+  </style>
+</head>
+<body>
+
+<h1>Are My Three Questions Correct?</h1>
+
+<p class="tl">
+  Short answer up front:
+  <strong>Question&nbsp;1</strong> — <span class="verdict good">CORRECT &amp; SHARP</span>
+  <strong>Question&nbsp;2</strong> — <span class="verdict good">CORRECT &amp; CRUCIAL</span>
+  <strong>Question&nbsp;3</strong> — <span class="verdict part">HALF RIGHT</span>
+  (good instinct, wrong mechanism — I explain below).
+</p>
+
+<p>
+  This document assumes you know nothing. Every symbol is defined. Everything is checked against the
+  <em>actual code</em> in <code>allegro_grasp_c3_squeeze.cc</code>, not against theory.
+</p>
+
+<hr>
+
+<h2>0. First, a tune-up of your write-up</h2>
+
+<p>Your optimization problem is essentially right. Two tiny fixes so nothing bites you later.</p>
+
+<h3>0a. The cost has a sign/label slip</h3>
+<p>You wrote the running cost as</p>
+\[
+g = (x_k-x^*)^\top Q (x_k-x^*) + (f_k-f_k^*)^\top G (f_k-f_k^*) + u_k^\top R\, u_k .
+\]
+<p>
+  That is correct in spirit, but be careful: in the code the letter \(G\) is <em>already used</em> for the
+  ADMM augmented-Lagrangian weight (flag <code>w_G</code>, line 123). The force-reference weight is a
+  <em>separate</em> matrix (flag <code>w_lambda</code>, applied via
+  <code>SetForceTrackingWeight</code>, line 638). So your "\(G\)" is really the code's
+  <code>W_lam</code>. Same idea, different name — just don't confuse it with the ADMM \(G\).
+</p>
+
+<h3>0b. The ordering inside \(\lambda_k\) is different from what you wrote</h3>
+<p>
+  You wrote \(\lambda_k = (\lambda_n \,;\, \beta \,;\, \gamma)\). The Stewart–Trinkle model in this
+  codebase actually stacks them <strong>\(\gamma\) first, then \(\lambda_n\), then \(\beta\)</strong>.
+  This is stated verbatim in the code comment (line 171):
+</p>
+<pre>stewart_and_trinkle: &lambda; = [ &gamma;(nc) | &lambda;_n(nc) | &beta;(...) ]  &rarr; group i = { nc + i }</pre>
+<p>
+  With <code>nc = 3</code> contacts, that means the three normal forces \(\lambda_n^i\) sit at indices
+  <strong>3, 4, 5</strong> — which is exactly why the code keeps calling them <code>λ_n[3,4,5]</code>.
+  Your three components (sliding slack \(\gamma\), normal force \(\lambda_n\), friction \(\beta\)) are the
+  right three things; only the stacking order is flipped.
+</p>
+
+<p>Everything else in your write-up — the LCS dynamics, the complementarity block</p>
+\[
+0 \le \eta_k \perp \lambda_k \ge 0,\qquad
+\eta_k=\begin{pmatrix}
+\phi(q) \\[2pt]
+\mu\lambda_n^i - e^\top\beta^i \\[2pt]
+E_t J_t^i \dot q + \gamma^i e
+\end{pmatrix}
+\]
+<p>— is the correct Stewart–Trinkle contact LCS. Good. Now to your three questions.</p>
+
+<hr>
+
+<h2>Question 1 &nbsp; <span class="verdict good">CORRECT &amp; SHARP</span></h2>
+
+<div class="q">
+  <em>“Is the contact pair made between any part of the finger <strong>tip</strong> and the cube, or
+  between any part of <strong>any link</strong> of the finger and the cube?”</em>
+</div>
+
+<p>
+  This is exactly the right question, and the code gives a crisp answer:
+  <strong>neither the whole finger nor a magic point — it is one specific <em>geometry</em> that you named,
+  the fingertip collision body, versus the cube's one collision body.</strong>
+</p>
+
+<p>Look at how the pairs are built (lines 297–310):</p>
+<pre>lcs_index_geom  = collision geom of body "link_3_tip"
+lcs_middle_geom = collision geom of body "link_7_tip"
+lcs_thumb_geom  = collision geom of body "link_15_tip"
+lcs_cube_geom   = collision geom of the cube (the FIRST one, index [0])
+
+contact_pairs = {
+   (link_3_tip  , cube),
+   (link_7_tip  , cube),
+   (link_15_tip , cube)
+}</pre>
+
+<p>So the answer breaks into two halves:</p>
+
+<table>
+  <tr><th>Which link?</th><th>Only the named tip link</th></tr>
+  <tr>
+    <td>Which link counts as "the finger" in the model?</td>
+    <td>ONLY <code>link_3_tip</code>, <code>link_7_tip</code>, <code>link_15_tip</code>.
+        Middle phalanges (<code>link_1</code>, <code>link_2</code>, …) are <strong>not</strong> in
+        <code>contact_pairs</code>, so the LCS/C3 is <em>blind</em> to them. Not "any link".</td>
+  </tr>
+  <tr>
+    <td>Which point on that tip?</td>
+    <td>Not a hard-coded point. Drake computes the <strong>closest pair of points</strong> between the two
+        full geometries and measures the gap there. So it <em>is</em> "any part of the tip geometry" —
+        whichever part is nearest the cube surface at that instant.</td>
+  </tr>
+</table>
+
+<p>
+  Formally, each pair \(i\) contributes one <strong>signed distance function</strong> \(\phi_i(q)\), the gap
+  between geometry \(A_i\) (the tip) and geometry \(B\) (the cube):
+</p>
+\[
+\phi_i(q) \;=\; \min_{\mathbf{a}\in A_i,\ \mathbf{b}\in B}\ \| \mathbf{a}-\mathbf{b}\|
+\quad\text{(negative if they interpenetrate).}
+\]
+<p>
+  This \(\phi_i\) is the first row of your \(\eta_k\) block, and it is the thing that is complementary to
+  the normal force: \(0 \le \phi_i \perp \lambda_n^i \ge 0\). In words:
+  <strong>if there is a gap (\(\phi_i>0\)) the normal force must be zero; a force can only appear when the
+  gap closes (\(\phi_i=0\)).</strong>
+</p>
+
+<div class="note">
+  <strong>The catch you should remember.</strong> The cube is a single collision box, so "index touches face 4"
+  vs "index touches face 3" is <em>not</em> encoded anywhere — the pair is just
+  <em>tip&nbsp;↔&nbsp;whole&nbsp;cube</em>. Which face gets pressed is decided by <em>where you put the tip</em>,
+  not by the contact definition. (Your write-up's "face 1 / face 2" labels are your bookkeeping, not the
+  solver's.)
+</div>
+
+<hr>
+
+<h2>Question 2 &nbsp; <span class="verdict good">CORRECT &amp; CRUCIAL</span></h2>
+
+<div class="q">
+  <em>“How can we ensure that no <strong>other</strong> thing touches the cube, so the interaction is only
+  through these three defined points?”</em>
+</div>
+
+<p>
+  This is the single most important question in the whole file, and you are right to worry. Here is why it
+  matters, stated as bluntly as possible: <strong>there are two different worlds, and they disagree.</strong>
+</p>
+
+<table>
+  <tr><th></th><th>The LCS / C3 "model" world</th><th>The SAP "physics" world (the real sim)</th></tr>
+  <tr>
+    <td>Who computes contact?</td>
+    <td><code>LCSFactory::LinearizePlantToLCS</code> on the <code>lcs_plant</code></td>
+    <td><code>sim_plant</code> with SAP, inside <code>simulator.AdvanceTo</code></td>
+  </tr>
+  <tr>
+    <td>Which contacts exist?</td>
+    <td><strong>Only the 3 you listed.</strong> Nothing else can produce a \(\lambda\).</td>
+    <td><strong>Every unfiltered geometry pair in the scene.</strong> Knuckle, palm, ring finger — all real.</td>
+  </tr>
+  <tr>
+    <td>Effect of a stray touch</td>
+    <td>Invisible. C3 never sees the force.</td>
+    <td>Produces a real force that shoves the cube.</td>
+  </tr>
+</table>
+
+<p>
+  So if a <em>non-modelled</em> body (say <code>link_2</code>, a middle phalanx, or the palm) bumps the cube,
+  the physics applies a force \(\mathbf{f}_\text{stray}\) that C3's plan never accounted for. The cube's true
+  update is
+</p>
+\[
+x_{k+1} \;=\; \underbrace{A x_k + B u_k + C\lambda_k + D}_{\text{what C3 predicts}}
+\;+\; \underbrace{C_\text{stray}\,\lambda_\text{stray}}_{\text{surprise, not in the model}},
+\]
+<p>
+  and now the plan is wrong. This is called <strong>model mismatch</strong>, and it is the classic way these
+  grasp controllers silently fail.
+</p>
+
+<h3>How you actually guarantee it — three levers</h3>
+<ol>
+  <li>
+    <strong>Collision filtering (the real tool).</strong> Drake lets you switch off collisions between chosen
+    geometry sets with <code>CollisionFilterManager</code>. The code <em>already does this once</em>
+    (lines 220–235) — it excludes the thumb links from hitting the palm:
+    <pre>collision_filter_manager().Apply(
+   ExcludeBetween( {thumb geoms link_12..link_15_tip},
+                   {palm_link geoms} ));</pre>
+    To make your guarantee real, you would add analogous filters so that <em>every non-tip finger geometry</em>
+    is excluded from the cube, leaving only <code>link_3_tip</code>, <code>link_7_tip</code>,
+    <code>link_15_tip</code> able to collide with it. That makes the physics world match the model world by
+    construction.
+  </li>
+  <li>
+    <strong>Geometry / pose design.</strong> Start the fingers folded so only the three tips can reach the
+    cube. The code does this: it starts at <code>q_pregrasp</code> (1&nbsp;cm outside the faces) and only the
+    tips are aimed at the faces. Good practice, but it is a <em>hope</em>, not a <em>guarantee</em> — a bad
+    trajectory could still swing a knuckle in.
+  </li>
+  <li>
+    <strong>Detection / bail-out.</strong> The loop reads <code>get_contact_results_output_port</code> every
+    step (lines 483–497) and checks each contact's two body indices against the tip/cube pair. Today it uses
+    this only to decide "is the tip touching?"; you could extend it to detect a <em>non-tip</em> body touching
+    the cube and flag the mismatch.
+  </li>
+</ol>
+
+<div class="note">
+  <strong>Honest status of the current code.</strong> It does <em>not</em> yet fully enforce your Q2. The only
+  filter present is thumb-vs-palm (to stop a numerical blow-up), <strong>not</strong> other-links-vs-cube. So
+  right now the guarantee rests on lever&nbsp;2 (careful geometry) alone. If you want the guarantee to be
+  airtight, add lever&nbsp;1.
+</div>
+
+<hr>
+
+<h2>Question 3 &nbsp; <span class="verdict part">HALF RIGHT — good instinct, wrong mechanism</span></h2>
+
+<div class="q">
+  <em>“If we set the fingertip close to the cube face, will the optimization <strong>find</strong> a local-minimum
+  trajectory that touches the near face, rather than an erroneous one that takes a long way off?”</em>
+</div>
+
+<p>
+  Your worry about local minima and "taking a long way off" is a legitimate worry <em>for trajectory
+  optimizers in general</em>. But it does <strong>not</strong> describe what this file does, because of one
+  design fact you may have missed:
+</p>
+
+<p class="tl">
+  <strong>In this code, C3 does <em>not</em> do the reaching. The touching is scripted.</strong>
+</p>
+
+<p>Read the phase machine (lines 465–722). There are two phases:</p>
+
+<table>
+  <tr><th>Phase</th><th>What drives the fingers</th><th>Role of C3</th></tr>
+  <tr>
+    <td><code>kReach</code></td>
+    <td>A <strong>PD controller + cubic spline</strong> from <code>q_pregrasp</code> → <code>q_contact</code>
+        (lines 513–530). Pure scripted motion.</td>
+    <td>Not running at all.</td>
+  </tr>
+  <tr>
+    <td>Handoff</td>
+    <td>Latches when the <em>sim</em> reports all three tips actually touching (lines 505–511, 533).</td>
+    <td>The LCS is linearized right <em>at</em> the contact configuration (line 544).</td>
+  </tr>
+  <tr>
+    <td><code>kC3</code></td>
+    <td>C3/ADMM torques, once the cube pin is released.</td>
+    <td><strong>Maintains</strong> the grasp; it never had to <em>find</em> it.</td>
+  </tr>
+</table>
+
+<p>So two corrections to the premise:</p>
+
+<h3>Correction A — "will the optimization find a trajectory to touch?" — No, it doesn't have to.</h3>
+<p>
+  Contact is established by the <em>PD reach</em>, and confirmed by the real physics before C3 ever starts.
+  C3 is handed a state that is <em>already touching</em>. There is no "long way off" search for C3 to get
+  wrong, because C3 is only switched on <em>after</em> contact.
+</p>
+
+<h3>Correction B — C3 is a <em>local, near-contact</em> MPC, not a global planner.</h3>
+<p>
+  Your dynamics matrices \((A,B,C,D)\) are a <strong>linearization</strong>, taken at the current state
+  \(x^\star\) each step (the <code>relinearize</code> path, lines 685–693):
+</p>
+\[
+x_{k+1} \approx A x_k + B u_k + C \lambda_k + D,\qquad
+A=\left.\frac{\partial f}{\partial x}\right|_{x^\star},\ \dots
+\]
+<p>
+  A linearization is only trustworthy <em>near</em> \(x^\star\). C3 is therefore physically incapable of
+  planning a big swing from far away — it optimizes a small QP around the current contact configuration over a
+  short horizon (\(N=5\) knots, \(dt=0.04\)s ≈ 0.2s look-ahead). "Taking a long way off" is not a failure mode
+  it can even reach into.
+</p>
+
+<h3>So <em>why</em> does putting the tip close still matter? (Your instinct was right — for a different reason.)</h3>
+<p>Proximity matters for two concrete, code-level reasons — just not the one you named:</p>
+<ol>
+  <li>
+    <strong>It keeps the complementarity "active."</strong> C3 can only generate a squeeze force \(\lambda_n^i\)
+    when the gap is closed, because of \(0 \le \phi_i \perp \lambda_n^i \ge 0\). If \(\phi_i > 0\) (tip away from
+    the face) the model <em>forces</em> \(\lambda_n^i = 0\) — no grip is even representable. That is why the code
+    seats the tips <strong>5&nbsp;mm inside</strong> the faces at <code>q_contact</code>
+    (<code>cube_size - 0.01</code>, line 353) and PD-holds them there — so \(\phi_i \le 0\) and a real force can
+    exist. The handoff even prints the gaps and expects them \(\le 0\) (lines 549–555).
+  </li>
+  <li>
+    <strong>It keeps the linearization valid.</strong> Being close means the small motions C3 commands stay in
+    the region where \((A,B,C,D)\) are accurate, so its predictions don't drift from the SAP physics.
+  </li>
+</ol>
+
+<div class="note">
+  <strong>The subtle part you were reaching for.</strong> Even with tips in contact, "grip harder" is a whole
+  <em>family</em> of solutions (a nullspace): index/middle/thumb forces can all scale up together while still
+  balancing (this is the ratio result \(\alpha_I/\alpha_M=(c-b)/(a-c)\) and \(\alpha_T=\alpha_I+\alpha_M\) from
+  <code>grasp_theory_critique.html</code>). A cost minimizer left alone would pick the <em>cheapest</em> member —
+  <strong>zero squeeze</strong> — and drop the cube. The code fixes this two ways: (i) the cube anchor
+  <code>w_cube</code> makes "cube falls" expensive, so C3 must supply \(\sum_i \mu\lambda_n^i \ge mg\); and
+  (ii) the force reference <code>w_lambda</code> with target <code>alpha_m</code> (thumb = \(2\alpha_m\)) picks a
+  specific, non-zero grip out of the nullspace. So the trajectory C3 "finds" is pinned by the costs, not left to
+  chance. <em>That</em> is the real version of your local-minimum worry — and it is handled.
+</div>
+
+<hr>
+
+<h2>One-paragraph summary</h2>
+<p>
+  Q1 and Q2 are the correct, important questions, and the code confirms your framing: a contact pair is one
+  <em>named tip geometry</em> against the <em>one cube geometry</em> (Q1), and the model only knows those three
+  pairs while the physics knows all of them, so you must enforce isolation with collision filtering /
+  geometry / detection (Q2 — currently only partially enforced). Q3 has the right spirit but the wrong picture:
+  in this file the touching is done by a scripted PD reach and confirmed by real physics <em>before</em> C3
+  starts, and C3 is a short-horizon local MPC linearized at contact — so it never searches for a way to touch
+  and cannot "take a long way off." Proximity still matters, but to keep the complementarity active
+  (\(\phi_i \le 0\) so a force is even allowed) and the linearization valid — and the risk you were sensing
+  (many valid grips, cheapest = no grip) is real and is handled by the cube anchor plus the force reference.
+</p>
+
+</body>
+</html>
