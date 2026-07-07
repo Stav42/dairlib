@@ -609,27 +609,6 @@ M_h \dot v + C_h - \tau_{g,h} = \tau - \textstyle\sum_i J_i^\top f_i,\qquad
   study; sweep it down until the cube slips), <code>--osc_kp</code> (how stiffly the hand regulates cube pose),
   and the plan-quality diagnostics <code>--plan_debug</code> (the F1/F2a/F2b lines).</p>
 
-<h3>12b. Executor choice: OSC QP vs. Jᵀ</h3>
-<p>The low-level executor also has a switch — same goals, different machinery:</p>
-<table>
-  <tr><th>Flag</th><th>Executor</th><th>What it enforces</th></tr>
-  <tr>
-    <td><code>--use_jtf=false</code> <em>(default)</em></td>
-    <td>inverse-dynamics <strong>QP</strong> (§9)</td>
-    <td>tracks position + force <em>and</em> enforces friction cone, torque box, mass-matrix dynamics</td>
-  </tr>
-  <tr>
-    <td><code>--use_jtf=true</code></td>
-    <td>task-space <strong>PD + Jᵀ grip</strong></td>
-    <td>\(\tau=\tau_g+\sum_i J_i^\top[K_p(p^{des}_i-p_i)-K_d\dot p_i+f_{n,i}\hat n_i]\) — no cone/box/mass-matrix</td>
-  </tr>
-</table>
-<p>
-  Same position target (<code>--fk_target</code>), same grip (<code>--force_floor</code>), same gains
-  (<code>osc_kp</code>/<code>osc_kd</code>) — so it's a clean test of what the QP's extra structure (friction
-  cone, torque limits, inertia) actually buys over a plain Jacobian-transpose impedance controller.
-</p>
-
 <h3>12a. The open problem</h3>
 <p>
   To make C3 <em>itself</em> hold (and eventually <em>move</em>) the cube, the fix is upstream: kill the
@@ -655,105 +634,6 @@ M_h \dot v + C_h - \tau_{g,h} = \tau - \textstyle\sum_i J_i^\top f_i,\qquad
   the plan's passivity, not the controller. A <code>--fk_target</code> flag switches between the two, and the
   open work is making C3's plan non-passive so it can hold — and then move — the cube on its own.
 </p>
-
-<hr>
-
-<h2>Appendix A — What the push-anything OSC <em>is</em>, and what is passed into it</h2>
-
-<p>
-  For contrast with the small OSC we wrote (§9), here is the real one from the push-anything pipeline, read
-  straight from <code>franka_osc_controller.cc</code>, <code>operational_space_control.h</code>, and
-  <code>franka_sampling_c3_controller.cc</code>.
-</p>
-
-<h3>A.1 What it is</h3>
-<p>
-  It is <code>dairlib::systems::controllers::OperationalSpaceControl</code> (in
-  <code>systems/controllers/osc/</code>) — a Drake <code>LeafSystem</code> wrapping a whole-body
-  <strong>inverse-dynamics QP</strong> (<code>InverseDynamicsQp</code>: decision variables are joint
-  accelerations \(\dot v\), joint torques \(u\), and contact / holonomic / external forces, plus slacks). Its
-  internal plant is <strong>Franka-only</strong> — the manipulated object is <em>not</em> in the OSC's model;
-  it lives only inside the C3 controller.
-</p>
-
-<h3>A.2 The dataflow (two LCM processes)</h3>
-<pre>franka_sampling_c3_controller            franka_osc_controller
-  • runs C3 (LCS: floating EE          • OperationalSpaceControl (LeafSystem)
-    + object + ground)                    QP solved every state message
-  • target generator + C3OutputGen /    ┌───────────── inputs ─────────────┐
-    ContactForceGen                      │ robot_output (q, v)              │
-        │  publishes over LCM  ───────►  │ end_effector_target      (pos)   │
-        │                                │ end_effector_orientation_target  │
-        │                                │ end_effector_force       (λ)     │
-        ▼                                └──────────────────────────────────┘
-  end_effector_position_target                     │ solves QP
-  end_effector_orientation_target                  ▼
-  end_effector_force_target              osc_command  ──►  lcmt_robot_input (joint torques)  ──► robot/sim</pre>
-
-<h3>A.3 What is passed <em>into</em> the OSC each tick</h3>
-<p>Confirmed from the <code>builder.Connect(...)</code> calls in <code>franka_osc_controller.cc</code>:</p>
-<table>
-  <tr><th>OSC input port</th><th>Fed by</th><th>Meaning</th></tr>
-  <tr>
-    <td><code>get_input_port_robot_output()</code></td>
-    <td><code>state_receiver</code> (<code>lcmt_robot_output</code>)</td>
-    <td>measured robot state \((q,v)\)</td>
-  </tr>
-  <tr>
-    <td><code>get_input_port_tracking_data("end_effector_target")</code></td>
-    <td><code>EndEffectorTrajectoryGenerator</code> ← C3's <code>end_effector_position_target</code></td>
-    <td>desired EE <strong>position</strong> trajectory</td>
-  </tr>
-  <tr>
-    <td><code>get_input_port_tracking_data("end_effector_orientation_target")</code></td>
-    <td>orientation generator ← C3's <code>..._orientation_target</code></td>
-    <td>desired EE <strong>orientation</strong></td>
-  </tr>
-  <tr>
-    <td><code>get_input_port_tracking_data("end_effector_force")</code></td>
-    <td><code>EndEffectorForceTrajectoryGenerator</code> ← C3's <code>end_effector_force_target</code></td>
-    <td>desired EE <strong>contact force</strong> (this is C3's planned \(\lambda\))</td>
-  </tr>
-</table>
-<p>
-  So the <strong>targets are produced by the C3 controller</strong> and shipped over LCM as
-  <code>lcmt_timestamped_saved_traj</code> messages; the OSC only ever sees the robot state plus these desired
-  <em>position / orientation / force</em> trajectories. (A radio/teleop channel feeds the trajectory
-  <em>generators</em>, not the OSC directly. FSM / clock / impact input ports exist but are not central here.)
-</p>
-
-<h3>A.4 The tracking objectives it is configured with</h3>
-<p>Added in <code>franka_osc_controller.cc</code> before <code>osc-&gt;Build()</code>:</p>
-<ul>
-  <li><code>TransTaskSpaceTrackingData("end_effector_target")</code> — EE position (\(K_p, K_d, W\), accel bounds).</li>
-  <li><code>RotTaskSpaceTrackingData("end_effector_orientation_target")</code> — EE orientation.</li>
-  <li><code>ExternalForceTrackingData("end_effector_force", W_ee_lambda)</code> — <strong>tracks C3's contact
-      force</strong>. This is the class that "realizes the planned \(\lambda\)"; its \(\lambda_\text{des}\) is set
-      from the incoming force trajectory.</li>
-  <li><code>JointSpaceTrackingData</code> on a mid-arm joint, held at a constant (≈1.1 rad) — redundancy
-      resolution (7 arm joints for a 6-DOF EE).</li>
-  <li>Plus: <code>SetContactFriction(mu)</code> (friction cone), <code>SetAccelerationCostWeights</code>,
-      <code>SetInputCostWeights</code>, <code>SetInputSmoothingCostWeights</code>, acceleration constraints,
-      and OSQP options.</li>
-</ul>
-
-<h3>A.5 What it outputs</h3>
-<p>
-  <code>get_output_port_osc_command()</code> → joint torques, published as <code>lcmt_robot_input</code> to the
-  robot / simulator. The loop is driven by incoming <code>lcmt_robot_output</code> (state) messages, so the QP
-  re-solves every time a new state arrives — the fast executor rate.
-</p>
-
-<div class="note">
-  <strong>How ours compares.</strong> Our inline OSC (§9) is a fresh, minimal re-implementation of the same core
-  QP — fingertip position + <code>ExternalForceTrackingData</code>-style force tracking under a friction cone and
-  torque box — hand-written with Drake's <code>MathematicalProgram</code> so it drops into our manual control
-  loop instead of a diagram. The push-anything OSC additionally does orientation tracking, input smoothing,
-  acceleration limits, and redundancy resolution, and is driven over LCM. Same idea; theirs is the productionised
-  version. Porting to it means restructuring our binary into a diagram and using
-  <code>OperationalSpaceControl</code> with three <code>ExternalForceTrackingData</code> objectives (one per
-  fingertip).
-</div>
 
 </body>
 </html>

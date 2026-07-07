@@ -181,6 +181,13 @@ DEFINE_bool(use_osc, true,
             "Realize C3's plan with an inverse-dynamics QP (OSC) instead of the "
             "hand-rolled Jᵀλ layer. Tracks fingertip positions + C3's planned "
             "contact forces under friction-cone and torque constraints.");
+DEFINE_bool(use_jtf, false,
+            "Replace the OSC QP with classic task-space PD + Jacobian-transpose "
+            "grip (no QP): τ = τ_g + Σ Jᵢᵀ[Kp(p_des−p) − Kd·ṗ + fₙ·n̂]. Same "
+            "position/force goals and gains (osc_kp/osc_kd, force_floor, "
+            "fk_target) as the OSC, but NO friction cone / torque box / mass "
+            "matrix — a lightweight 'poor man's OSC' for comparison. Requires "
+            "--use_osc (this path lives inside that branch).");
 DEFINE_bool(plan_debug, true,
             "Print C3 plan-quality diagnostics each solve. Factor 1: planned "
             "cube-z trajectory + per-knot state-tracking cost (does C3 THINK it "
@@ -201,6 +208,15 @@ DEFINE_double(force_floor, 0.0,
               "realize C3's force as-is (which collapses to 0 at release). Set "
               "≈alpha_m to keep the grip alive across the contact-gate hover "
               "band — the force-floor idea, applied inside the OSC.");
+DEFINE_bool(fk_target, false,
+            "OSC fingertip POSITION target source. DEFAULT false = fixed grasp "
+            "points on the upright reference cube X_WC0 (the geometric hold — "
+            "the setup that holds the cube). true = forward-kinematics of C3's "
+            "planned next hand config q1 (GetStateSolution()[1]): track where "
+            "the plan says the fingertips go next. NOTE: C3's plan is currently "
+            "passive (u≈0 ⇒ q1≈now), so 'true' targets ≈ the current fingertip "
+            "positions and tends to let the cube sag — the honest test of "
+            "executing C3's plan.");
 DEFINE_double(phi_offset, 0.003,
               "Gap inflation ε (m): subtract ε from the signed-distance rows "
               "of the LCS constant term c, so the model treats 'within ε of "
@@ -646,7 +662,8 @@ int DoMain(int argc, char* argv[]) {
   // torques. fn_des = the per-fingertip desired NORMAL force (from C3's plan,
   // optionally floored). This is the "executor" layer; C3 is the "planner".
   const double kInf = std::numeric_limits<double>::infinity();
-  auto osc_torque = [&](const std::array<double, 3>& fn_des) -> VectorXd {
+  auto osc_torque = [&](const std::array<double, 3>& fn_des,
+                        const VectorXd& p_des_all) -> VectorXd {
     const int nv = lcs_plant.num_velocities();  // 22 (== sim_plant)
     const int nvh = n_hand_v;                   // 16
 
@@ -664,18 +681,14 @@ int DoMain(int argc, char* argv[]) {
     const VectorXd Ch = Cv.head(nvh);
     const VectorXd tgh = tau_g.head(nvh);
 
-    // Force press directions use the CURRENT cube rotation (physically, the
-    // finger presses the real, possibly-tilted face). But the fingertip POSITION
-    // targets use the DESIRED cube pose X_WC0 (0.58, upright): this is what makes
-    // the OSC regulate the cube TO its reference — the fingers are pulled toward
-    // where they'd sit if the cube were at X_WC0, dragging it back up and
-    // untilting it. Targeting the live pose instead just follows the cube
-    // wherever it sags (the residual 7 cm droop / 23° tilt seen before).
-    const RigidTransform<double> X_WC =
-        CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube));
-    const RotationMatrix<double> R_WC = X_WC.rotation();
-    const VectorXd p_des_all =
-        GetGraspPositions(X_WC0, cube_size - 0.01, a, b, c_off);
+    // Force press directions use the CURRENT cube rotation (physically the
+    // finger presses the real, possibly-tilted face). The fingertip POSITION
+    // targets p_des_all (3 world points) are chosen by the caller: either the
+    // fixed grasp points on the upright reference cube (geometric hold), or the
+    // forward-kinematics of C3's planned next hand config (--fk_target).
+    const RotationMatrix<double> R_WC =
+        CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube))
+            .rotation();
     const std::array<Vector3d, 3> press_C{Vector3d(0, 1, 0), Vector3d(0, 1, 0),
                                           Vector3d(0, -1, 0)};
 
@@ -701,7 +714,8 @@ int DoMain(int argc, char* argv[]) {
       const MatrixXd Jh = J.leftCols(nvh);
       Aeq.middleCols(2 * nvh + 3 * i, 3) = Jh.transpose();  // +Jhᵀ (see above)
 
-      // Fingertip position tracking → desired task acceleration a_des.
+      // Fingertip position tracking → desired task acceleration a_des (pull the
+      // fingertip toward its grasp point on the upright reference cube).
       const Vector3d p_i =
           sim_plant
               .EvalBodyPoseInWorld(plant_ctx, sim_plant.get_body(tip_bodies[i]))
@@ -767,6 +781,11 @@ int DoMain(int argc, char* argv[]) {
   double solve_ms_sum = 0.0, solve_ms_max = 0.0;
   VectorXd last_gaps;      // most recent Stewart-Trinkle contact gaps φ
   bool have_gaps = false;
+
+  // Scratch plant context for forward-kinematics of C3's planned hand config
+  // (--fk_target). Standalone (not the live sim context) so setting it does not
+  // disturb the simulation; FK needs no scene-graph query object.
+  auto fk_ctx = sim_plant.CreateDefaultContext();
 
   // Factor 2b: the previous solve's predicted next state (GetStateSolution[1]).
   // Solves are c3_period_steps apart = c3_dt (one LCS step), so last solve's x₁
@@ -1159,7 +1178,64 @@ int DoMain(int argc, char* argv[]) {
           for (int idx : normal_groups[i]) fn += lam_proj(idx);
           fn_des[i] = std::max(std::max(fn, 0.0), floor[i]);
         }
-        tau_hand = osc_torque(fn_des);
+        // Fingertip position targets for the OSC. --fk_target: forward-
+        // kinematics of C3's planned next hand config q1 (where the plan says
+        // the fingertips go next). Otherwise: fixed grasp points on the upright
+        // reference cube (the geometric hold). C3's input added as feedforward.
+        VectorXd p_des_all(9);
+        if (FLAGS_fk_target) {
+          const std::vector<VectorXd> xplan = c3->GetStateSolution();
+          const VectorXd q1 = xplan.size() > 1
+                                  ? VectorXd(xplan[1].head(n_hand_q))
+                                  : sim_plant.GetPositions(plant_ctx, sim_allegro);
+          sim_plant.SetPositions(fk_ctx.get(), sim_allegro, q1);
+          for (int i = 0; i < 3; ++i)
+            p_des_all.segment<3>(3 * i) =
+                sim_plant
+                    .EvalBodyPoseInWorld(*fk_ctx,
+                                         sim_plant.get_body(tip_bodies[i]))
+                    .translation();
+        } else {
+          p_des_all = GetGraspPositions(X_WC0, cube_size - 0.01, a, b, c_off);
+        }
+
+        if (FLAGS_use_jtf) {
+          // Classic task-space PD + Jacobian-transpose grip (no QP). Same goals
+          // as the OSC (p_des_all, fn_des, osc_kp/osc_kd) but realized by Jᵀ:
+          //   τ = τ_g + Σ Jᵢᵀ[ Kp(p_des−p) − Kd·ṗ + fₙ·n̂ ].
+          const VectorXd v_hand =
+              sim_plant.GetVelocities(plant_ctx, sim_allegro);
+          const VectorXd tau_g = sim_plant.GetVelocitiesFromArray(
+              sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
+          const RotationMatrix<double> R_WC =
+              CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube))
+                  .rotation();
+          const std::array<Vector3d, 3> press_C{
+              Vector3d(0, 1, 0), Vector3d(0, 1, 0), Vector3d(0, -1, 0)};
+          VectorXd tau = tau_g;
+          for (int i = 0; i < 3; ++i) {
+            Eigen::MatrixXd J(3, sim_plant.num_velocities());
+            sim_plant.CalcJacobianTranslationalVelocity(
+                plant_ctx, drake::multibody::JacobianWrtVariable::kV,
+                sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
+                sim_plant.world_frame(), sim_plant.world_frame(), &J);
+            const Eigen::MatrixXd Jh = J.leftCols(n_hand_v);
+            const Vector3d p_i =
+                sim_plant
+                    .EvalBodyPoseInWorld(plant_ctx,
+                                         sim_plant.get_body(tip_bodies[i]))
+                    .translation();
+            const Vector3d pdot = Jh * v_hand;
+            const Vector3d f_task =
+                FLAGS_osc_kp * (p_des_all.segment<3>(3 * i) - p_i) -
+                FLAGS_osc_kd * pdot + fn_des[i] * (R_WC * press_C[i]);
+            tau += Jh.transpose() * f_task;
+          }
+          tau_hand = tau + s_u * c3->GetInputSolution()[0];
+        } else {
+          tau_hand =
+              osc_torque(fn_des, p_des_all) + s_u * c3->GetInputSolution()[0];
+        }
       } else if (FLAGS_realize_forces) {
         // Pin released — realization layer (grasp_theory_critique.html §5c).
         // C3 is the PLANNER here; its raw input solution is not applied. In
