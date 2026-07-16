@@ -212,8 +212,8 @@ DEFINE_bool(plan_debug, false,
             "(3) COMPLEMENTARITY RESIDUAL — per knot, feasibility of "
             "λ≥0 / η≥0 and the gap max|λ⊙η| (should be ~0 for a clean LCP "
             "solution; large values mean a poorly-resolved contact mode).");
-DEFINE_double(task_kp, 100.0, "Task-space position gain (fingertips).");
-DEFINE_double(task_kd, 20.0, "Task-space damping gain (fingertips).");
+DEFINE_double(task_kp, 70.0, "Task-space position gain (fingertips).");
+DEFINE_double(task_kd, 0.0, "Task-space damping gain (fingertips).");
 DEFINE_double(force_floor, 0.0,
               "Lower bound (N) on each fingertip's commanded normal force: "
               "f_des = max(C3 λ_proj, floor). Thumb floor = 2×. 0 = realize "
@@ -427,6 +427,7 @@ int DoMain(int argc, char* argv[]) {
   // lcmt_c3_state — not C3-specific in meaning here, just a convenient
   // named-float-vector-over-LCM message that already exists.
   systems::C3StateSender* state_sender = nullptr;
+  systems::C3StateSender* tau_sender = nullptr;
   drake::lcm::DrakeLcm drake_lcm;
   if (FLAGS_lcm_publish) {
     // Layout matches this file's own state-vector convention (see the
@@ -456,6 +457,36 @@ int DoMain(int argc, char* argv[]) {
             "GRASP_STATE", lcm_iface, 1.0 / FLAGS_lcm_publish_hz));
     sim_builder.Connect(state_sender->get_output_port_target_c3_state(),
                         state_pub->get_input_port());
+
+    // Second channel, reusing state_sender's otherwise-unused
+    // final_target_state input/output pair: q_contact (the IK-solved hand
+    // config the reach phase holds each finger at), same state_names/size
+    // convention as GRASP_STATE, so plotting tools can overlay actual vs.
+    // target by name. Set ONCE after q_contact is computed below (see
+    // q_contact_input) — it's a static target, not a per-step signal.
+    auto* q_contact_pub = sim_builder.AddSystem(
+        LcmPublisherSystem::Make<dairlib::lcmt_c3_state>(
+            "GRASP_Q_CONTACT", lcm_iface, 1.0 / FLAGS_lcm_publish_hz));
+    sim_builder.Connect(state_sender->get_output_port_final_target_c3_state(),
+                        q_contact_pub->get_input_port());
+
+    // Third channel: applied hand torque (tau_hand), one entry per hand
+    // joint — a separate, smaller sender (no cube slots needed). Updated
+    // every control step below (see tau_input), same as state_input.
+    std::vector<std::string> tau_names;
+    for (int i = 0; i < sim_plant.num_positions(sim_allegro); ++i)
+      tau_names.push_back("tau" + std::to_string(i));
+    tau_sender = sim_builder.AddSystem<systems::C3StateSender>(
+        sim_plant.num_positions(sim_allegro), tau_names);
+    // C3StateSender's constructor hardcodes set_name("c3_state_sender") —
+    // override it so this second instance doesn't collide with
+    // state_sender's name (Drake requires unique subsystem names).
+    tau_sender->set_name("tau_sender");
+    auto* tau_pub = sim_builder.AddSystem(
+        LcmPublisherSystem::Make<dairlib::lcmt_c3_state>(
+            "GRASP_TAU", lcm_iface, 1.0 / FLAGS_lcm_publish_hz));
+    sim_builder.Connect(tau_sender->get_output_port_target_c3_state(),
+                        tau_pub->get_input_port());
   }
 
   auto sim_diagram = sim_builder.Build();
@@ -469,12 +500,31 @@ int DoMain(int argc, char* argv[]) {
   // the main loop below (see "LCM telemetry" comment there). Null when
   // --lcm_publish=false.
   drake::systems::FixedInputPortValue* state_input = nullptr;
+  // q_contact_input: set ONCE below, right after q_contact is computed (a
+  // static IK-solved target, not a per-step signal) — see the "LIVE LCM
+  // state telemetry" wiring above for what channel this feeds.
+  drake::systems::FixedInputPortValue* q_contact_input = nullptr;
   if (state_sender != nullptr) {
     auto& state_sender_ctx =
         sim_diagram->GetMutableSubsystemContext(*state_sender, &sim_ctx);
+    const int n_x_full =
+        sim_plant.num_positions() + sim_plant.num_velocities();
     state_input = &state_sender->get_input_port_target_state().FixValue(
-        &state_sender_ctx, VectorXd::Zero(sim_plant.num_positions() +
-                                          sim_plant.num_velocities()));
+        &state_sender_ctx, VectorXd::Zero(n_x_full));
+    q_contact_input =
+        &state_sender->get_input_port_final_target_state().FixValue(
+            &state_sender_ctx, VectorXd::Zero(n_x_full));
+  }
+
+  // tau_input: updated every control step in the main loop (see "LCM
+  // telemetry" comment there) with whatever torque is actually being
+  // applied that tick, in both phases.
+  drake::systems::FixedInputPortValue* tau_input = nullptr;
+  if (tau_sender != nullptr) {
+    auto& tau_sender_ctx =
+        sim_diagram->GetMutableSubsystemContext(*tau_sender, &sim_ctx);
+    tau_input = &tau_sender->get_input_port_target_state().FixValue(
+        &tau_sender_ctx, VectorXd::Zero(sim_plant.num_positions(sim_allegro)));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -594,6 +644,18 @@ int DoMain(int argc, char* argv[]) {
                        X_WC0 * Vector3d(b, -(h_cube - FLAGS_penetration_index_middle), 0),
                        X_WC0 * Vector3d(c_off, h_cube - FLAGS_penetration_thumb, 0);
   const VectorXd q_contact = solve_ik("contact", q_contact_targets);
+
+  // Publish q_contact once on GRASP_Q_CONTACT (see the LCM wiring above) —
+  // it's a static IK target, doesn't change after this point. Only the
+  // hand_q* entries are meaningful; the rest of the n_x_full-sized vector
+  // is left zero.
+  if (q_contact_input != nullptr) {
+    VectorXd q_contact_full =
+        VectorXd::Zero(sim_plant.num_positions() + sim_plant.num_velocities());
+    q_contact_full.head(q_contact.size()) = q_contact;
+    q_contact_input->GetMutableVectorData<double>()->SetFromVector(
+        q_contact_full);
+  }
 
   // Seed the pregrasp IK from q_contact so the solver finds the same
   // approach direction rather than a wrapped-around local minimum.
@@ -1434,6 +1496,13 @@ int DoMain(int argc, char* argv[]) {
     if (phase == kC3) {
       tau_hand = tau_hand.cwiseMin(FLAGS_tau_max).cwiseMax(-FLAGS_tau_max);
     }
+
+    // LCM telemetry: the actually-applied torque (post-clamp), every
+    // control step, both phases — see GRASP_TAU wiring above.
+    if (tau_input != nullptr) {
+      tau_input->GetMutableVectorData<double>()->SetFromVector(tau_hand);
+    }
+
     act_fixed.GetMutableVectorData<double>()->SetFromVector(tau_hand);
 
     simulator.AdvanceTo(t);

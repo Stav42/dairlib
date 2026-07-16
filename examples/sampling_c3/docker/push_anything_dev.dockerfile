@@ -4,7 +4,21 @@ FROM ubuntu:noble
 ARG DRAKE_VERSION=1.51.1
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
+# Some networks block plain HTTP (port 80) to Ubuntu's mirrors while HTTPS
+# (443) works fine — force apt to use https:// for all repositories, both
+# the legacy sources.list format and noble's new deb822 *.sources format.
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do \
+        [ -f "$f" ] && sed -i 's|http://|https://|g' "$f"; \
+    done; true
+
+# Bootstrap chicken-and-egg: this base image has no CA trust store yet, so
+# apt can't verify the https:// mirror's certificate (the cert itself is
+# fine — there's just nothing here to check it against, since
+# ca-certificates is one of the packages we're about to install). Disable
+# verification for JUST this one call; once ca-certificates lands, every
+# later RUN apt-get in this Dockerfile verifies normally.
+RUN apt-get -o Acquire::https::Verify-Peer=false update && \
+    apt-get -o Acquire::https::Verify-Peer=false install -y \
     wget lsb-release pkg-config zip g++ zlib1g-dev unzip ca-certificates gnupg git \
     libopenblas-dev openjdk-17-jdk \
     iproute2 gosu \
