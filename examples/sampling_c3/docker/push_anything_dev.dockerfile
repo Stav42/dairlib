@@ -7,6 +7,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     wget lsb-release pkg-config zip g++ zlib1g-dev unzip ca-certificates gnupg git \
     libopenblas-dev openjdk-17-jdk \
+    iproute2 gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -q https://github.com/RobotLocomotion/drake/archive/v${DRAKE_VERSION}.tar.gz \
@@ -40,5 +41,15 @@ RUN pip3 install --break-system-packages \
 # install_prereqs creates ubuntu (uid 1000)
 RUN usermod -l pushanything -d /home/pushanything -m ubuntu
 
-USER pushanything
 WORKDIR /home/pushanything
+
+# No `USER pushanything` here (deliberately) — the container must start as
+# root so entrypoint.sh can do privileged network setup (enable loopback
+# multicast, required by LCM) before dropping to the unprivileged user
+# itself via gosu. Requires `docker run --cap-add=NET_ADMIN`; without it,
+# entrypoint.sh logs a warning and continues (you get a working shell, LCM
+# just won't work until you add the flag and recreate the container).
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

@@ -92,11 +92,19 @@ inline Eigen::Vector4d GetGraspMagnitudes(
 
 // Solves IK to place the three fingertips at the given world-frame contact
 // positions. grasp_positions is a 9-vector [p_index, p_middle, p_thumb].
-// Returns the full plant position vector q (Allegro + cube DOF).
+// tip_frame_offset is the point (expressed in each "*_tip" frame) that is
+// actually constrained to the target — NOT necessarily the frame origin.
+// The "*_tip" frames' origins do not coincide with the true fingertip
+// collision surface (confirmed empirically via the /tip_frame/* Meshcat
+// triads: the surface sits ~0.0115 m along the frame's own local +Z from
+// the origin), so callers that want the SURFACE at a given world point
+// should pass tip_frame_offset = Vector3d(0, 0, 0.0115), not the default
+// origin. Returns the full plant position vector q (Allegro + cube DOF).
 inline Eigen::VectorXd SolveGraspIK(
     const drake::multibody::MultibodyPlant<double>& plant,
     drake::systems::Context<double>* plant_context,
-    const Eigen::VectorXd& grasp_positions) {
+    const Eigen::VectorXd& grasp_positions,
+    const Eigen::Vector3d& tip_frame_offset = Eigen::Vector3d::Zero()) {
   const Eigen::Vector3d p_index  = grasp_positions.segment<3>(0);
   const Eigen::Vector3d p_middle = grasp_positions.segment<3>(3);
   const Eigen::Vector3d p_thumb  = grasp_positions.segment<3>(6);
@@ -105,15 +113,15 @@ inline Eigen::VectorXd SolveGraspIK(
   drake::multibody::InverseKinematics ik(plant, plant_context);
 
   ik.AddPositionConstraint(
-      plant.GetFrameByName("link_3_tip"), Eigen::Vector3d::Zero(),
+      plant.GetFrameByName("link_3_tip"), tip_frame_offset,
       plant.world_frame(), p_index - tol, p_index + tol);
 
   ik.AddPositionConstraint(
-      plant.GetFrameByName("link_7_tip"), Eigen::Vector3d::Zero(),
+      plant.GetFrameByName("link_7_tip"), tip_frame_offset,
       plant.world_frame(), p_middle - tol, p_middle + tol);
 
   ik.AddPositionConstraint(
-      plant.GetFrameByName("link_15_tip"), Eigen::Vector3d::Zero(),
+      plant.GetFrameByName("link_15_tip"), tip_frame_offset,
       plant.world_frame(), p_thumb - tol, p_thumb + tol);
 
   ik.get_mutable_prog()->SetInitialGuess(ik.q(), plant.GetPositions(*plant_context));

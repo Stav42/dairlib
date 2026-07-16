@@ -7,7 +7,7 @@
 //   Handoff: when all three fingers report contact, the LCS is linearized at
 //            the contact configuration, and the cube pin is held briefly
 //            (0.5 s) before release. The grasping fingers are PD-held at
-//            q_contact (5 mm inside the faces) so they keep a real preload.
+//            q_contact (3 mm inside the faces) so they keep a real preload.
 //
 //   Phase 2 (kC3): C3/ADMM computes joint torques every control step. The Q
 //                  cost anchors the cube at its world-frame reference; gravity
@@ -24,9 +24,11 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <gflags/gflags.h>
@@ -38,18 +40,21 @@
 #include <drake/geometry/rgba.h>
 #include <drake/geometry/scene_graph.h>
 #include <drake/geometry/shape_specification.h>
+#include <drake/lcm/drake_lcm.h>
 #include <drake/math/rigid_transform.h>
 #include <drake/math/rotation_matrix.h>
 #include <drake/multibody/meshcat/contact_visualizer.h>
 #include <drake/multibody/parsing/parser.h>
 #include <drake/multibody/plant/contact_results.h>
 #include <drake/multibody/plant/multibody_plant.h>
-#include <drake/solvers/mathematical_program.h>
 #include <drake/solvers/osqp_solver.h>
 #include <drake/solvers/solver_options.h>
 #include <drake/systems/analysis/simulator.h>
 #include <drake/systems/framework/diagram_builder.h>
+#include <drake/systems/framework/fixed_input_port_value.h>
 #include <drake/systems/framework/system.h>
+#include <drake/systems/lcm/lcm_interface_system.h>
+#include <drake/systems/lcm/lcm_publisher_system.h>
 
 #include "c3/core/c3.h"
 #include "c3/core/c3_options.h"
@@ -62,6 +67,7 @@
 #include "common/find_resource.h"
 #include "cube_kinematics.h"
 #include "meshcat_utils.h"
+#include "systems/senders/c3_state_sender.h"
 
 namespace dairlib {
 
@@ -84,6 +90,8 @@ using drake::solvers::SolverOptions;
 using drake::systems::DiagramBuilder;
 using drake::systems::Simulator;
 using drake::systems::System;
+using drake::systems::lcm::LcmInterfaceSystem;
+using drake::systems::lcm::LcmPublisherSystem;
 using drake::trajectories::PiecewisePolynomial;
 using Eigen::MatrixXd;
 using Eigen::Vector3d;
@@ -98,14 +106,48 @@ using c3::multibody::GetContactModelMap;
 using c3::multibody::LCSFactory;
 
 // ── Reach-phase flags ────────────────────────────────────────────────────────
-DEFINE_double(kp, 10.0, "PD proportional gain (Nm/rad) for the reach phase.");
-DEFINE_double(kd, 1.5,
+DEFINE_double(kp, 200.0, "PD proportional gain (Nm/rad) for the reach phase.");
+DEFINE_double(kd, 10.0,
               "PD derivative gain (Nm·s/rad) for the reach phase.");
-DEFINE_double(tau_max, 100.0,
+DEFINE_double(tau_max, 1000.0,
               "Per-joint torque box bound (Nm). Applied as INPUT constraints "
               "inside the C3 QP to keep it bounded (prevents DualInfeasible).");
 DEFINE_double(contact_force_thresh, 0.02,
               "Per-finger contact force threshold to count as touching (N).");
+DEFINE_double(penetration_index_middle, -0.0035,
+              "q_contact target: how far the TRUE fingertip surface (see "
+              "--tip_surface_offset_z) sits inside the -Y cube face for the "
+              "index and middle fingers (m).");
+DEFINE_double(penetration_thumb, -0.008,
+              "q_contact target: how far the TRUE fingertip surface sits "
+              "inside the +Y cube face for the thumb (m). 0 = flush with "
+              "the nominal face, no penetration.");
+DEFINE_double(tip_surface_offset_z, 0.0115,
+              "Offset (m) along each *_tip body frame's own local +Z from "
+              "the frame ORIGIN to the true fingertip collision SURFACE — "
+              "confirmed empirically via the /tip_frame/* Meshcat triads "
+              "(--tip_frame_viz_offset_z sweep). Used for TWO things: (1) "
+              "the /tip_frame/* triad visualization offset, and (2) as the "
+              "tip_frame_offset passed to SolveGraspIK when solving "
+              "q_contact/q_pregrasp, so the IK constrains the real surface "
+              "point (not the frame origin) to sit at the intended margin "
+              "from the cube face.");
+DEFINE_bool(contact_force_log, false,
+            "Print the sim plant's resolved contact force (ContactResults, "
+            "one PointPairContactInfo per colliding geometry pair), "
+            "throttled to --contact_force_log_hz and only when all 3 "
+            "fingertip-cube pairs are simultaneously in contact. Suppresses "
+            "the C3 PLAN / --plan_debug SOLVER DIAG tables, the relin "
+            "|A|/|B|/|D|/|v_hand| line, and the tau(unclamped) saturation "
+            "line while active, so this is the ONLY per-step output.");
+DEFINE_double(contact_force_log_hz, 10.0,
+              "Print rate (Hz) for --contact_force_log.");
+DEFINE_bool(lcm_publish, true,
+            "Publish live LCM state telemetry (full sim plant [q;v], "
+            "channel GRASP_STATE, message dairlib::lcmt_c3_state) for "
+            "real-time plotting via signal-scope.");
+DEFINE_double(lcm_publish_hz, 100.0,
+              "Publish rate (Hz) for --lcm_publish.");
 DEFINE_bool(isolate_cube, true,
             "Filter the cube so ONLY the three fingertips can collide with it "
             "(model/physics consistency for C3). WARNING: the reach phase relies "
@@ -115,7 +157,15 @@ DEFINE_double(contact_enable_t, 1.0,
               "Ignore contact before this time (s). Guards against false "
               "triggers when the pre-grasp pose is near the cube at t=0.");
 DEFINE_double(t_contact, 5.0,
-              "Spline end time: seconds to reach the contact pose.");
+               "Spline end time: seconds to reach the contact pose.");
+DEFINE_double(handoff_settle_time, 0.15,
+              "Seconds to wait after the LAST finger's arrived[] latches "
+              "before triggering the C3 handoff. Both the LCS gap φ and the "
+              "instantaneous contact-force detector proved too noisy at the "
+              "1ms scale to gate on directly (φ swings tens of mm on a "
+              "static finger; contact force flickers across its threshold "
+              "near quasi-static equilibrium) — a fixed dwell time lets the "
+              "PD hold settle into a stable preload instead.");
 
 // ── C3-squeeze-phase flags ───────────────────────────────────────────────────
 DEFINE_double(k_hold, 10.0,
@@ -130,10 +180,10 @@ DEFINE_double(w_vel, 0.1,
 DEFINE_double(w_R, 0.01, "R cost weight on joint torques.");
 DEFINE_double(w_G, 1.0, "ADMM augmented-Lagrangian G weight.");
 DEFINE_double(w_U, 1.0, "ADMM augmented-Lagrangian U weight.");
-DEFINE_double(w_lambda, 100.0,
+DEFINE_double(w_lambda, 0.0,
               "Force-reference cost on the three normal contact forces "
               "λ_n[3,4,5]. Regularises the squeeze nullspace (§11.5) and gives "
-              "the solve a physical grip target. Set 0 to disable.");
+              "the solve a physical grip target. 0 = disabled (default).");
 DEFINE_double(alpha_m, 1.0,
               "Per-finger normal grip-force target (N) for the λ_n reference. "
               "Thumb target = 2·alpha_m (force closure vs index+middle).");
@@ -143,73 +193,35 @@ DEFINE_double(cube_bob_amp, 0.0,
               "a nonzero tracking error to chase (movement-vs-holding test).");
 DEFINE_double(cube_bob_period, 3.0,
               "Period (s) of the cube z-reference sine.");
-DEFINE_bool(realize_forces, true,
-            "Realize C3's plan with a low-level layer: τ = gravity comp + PD "
-            "tracking C3's planned next state + Jᵀ·(C3's planned contact "
-            "forces). This is the franka-pipeline architecture (C3 plans, a "
-            "low-level controller executes). false = legacy: apply C3's raw "
-            "input solution s_u·u[0] directly (known to output ~0 torque: in "
-            "the ADMM QP λ is free, so the cube cost is absorbed by λ and "
-            "torque is never 'needed').");
-DEFINE_double(grip_scale, 1.0,
-              "Multiplier on the Jᵀλ grip torque. Diagnostic knob: if the LCS "
-              "λ turns out to be impulse-scaled (dt·F) rather than force, "
-              "compensate here (e.g. 25 for dt=0.04) without a rebuild.");
-DEFINE_double(kp_track, 30.0,
-              "PD gain for tracking C3's planned next state in the "
-              "realization layer. Deliberately softer than the reach kp: the "
-              "plan comes from an ill-conditioned LCS (|A|~600) and can jump; "
-              "stiff tracking of a wild plan saturated the torque (321 Nm) "
-              "and destroyed the grasp.");
-DEFINE_double(kd_track, 2.0,
-              "PD derivative gain for plan tracking in the realization layer.");
-DEFINE_double(plan_dev_max, 0.1,
-              "Clamp on the per-joint position deviation (rad) between C3's "
-              "planned next state and the current state before the tracking "
-              "PD sees it. Bounds the damage from a garbage plan step.");
-DEFINE_double(plan_vel_dev_max, 2.0,
-              "Clamp on the per-joint velocity deviation (rad/s) for plan "
-              "tracking, same purpose as plan_dev_max.");
-
-// ── OSC (inverse-dynamics QP) realization layer ──────────────────────────────
-// The franka pipeline splits control: C3 PLANS (low rate), an Operational-Space
-// Controller EXECUTES (high rate) by solving a whole-body inverse-dynamics QP
-// that tracks task positions AND contact forces subject to friction cones and
-// torque limits. This is the same idea over the 16-DOF Allegro hand: 3 fingertip
-// position objectives + 3 fingertip force objectives (targets = C3's planned λ).
-DEFINE_bool(use_osc, true,
-            "Realize C3's plan with an inverse-dynamics QP (OSC) instead of the "
-            "hand-rolled Jᵀλ layer. Tracks fingertip positions + C3's planned "
-            "contact forces under friction-cone and torque constraints.");
-DEFINE_bool(use_jtf, false,
-            "Replace the OSC QP with classic task-space PD + Jacobian-transpose "
-            "grip (no QP): τ = τ_g + Σ Jᵢᵀ[Kp(p_des−p) − Kd·ṗ + fₙ·n̂]. Same "
-            "position/force goals and gains (osc_kp/osc_kd, force_floor, "
-            "fk_target) as the OSC, but NO friction cone / torque box / mass "
-            "matrix — a lightweight 'poor man's OSC' for comparison. Requires "
-            "--use_osc (this path lives inside that branch).");
-DEFINE_bool(plan_debug, true,
-            "Print C3 plan-quality diagnostics each solve. Factor 1: planned "
-            "cube-z trajectory + per-knot state-tracking cost (does C3 THINK it "
-            "can hold?). Factor 2a: ADMM consensus residual ‖z−δ‖ per knot (is "
-            "the plan physically feasible?). Factor 2b: one-step tracking error "
-            "(did we ACHIEVE last solve's predicted next state?).");
-DEFINE_double(osc_w_pos, 100.0,
-              "OSC weight on fingertip position (task-accel) tracking.");
-DEFINE_double(osc_w_force, 1.0,
-              "OSC weight on fingertip contact-force tracking.");
-DEFINE_double(osc_kp, 100.0, "OSC task-space position gain (fingertips).");
-DEFINE_double(osc_kd, 20.0, "OSC task-space damping gain (fingertips).");
-DEFINE_double(osc_w_reg, 1e-4, "OSC regularization on joint accelerations.");
-DEFINE_double(osc_w_reg_tau, 1e-4, "OSC regularization on joint torques.");
+// ── Low-level realization layer ──────────────────────────────────────────────
+// C3 PLANS (low rate); a task-space PD + Jacobian-transpose grip EXECUTES (high
+// rate, every control tick): τ = τ_g + Σ Jᵢᵀ[Kp(p_des−p) − Kd·ṗ + fₙ·n̂], with
+// C3's raw input solution added as feedforward. p_des is a fingertip position
+// target (fixed grasp points, or C3's planned config — see --fk_target); fₙ is
+// the desired per-fingertip normal force (C3's projected λ, optionally floored
+// — see --force_floor).
+DEFINE_bool(plan_debug, false,
+            "Replace the per-solve C3 PLAN printout (contact gap / normal "
+            "force / cube-z tables) with solver-quality diagnostics: "
+            "(1) LINEARIZATION ACCURACY — the previous solve's knot-ahead "
+            "state prediction vs. the actual measured state now (is the LCS "
+            "a good model of reality?). (2) DYNAMICS RESIDUAL — per knot, "
+            "‖x_{k+1} − (A x_k + B u_k + D λ_k + d)‖ for the SOLVED "
+            "trajectory (should be ~0; large values mean the ADMM/QP solve "
+            "didn't actually satisfy its own equality constraint). "
+            "(3) COMPLEMENTARITY RESIDUAL — per knot, feasibility of "
+            "λ≥0 / η≥0 and the gap max|λ⊙η| (should be ~0 for a clean LCP "
+            "solution; large values mean a poorly-resolved contact mode).");
+DEFINE_double(task_kp, 100.0, "Task-space position gain (fingertips).");
+DEFINE_double(task_kd, 20.0, "Task-space damping gain (fingertips).");
 DEFINE_double(force_floor, 0.0,
-              "Lower bound (N) on each fingertip's commanded normal force in "
-              "the OSC: f_des = max(C3 λ_proj, floor). Thumb floor = 2×. 0 = "
-              "realize C3's force as-is (which collapses to 0 at release). Set "
+              "Lower bound (N) on each fingertip's commanded normal force: "
+              "f_des = max(C3 λ_proj, floor). Thumb floor = 2×. 0 = realize "
+              "C3's force as-is (which collapses to 0 at release). Set "
               "≈alpha_m to keep the grip alive across the contact-gate hover "
-              "band — the force-floor idea, applied inside the OSC.");
+              "band — the force-floor idea.");
 DEFINE_bool(fk_target, false,
-            "OSC fingertip POSITION target source. DEFAULT false = fixed grasp "
+            "Fingertip POSITION target source. DEFAULT false = fixed grasp "
             "points on the upright reference cube X_WC0 (the geometric hold — "
             "the setup that holds the cube). true = forward-kinematics of C3's "
             "planned next hand config q1 (GetStateSolution()[1]): track where "
@@ -217,15 +229,6 @@ DEFINE_bool(fk_target, false,
             "passive (u≈0 ⇒ q1≈now), so 'true' targets ≈ the current fingertip "
             "positions and tends to let the cube sag — the honest test of "
             "executing C3's plan.");
-DEFINE_double(phi_offset, 0.003,
-              "Gap inflation ε (m): subtract ε from the signed-distance rows "
-              "of the LCS constant term c, so the model treats 'within ε of "
-              "the face' as touching. The physical gap hovers at φ≈0±1mm "
-              "(SAP equilibrium), and strict complementarity gates λ to 0 the "
-              "moment φ reads positive — an absorbing zero-grip equilibrium. "
-              "The offset keeps the contact active (λ>0 representable) inside "
-              "the ε margin, the standard contact-implicit relaxation. 0 = "
-              "off.");
 DEFINE_int32(N, 5, "C3 prediction horizon (knot points).");
 DEFINE_double(c3_dt, 0.04, "LCS timestep (s) for C3 linearization.");
 DEFINE_double(mu, 0.5, "Friction coefficient used in the LCS.");
@@ -254,7 +257,7 @@ DEFINE_int32(relin_period_steps, 40,
              "c3_period_steps so each fresh LCS feeds a solve.");
 DEFINE_double(osqp_eps, 1e-3,
               "OSQP convergence tolerance (eps_abs = eps_rel).");
-DEFINE_int32(admm_iter, 3,
+DEFINE_int32(admm_iter, 10,
              "ADMM iterations per C3 solve. 3 is very few: if C3 reports a "
              "grip force (λ_n≈target) but commands ~0 torque and the cube "
              "drops at pin release, it likely has not reconciled (u, λ). Try "
@@ -398,10 +401,62 @@ int DoMain(int argc, char* argv[]) {
   meshcat->SetCameraPose(Vector3d(0.7, 0.7, 0.8), Vector3d(0, 0, 0.55));
   AddFrameTriad(meshcat.get(), "/cube_frame", 0.005, 0.1);
 
+  // Live triads at the "*_tip" BODY FRAME ORIGIN that SolveGraspIK actually
+  // constrains (cube_kinematics.h) — i.e. exactly the point q_contact was
+  // solved to place 3mm inside the nominal cube face. Small scale (fingertip-
+  // sized) vs. the cube_frame triad above. If this frame visibly sits deeper
+  // than the fingertip's rendered geometry, that confirms the frame origin
+  // does not coincide with the true collision surface.
+  AddFrameTriad(meshcat.get(), "/tip_frame/index",  0.0015, 0.02);
+  AddFrameTriad(meshcat.get(), "/tip_frame/middle", 0.0015, 0.02);
+  AddFrameTriad(meshcat.get(), "/tip_frame/thumb",  0.0015, 0.02);
+
   const drake::geometry::Rgba kRed(1.0, 0.0, 0.0, 1.0);
   meshcat->SetObject("/grasp/index",  drake::geometry::Sphere(0.006), kRed);
   meshcat->SetObject("/grasp/middle", drake::geometry::Sphere(0.006), kRed);
   meshcat->SetObject("/grasp/thumb",  drake::geometry::Sphere(0.006), kRed);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Live LCM state telemetry for real-time plotting (signalscope). Publishes
+  // the full sim-plant state [q;v] (hand + cube) on channel GRASP_STATE as
+  // dairlib::lcmt_c3_state, at --lcm_publish_hz. Values are pushed into
+  // state_sender's input port every control step below (see state_input
+  // FixedInputPortValue); the periodic LcmPublisherSystem below picks up
+  // whatever is currently set whenever its own schedule fires during
+  // simulator.AdvanceTo(). Reuses dairlib's existing C3StateSender/
+  // lcmt_c3_state — not C3-specific in meaning here, just a convenient
+  // named-float-vector-over-LCM message that already exists.
+  systems::C3StateSender* state_sender = nullptr;
+  drake::lcm::DrakeLcm drake_lcm;
+  if (FLAGS_lcm_publish) {
+    // Layout matches this file's own state-vector convention (see the
+    // n_hand_q/n_pos/n_hand_v comments elsewhere): 16 hand joint positions,
+    // then cube [qw,qx,qy,qz,x,y,z], then 16 hand joint velocities, then
+    // cube [wx,wy,wz,vx,vy,vz].
+    std::vector<std::string> state_names;
+    for (int i = 0; i < sim_plant.num_positions(sim_allegro); ++i)
+      state_names.push_back("hand_q" + std::to_string(i));
+    state_names.insert(state_names.end(),
+                       {"cube_qw", "cube_qx", "cube_qy", "cube_qz", "cube_x",
+                        "cube_y", "cube_z"});
+    for (int i = 0; i < sim_plant.num_velocities(sim_allegro); ++i)
+      state_names.push_back("hand_v" + std::to_string(i));
+    state_names.insert(state_names.end(), {"cube_wx", "cube_wy", "cube_wz",
+                                           "cube_vx", "cube_vy", "cube_vz"});
+
+    const int n_x_full = sim_plant.num_positions() + sim_plant.num_velocities();
+    DRAKE_DEMAND(static_cast<int>(state_names.size()) == n_x_full);
+
+    auto* lcm_iface =
+        sim_builder.AddSystem<LcmInterfaceSystem>(&drake_lcm);
+    state_sender = sim_builder.AddSystem<systems::C3StateSender>(
+        n_x_full, state_names);
+    auto* state_pub = sim_builder.AddSystem(
+        LcmPublisherSystem::Make<dairlib::lcmt_c3_state>(
+            "GRASP_STATE", lcm_iface, 1.0 / FLAGS_lcm_publish_hz));
+    sim_builder.Connect(state_sender->get_output_port_target_c3_state(),
+                        state_pub->get_input_port());
+  }
 
   auto sim_diagram = sim_builder.Build();
   Simulator<double> simulator(*sim_diagram);
@@ -409,6 +464,18 @@ int DoMain(int argc, char* argv[]) {
   auto& sim_ctx = simulator.get_mutable_context();
   auto& plant_ctx =
       sim_diagram->GetMutableSubsystemContext(sim_plant, &sim_ctx);
+
+  // Mutable handle to state_sender's input, updated every control step in
+  // the main loop below (see "LCM telemetry" comment there). Null when
+  // --lcm_publish=false.
+  drake::systems::FixedInputPortValue* state_input = nullptr;
+  if (state_sender != nullptr) {
+    auto& state_sender_ctx =
+        sim_diagram->GetMutableSubsystemContext(*state_sender, &sim_ctx);
+    state_input = &state_sender->get_input_port_target_state().FixValue(
+        &state_sender_ctx, VectorXd::Zero(sim_plant.num_positions() +
+                                          sim_plant.num_velocities()));
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // 2. LCS plant — continuous (time_step=0), no visualizer.
@@ -463,7 +530,7 @@ int DoMain(int argc, char* argv[]) {
       SortedPair<GeometryId>(lcs_thumb_geom,  lcs_cube_geom)};
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 4. IK: q_contact (fingertips 5 mm inside faces) and q_pregrasp (1 cm
+  // 4. IK: q_contact (fingertips 3 mm inside faces) and q_pregrasp (1 cm
   //    outside). Both solved on the sim plant context. The sim starts at
   //    q_pregrasp so the entire reach is a small, well-conditioned motion.
   // ══════════════════════════════════════════════════════════════════════════
@@ -484,27 +551,49 @@ int DoMain(int argc, char* argv[]) {
 
   const int n_hand = sim_plant.num_positions(sim_allegro);
 
+  // Point (expressed in each "*_tip" frame) actually constrained by IK — the
+  // frame ORIGIN does not coincide with the true fingertip collision
+  // surface, which sits --tip_surface_offset_z along the frame's own local
+  // +Z (confirmed empirically via the /tip_frame/* Meshcat triads). Passing
+  // this to SolveGraspIK makes the IK target the real surface point instead
+  // of the origin, so "3 mm inside the face" means the fingertip SURFACE is
+  // 3 mm inside, not the frame origin (which was the punch-through bug).
+  const Vector3d tip_surface_pt(0, 0, FLAGS_tip_surface_offset_z);
+
   auto solve_ik = [&](const char* label, const VectorXd& targets) {
     SetThumbSeed(sim_plant, sim_allegro, &plant_ctx);
     sim_plant.SetPositions(&plant_ctx, sim_cube, q_cube0);
     sim_plant.SetPositions(
-        &plant_ctx, SolveGraspIK(sim_plant, &plant_ctx, targets));
+        &plant_ctx, SolveGraspIK(sim_plant, &plant_ctx, targets,
+                                 tip_surface_pt));
     const VectorXd q = sim_plant.GetPositions(plant_ctx, sim_allegro);
     double err = 0;
     for (int i = 0; i < 3; ++i) {
+      // FK of the constrained SURFACE point (frame origin transformed by
+      // tip_surface_pt), not the raw frame-origin translation, so this
+      // error check matches what SolveGraspIK actually solved for.
       const Vector3d p =
           sim_plant
               .EvalBodyPoseInWorld(plant_ctx,
-                                   sim_plant.get_body(tip_bodies[i]))
-              .translation();
+                                   sim_plant.get_body(tip_bodies[i])) *
+          tip_surface_pt;
       err += (p - targets.template segment<3>(3 * i)).norm();
     }
     std::cout << "IK " << label << " total FK error = " << err << " m\n";
     return q;
   };
 
-  const VectorXd q_contact = solve_ik(
-      "contact", GetGraspPositions(X_WC0, cube_size - 0.01, a, b, c_off));
+  // q_contact target: asymmetric penetration, per finger — index/middle
+  // --penetration_index_middle inside the -Y face, thumb
+  // --penetration_thumb inside the +Y face. GetGraspPositions only takes a
+  // single shared margin (same inset on both faces), so build the 9-vector
+  // target directly here, mirroring its internal formula.
+  const double h_cube = cube_size / 2.0;
+  VectorXd q_contact_targets(9);
+  q_contact_targets << X_WC0 * Vector3d(a, -(h_cube - FLAGS_penetration_index_middle), 0),
+                       X_WC0 * Vector3d(b, -(h_cube - FLAGS_penetration_index_middle), 0),
+                       X_WC0 * Vector3d(c_off, h_cube - FLAGS_penetration_thumb, 0);
+  const VectorXd q_contact = solve_ik("contact", q_contact_targets);
 
   // Seed the pregrasp IK from q_contact so the solver finds the same
   // approach direction rather than a wrapped-around local minimum.
@@ -535,6 +624,23 @@ int DoMain(int argc, char* argv[]) {
     meshcat->SetTransform("/grasp/thumb",
                           RigidTransform<double>(Vector3d(gp.segment<3>(6))));
     meshcat->SetTransform("/cube_frame", X_WC);
+
+    // Live "*_tip" body-frame-origin triads, offset by --tip_frame_viz_offset_z
+    // along the frame's OWN local Z (i.e. X_WF * Translation(0,0,offset), not
+    // a world-frame offset) — a visualization-only probe for where the
+    // fingertip's true collision surface sits relative to the frame origin
+    // that SolveGraspIK actually constrains. Does not affect q_contact/
+    // q_pregrasp or anything physical, purely a Meshcat marker offset.
+    const std::array<const char*, 3> tip_paths{
+        "/tip_frame/index", "/tip_frame/middle", "/tip_frame/thumb"};
+    const RigidTransform<double> X_offset(
+        Vector3d(0, 0, FLAGS_tip_surface_offset_z));
+    for (int i = 0; i < 3; ++i)
+      meshcat->SetTransform(
+          tip_paths[i],
+          sim_plant.EvalBodyPoseInWorld(
+              plant_ctx, sim_plant.get_body(tip_bodies[i])) *
+              X_offset);
   };
 
   auto preview = [&](const char* label) {
@@ -619,9 +725,9 @@ int DoMain(int argc, char* argv[]) {
   Phase phase = kReach;
   bool cube_pinned = true;
   const double control_dt = 0.001;
-  double next_print = 0.25;
 
   std::array<bool, 3>    arrived{false, false, false};
+  std::array<double, 3>  arrived_time{-1.0, -1.0, -1.0};  // set when arrived[i] latches
   const std::array<int, 3> finger_start{0, 4, 12};  // index, middle, thumb
 
   // C3 objects allocated at handoff.
@@ -635,143 +741,6 @@ int DoMain(int argc, char* argv[]) {
   const double cube_z0 = X_WC0.translation().z();
   double last_zref = cube_z0;  // most recent commanded cube-z target (logging)
 
-  // Gap inflation (see --phi_offset): shift the signed-distance rows of c so
-  // the model sees φ−ε. Row layout is model-specific (lcs_factory.cc):
-  //   stewart_and_trinkle: φ enters c UNSCALED in the λ_n block [nc, 2nc)
-  //   anitescu:            φ enters every cone row scaled by 1/dt
-  // Applied AFTER the gap diagnostics are read, so the printed φ stays the
-  // physical (un-inflated) value.
-  auto inflate_gaps = [&](LCS* lcs) {
-    if (FLAGS_phi_offset <= 0.0) return;
-    std::vector<VectorXd> c_off = lcs->c();
-    for (auto& ck : c_off) {
-      if (FLAGS_contact_model == "stewart_and_trinkle") {
-        ck.segment(n_contacts, n_contacts).array() -= FLAGS_phi_offset;
-      } else {  // anitescu: all rows are cone rows
-        ck.array() -= FLAGS_phi_offset / FLAGS_c3_dt;
-      }
-    }
-    lcs->set_c(c_off);
-  };
-
-  // ── OSC: inverse-dynamics QP over the 16-DOF hand ──────────────────────────
-  // Decision vars: joint accel v̇ (16), joint torque τ (16), fingertip contact
-  // forces f (3×3, world frame). Minimize fingertip position-tracking + force-
-  // tracking + regularization, subject to the hand equations of motion, a
-  // friction pyramid per contact, and the torque box. Returns the 16 joint
-  // torques. fn_des = the per-fingertip desired NORMAL force (from C3's plan,
-  // optionally floored). This is the "executor" layer; C3 is the "planner".
-  const double kInf = std::numeric_limits<double>::infinity();
-  auto osc_torque = [&](const std::array<double, 3>& fn_des,
-                        const VectorXd& p_des_all) -> VectorXd {
-    const int nv = lcs_plant.num_velocities();  // 22 (== sim_plant)
-    const int nvh = n_hand_v;                   // 16
-
-    MatrixXd M(nv, nv);
-    sim_plant.CalcMassMatrix(plant_ctx, &M);
-    VectorXd Cv(nv);
-    sim_plant.CalcBiasTerm(plant_ctx, &Cv);
-    const VectorXd tau_g = sim_plant.CalcGravityGeneralizedForces(plant_ctx);
-    const VectorXd v_hand = sim_plant.GetVelocities(plant_ctx, sim_allegro);
-
-    // Hand block: the hand (welded base) and the free cube share no bodies, so
-    // the mass matrix is block-diagonal and the hand occupies velocity indices
-    // [0, nvh) (state-layout comment, §7).
-    const MatrixXd Mh = M.topLeftCorner(nvh, nvh);
-    const VectorXd Ch = Cv.head(nvh);
-    const VectorXd tgh = tau_g.head(nvh);
-
-    // Force press directions use the CURRENT cube rotation (physically the
-    // finger presses the real, possibly-tilted face). The fingertip POSITION
-    // targets p_des_all (3 world points) are chosen by the caller: either the
-    // fixed grasp points on the upright reference cube (geometric hold), or the
-    // forward-kinematics of C3's planned next hand config (--fk_target).
-    const RotationMatrix<double> R_WC =
-        CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube))
-            .rotation();
-    const std::array<Vector3d, 3> press_C{Vector3d(0, 1, 0), Vector3d(0, 1, 0),
-                                          Vector3d(0, -1, 0)};
-
-    drake::solvers::MathematicalProgram prog;
-    auto vd = prog.NewContinuousVariables(nvh, "vd");
-    auto tau = prog.NewContinuousVariables(nvh, "tau");
-    auto f = prog.NewContinuousVariables(9, "f");
-
-    // Equations of motion. f is the force the robot exerts ON the cube (inward,
-    // along n̂ᵢ). The reaction ON the robot is −f, contributing −Jhᵀf, so:
-    //   M·v̇ + C = τ_g + τ − Jhᵀf   ⇒   Mh·v̇ − τ + Σ Jhᵢᵀ fᵢ = τ_g − C.
-    MatrixXd Aeq = MatrixXd::Zero(nvh, 2 * nvh + 9);
-    Aeq.leftCols(nvh) = Mh;
-    Aeq.middleCols(nvh, nvh) = -MatrixXd::Identity(nvh, nvh);
-    const VectorXd beq = tgh - Ch;
-
-    for (int i = 0; i < 3; ++i) {
-      MatrixXd J(3, nv);
-      sim_plant.CalcJacobianTranslationalVelocity(
-          plant_ctx, drake::multibody::JacobianWrtVariable::kV,
-          sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
-          sim_plant.world_frame(), sim_plant.world_frame(), &J);
-      const MatrixXd Jh = J.leftCols(nvh);
-      Aeq.middleCols(2 * nvh + 3 * i, 3) = Jh.transpose();  // +Jhᵀ (see above)
-
-      // Fingertip position tracking → desired task acceleration a_des (pull the
-      // fingertip toward its grasp point on the upright reference cube).
-      const Vector3d p_i =
-          sim_plant
-              .EvalBodyPoseInWorld(plant_ctx, sim_plant.get_body(tip_bodies[i]))
-              .translation();
-      const Vector3d pdot = Jh * v_hand;
-      const Vector3d Jdotv = sim_plant.CalcBiasTranslationalAcceleration(
-          plant_ctx, drake::multibody::JacobianWrtVariable::kV,
-          sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
-          sim_plant.world_frame(), sim_plant.world_frame());
-      const Vector3d p_des = p_des_all.segment<3>(3 * i);
-      const Vector3d a_des =
-          FLAGS_osc_kp * (p_des - p_i) + FLAGS_osc_kd * (-pdot);
-      // ‖Jh·v̇ + J̇v − a_des‖²  (drive fingertip accel to a_des)
-      prog.Add2NormSquaredCost(std::sqrt(FLAGS_osc_w_pos) * Jh,
-                               std::sqrt(FLAGS_osc_w_pos) * (a_des - Jdotv), vd);
-
-      // Contact-force tracking: fᵢ → fn_des[i]·n̂ᵢ (inward normal, world frame).
-      const Vector3d n_i = R_WC * press_C[i];
-      const Vector3d f_des = fn_des[i] * n_i;
-      prog.Add2NormSquaredCost(std::sqrt(FLAGS_osc_w_force) *
-                                   Eigen::Matrix3d::Identity(),
-                               std::sqrt(FLAGS_osc_w_force) * f_des,
-                               f.segment(3 * i, 3));
-
-      // Friction pyramid: n̂ᵀf ≥ 0 and |tⱼᵀf| ≤ (μ/√2)·n̂ᵀf.
-      Vector3d t1 = n_i.cross(Vector3d::UnitX());
-      if (t1.norm() < 1e-6) t1 = n_i.cross(Vector3d::UnitY());
-      t1.normalize();
-      const Vector3d t2 = n_i.cross(t1).normalized();
-      const double mc = FLAGS_mu / std::sqrt(2.0);
-      auto fi = f.segment(3 * i, 3);
-      prog.AddLinearConstraint(n_i.transpose(), 0.0, kInf, fi);
-      prog.AddLinearConstraint((t1 - mc * n_i).transpose(), -kInf, 0.0, fi);
-      prog.AddLinearConstraint((-t1 - mc * n_i).transpose(), -kInf, 0.0, fi);
-      prog.AddLinearConstraint((t2 - mc * n_i).transpose(), -kInf, 0.0, fi);
-      prog.AddLinearConstraint((-t2 - mc * n_i).transpose(), -kInf, 0.0, fi);
-    }
-
-    drake::solvers::VectorXDecisionVariable z(2 * nvh + 9);
-    z << vd, tau, f;
-    prog.AddLinearEqualityConstraint(Aeq, beq, z);
-
-    prog.AddBoundingBoxConstraint(-FLAGS_tau_max, FLAGS_tau_max, tau);
-    prog.Add2NormSquaredCost(
-        std::sqrt(FLAGS_osc_w_reg) * MatrixXd::Identity(nvh, nvh),
-        VectorXd::Zero(nvh), vd);
-    prog.Add2NormSquaredCost(
-        std::sqrt(FLAGS_osc_w_reg_tau) * MatrixXd::Identity(nvh, nvh),
-        VectorXd::Zero(nvh), tau);
-
-    OsqpSolver osc_solver;
-    const auto result = osc_solver.Solve(prog);
-    if (!result.is_success()) return tgh;  // fall back to gravity comp
-    return result.GetSolution(tau);
-  };
-
   // Profiling + C3-cadence bookkeeping (kC3 phase only). c3_iter counts control
   // steps spent in kC3 and drives the decimation; the *_ms_* accumulators are
   // reported in the throttled diagnostics so you can see where the time goes.
@@ -779,23 +748,37 @@ int DoMain(int argc, char* argv[]) {
   long relin_calls = 0, solve_calls = 0;
   double relin_ms_sum = 0.0, relin_ms_max = 0.0;
   double solve_ms_sum = 0.0, solve_ms_max = 0.0;
-  VectorXd last_gaps;      // most recent Stewart-Trinkle contact gaps φ
-  bool have_gaps = false;
+
+  // Previous solve's full state plan + the sim time it was solved at, kept
+  // only for --plan_debug's linearization-accuracy check (compares that
+  // plan's knot-ahead prediction against the actual measured state now).
+  std::vector<VectorXd> xplan_prev;
+  double t_prev_solve = -1.0;
 
   // Scratch plant context for forward-kinematics of C3's planned hand config
   // (--fk_target). Standalone (not the live sim context) so setting it does not
   // disturb the simulation; FK needs no scene-graph query object.
   auto fk_ctx = sim_plant.CreateDefaultContext();
 
-  // Factor 2b: the previous solve's predicted next state (GetStateSolution[1]).
-  // Solves are c3_period_steps apart = c3_dt (one LCS step), so last solve's x₁
-  // predicted "now" — comparing it to the actual current state is the one-step
-  // tracking error.
-  VectorXd x_plan_prev;
-  bool have_prev_plan = false;
+  // --contact_force_log cadence: control_dt is 1kHz, throttle down to
+  // --contact_force_log_hz.
+  long contact_log_iter = 0;
+  const int contact_log_period_steps = std::max(
+      1, static_cast<int>(
+             std::lround(1.0 / (FLAGS_contact_force_log_hz * control_dt))));
 
   for (double t = control_dt; t < FLAGS_sim_time; t += control_dt) {
     const VectorXd v_hand = sim_plant.GetVelocities(plant_ctx, sim_allegro);
+
+    // LCM telemetry: push the current full state into state_sender's fixed
+    // input every control step. The LcmPublisherSystem wired to it (see
+    // "Live LCM state telemetry" above) is on its own --lcm_publish_hz
+    // period and reads whatever is here whenever simulator.AdvanceTo()
+    // crosses its next scheduled publish time.
+    if (state_input != nullptr) {
+      state_input->GetMutableVectorData<double>()->SetFromVector(
+          sim_plant.GetPositionsAndVelocities(plant_ctx));
+    }
 
     // Contact detection from the sim plant's contact results.
     const auto& contacts =
@@ -814,6 +797,27 @@ int DoMain(int argc, char* argv[]) {
       }
     }
 
+    // Raw resolved contact force per colliding pair, straight from
+    // ContactResults — no threshold filtering, no C3 involved. Throttled to
+    // --contact_force_log_hz, printed from t=0 regardless of contact count
+    // (the leading "contacts=N" lets you see the count climb toward 3 over
+    // time and compare that against the "finger i arrived" / handoff prints).
+    if (FLAGS_contact_force_log &&
+        contact_log_iter % contact_log_period_steps == 0) {
+      std::cout << "[t=" << t << "] contacts="
+                << contacts.num_point_pair_contacts();
+      for (int k = 0; k < contacts.num_point_pair_contacts(); ++k) {
+        const auto& info = contacts.point_pair_contact_info(k);
+        const Vector3d f = info.contact_force();
+        std::cout << "  [" << sim_plant.get_body(info.bodyA_index()).name()
+                  << "-" << sim_plant.get_body(info.bodyB_index()).name()
+                  << " f=(" << f.x() << "," << f.y() << "," << f.z()
+                  << ") |f|=" << f.norm() << "]";
+      }
+      std::cout << "\n";
+    }
+    ++contact_log_iter;
+
     VectorXd tau_hand(n_hand);
 
     // ── Phase 1: reach ──────────────────────────────────────────────────────
@@ -824,6 +828,7 @@ int DoMain(int argc, char* argv[]) {
       for (int i = 0; i < 3; ++i) {
         if (!arrived[i] && touching[i] && t > FLAGS_contact_enable_t) {
           arrived[i] = true;
+          arrived_time[i] = t;
           std::cout << "[t=" << t << "] finger " << i << " arrived\n";
         }
       }
@@ -833,7 +838,7 @@ int DoMain(int argc, char* argv[]) {
       VectorXd qd_tgt  = traj_dot.value(tl).col(0);
       for (int i = 0; i < 3; ++i) {
         if (arrived[i]) {
-          // Hold the grasping finger at q_contact (5 mm inside the face) so the
+          // Hold the grasping finger at q_contact (3 mm inside the face) so the
           // position error keeps a real inward preload, not just a light touch.
           q_tgt.segment(finger_start[i], 4) =
               q_contact.segment(finger_start[i], 4);
@@ -847,10 +852,18 @@ int DoMain(int argc, char* argv[]) {
       tau_hand = FLAGS_kp * (q_tgt - q_hand) +
                  FLAGS_kd * (qd_tgt - v_hand) + tau_g_hand;
 
-      // ── Handoff: all three fingers in contact ───────────────────────────
-      if (arrived[0] && arrived[1] && arrived[2]) {
+      // ── Handoff: all three fingers arrived, settle time elapsed ─────────
+      // Gated on a fixed dwell time since the LAST finger's arrived[] latch,
+      // not on any per-step contact measurement — both the LCS gap φ and the
+      // instantaneous contact-force detector proved too noisy at the 1ms
+      // scale (see handoff_settle_time flag). The PD hold has already brought
+      // the fingertips to a static equilibrium well within this window.
+      const double last_arrival_t =
+          std::max({arrived_time[0], arrived_time[1], arrived_time[2]});
+      if (arrived[0] && arrived[1] && arrived[2] &&
+          t >= last_arrival_t + FLAGS_handoff_settle_time) {
         std::cout << "[t=" << t
-                  << "] all fingers in contact → C3 handoff\n";
+                  << "] all fingers settled → C3 handoff\n";
 
         // Read full state from the sim plant at this instant.
         const VectorXd x_contact =
@@ -863,18 +876,48 @@ int DoMain(int argc, char* argv[]) {
             lcs_plant, lcs_ctx, *lcs_plant_ad, *lcs_ctx_ad,
             contact_pairs, lcs_opts, x_contact, VectorXd::Zero(n_u));
 
-        // Contact-gap diagnostics: each entry should be ≤ 0 (touching).
+        // Contact-gap printout, informational only (not used to gate the
+        // handoff — see handoff_settle_time above for why).
         const VectorXd eta0 =
             lcs_init.E()[0] * x_contact + lcs_init.c()[0];
         if (FLAGS_contact_model == "stewart_and_trinkle") {
           // Normal gaps φ live in the λ_n block [n_contacts, 2·n_contacts).
+          const VectorXd phi_contact =
+              eta0.segment(n_contacts, n_contacts);
           std::cout << "  contact gaps φ [index, middle, thumb] = "
-                    << eta0.segment(n_contacts, n_contacts).transpose()
-                    << "  (<=0 means active)\n";
+                    << phi_contact.transpose()
+                    << "  (<=0 means active, informational only)\n";
         } else {
           std::cout << "  (Anitescu: η is the cone-velocity constraint, not a "
-                       "per-finger signed distance; gaps not shown)\n";
+                        "per-finger signed distance; gaps not shown)\n";
         }
+
+        // True fingertip→cube distance via forward kinematics of the SIM
+        // plant (independent of the LCS gap convention). Negative = fingertip
+        // is inside the cube; this is the geometric ground truth to compare
+        // against the LCS φ printed above — a mismatch reveals a reference
+        // geometry / IK error rather than a planner error.
+        {
+          const RigidTransform<double> X_WC_cube =
+              sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                            sim_plant.get_body(cube_body));
+          const double h = cube_size / 2.0;
+          std::cout << "  FK fingertip→cube dist [idx,mid,thu] (neg=inside): ";
+          for (int i = 0; i < 3; ++i) {
+            const Vector3d p = sim_plant
+                .EvalBodyPoseInWorld(plant_ctx,
+                                     sim_plant.get_body(tip_bodies[i]))
+                .translation();
+            const Vector3d pc = X_WC_cube.inverse() * p;
+            const Vector3d q = pc.cwiseAbs() - Vector3d(h, h, h);
+            const double d = (q.maxCoeff() <= 0.0)
+                                 ? q.maxCoeff()
+                                 : q.cwiseMax(0.0).norm();
+            std::cout << d << " ";
+          }
+          std::cout << "\n";
+        }
+
         std::cout << "  LCS norms: |A|=" << lcs_init.A()[0].norm()
                   << "  |B|=" << lcs_init.B()[0].norm()
                   << "  |D|=" << lcs_init.D()[0].norm() << "\n";
@@ -892,11 +935,6 @@ int DoMain(int argc, char* argv[]) {
         }
         std::cout << "  s_u=" << s_u
                   << "  |B| now=" << lcs_init.B()[0].norm() << "\n";
-
-        inflate_gaps(&lcs_init);
-        if (FLAGS_phi_offset > 0.0)
-          std::cout << "  gap inflation ON: model sees φ−ε, ε="
-                    << FLAGS_phi_offset << " m\n";
 
         // Desired state: q_contact for the three grasping fingers, current
         // ring-finger q, cube at the world-frame reference q_cube0.
@@ -1023,20 +1061,27 @@ int DoMain(int argc, char* argv[]) {
         LCS lcs_new = LCSFactory::LinearizePlantToLCS(
             lcs_plant, lcs_ctx, *lcs_plant_ad, *lcs_ctx_ad,
             contact_pairs, lcs_opts, x_current, VectorXd::Zero(n_u));
+
+        // Diagnostic: track whether the linearization itself is stable
+        // across consecutive relin calls on a near-identical state (during
+        // cube_pinned, the cube's part of x_current is bit-for-bit frozen
+        // and the hand is under a converged PD hold — so |A|/|B|/|D| should
+        // barely move between prints if the linearization is well-behaved).
+        if (!FLAGS_contact_force_log) {
+          std::cout << "[t=" << t << "] relin  cube_pinned=" << cube_pinned
+                    << "  |A|=" << lcs_new.A()[0].norm()
+                    << "  |B|=" << lcs_new.B()[0].norm()
+                    << "  |D|=" << lcs_new.D()[0].norm()
+                    << "  |c|=" << lcs_new.c()[0].norm()
+                    << "  |v_hand|=" << v_hand.norm()
+                    << "  |v_hand|_inf=" << v_hand.cwiseAbs().maxCoeff()
+                    << "\n";
+        }
+
         std::vector<MatrixXd> B_sc = lcs_new.B();
         for (auto& Bk : B_sc) Bk *= s_u;
         lcs_new.set_B(B_sc);
 
-        // Cache the contact gaps φ for the diagnostics (Stewart-Trinkle only:
-        // φ lives in the λ_n block [n_contacts, 2·n_contacts) of η). ≤0 = the
-        // finger is seated; rising above 0 means it has lifted off the cube.
-        if (FLAGS_contact_model == "stewart_and_trinkle") {
-          const VectorXd eta0 = lcs_new.E()[0] * x_current + lcs_new.c()[0];
-          last_gaps = eta0.segment(n_contacts, n_contacts);
-          have_gaps = true;
-        }
-
-        inflate_gaps(&lcs_new);
         c3->UpdateLCS(lcs_new);
         const double ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - t0)
@@ -1077,82 +1122,217 @@ int DoMain(int argc, char* argv[]) {
         solve_ms_max = std::max(solve_ms_max, ms);
         ++solve_calls;
 
-        // Simplified diagnostic: printed at each C3 solve instant (not on the
-        // 0.25s wall clock). φ is the physical gap (cached from the last
-        // relinearization, un-inflated). "C3 u" is the raw input solution
-        // (GetInputSolution, scaled to physical Nm) — NOT what is applied by
-        // the realization layer, just what C3 itself solved for. "λ_n" is the
-        // raw per-contact normal force (GetForceSolution) — can be negative;
-        // this is C3's unprojected output, before the ≥0 projection used by
-        // the realization layer's Jᵀλ term.
-        const VectorXd u0 = s_u * c3->GetInputSolution()[0];
-        const std::vector<VectorXd>& lam = c3->GetForceSolution();
-        const Eigen::RowVector3d phi_row =
-            have_gaps ? Eigen::RowVector3d(last_gaps.transpose())
-                      : Eigen::RowVector3d::Zero();
-        std::cout << "[t=" << t << "] φ[idx,mid,thu]=" << phi_row
-                  << "  C3 u |max|=" << u0.cwiseAbs().maxCoeff()
-                  << "  C3 λ_n[idx,mid,thu]=";
-        for (int i = 0; i < 3; ++i) {
-          double fn = 0.0;
-          for (int idx : normal_groups[i]) fn += lam[0](idx);
-          std::cout << fn << " ";
+        const std::vector<VectorXd> xplan     = c3->GetStateSolution();
+        const std::vector<VectorXd> lam_plan  = c3->GetForceSolution();
+        const std::vector<VectorXd> u_plan    = c3->GetInputSolution();
+
+        if (FLAGS_contact_force_log) {
+          // --contact_force_log suppresses both the C3 PLAN table and the
+          // --plan_debug SOLVER DIAG output — see xplan_prev caching below.
+        } else if (!FLAGS_plan_debug) {
+          // ── Plan printout ───────────────────────────────────────────────
+          // The ONLY thing printed per solve: for each of the 3 contacts, the
+          // gap/closing variable γ, the normal contact force λ_n, and the
+          // complementarity/gap slack η — across every horizon knot k=0..N.
+          // Stewart-Trinkle λ layout: [γ(nc) | λ_n(nc) | β(...)], so γ = λ[0..nc-1]
+          // and λ_n = λ[nc..2nc-1]. C3Plus z = [x, λ, u, η], so the η that relaxes
+          // the normal-force complementarity sits at dual-δ offset
+          // (n_x + n_lambda + n_u) + nc.
+          // States span N+1 knots; forces (λ) span N knots. Bound by the minimum
+          // so every indexed vector stays in range (otherwise lam_plan[N] is out
+          // of bounds → segfault).
+          const int n_knots = std::min(static_cast<int>(xplan.size()),
+                                       static_cast<int>(lam_plan.size()));
+          if (n_knots > 0) {
+            const int nc = n_contacts;
+            const LCS& lcs = c3->GetLCS();
+            const auto& E = lcs.E();
+            const auto& cc = lcs.c();
+            std::vector<VectorXd> gap_plan(n_knots), lamn_plan(n_knots);
+            for (int k = 0; k < n_knots; ++k) {
+              // Contact gap φ = E·x + c, per-contact block (meters). The LCS
+              // contact-gap lives at segment(n_contacts, n_contacts) of E·x + c.
+              const VectorXd phi_full = E.at(k) * xplan[k] + cc.at(k);
+              gap_plan[k]  = phi_full.segment(n_contacts, n_contacts);
+              lamn_plan[k] = lam_plan[k].segment(nc, nc);
+            }
+
+            auto print_table = [&](const std::string& title,
+                                   const std::vector<VectorXd>& sol,
+                                   const std::vector<std::string>& labels) {
+              const int nk = static_cast<int>(sol.size());
+              if (nk == 0) return;
+              const int nrows = std::min(static_cast<int>(sol[0].size()),
+                                         static_cast<int>(labels.size()));
+              std::cout << "\n-- " << title << " --\n";
+              std::cout << std::setw(10) << "var";
+              for (int k = 0; k < nk; ++k)
+                std::cout << std::setw(12) << ("k" + std::to_string(k));
+              std::cout << "\n";
+              for (int r = 0; r < nrows; ++r) {
+                std::cout << std::setw(10) << labels[r];
+                for (int k = 0; k < nk; ++k)
+                  std::cout << std::setw(12) << std::fixed
+                            << std::setprecision(4) << sol[k](r);
+                std::cout << "\n";
+              }
+            };
+
+            std::cout << "\n=== C3 PLAN @ t=" << t << " s  (" << n_knots
+                      << " knots, dt=" << FLAGS_c3_dt << " s) ===";
+
+            std::vector<std::string> c_labels{"idx", "mid", "thu"};
+
+            print_table("CONTACT GAP φ (per contact, m)", gap_plan, c_labels);
+            print_table("NORMAL FORCE λ_n (per contact, force)", lamn_plan, c_labels);
+
+            // Cube z-position from the STATE plan (N+1 knots, unlike the N-knot
+            // force tables above). State layout: cube xyz sits at
+            // [n_hand_q+4, n_hand_q+5, n_hand_q+6].
+            std::vector<VectorXd> cubez_plan(xplan.size());
+            for (size_t k = 0; k < xplan.size(); ++k)
+              cubez_plan[k] = xplan[k].segment(n_hand_q + 6, 1);
+            print_table("CUBE Z POSITION (state knots)", cubez_plan,
+                        {"cube_z"});
+          }
+        } else {
+          // ── Solver-quality diagnostics ──────────────────────────────────
+          std::cout << "\n=== SOLVER DIAG @ t=" << t << " s ===\n";
+
+          // (1) LINEARIZATION ACCURACY: compare the PREVIOUS solve's
+          // knot-ahead state prediction to the state actually measured now.
+          // knot_ahead is how many c3_dt's have elapsed since that solve —
+          // normally 1 (c3_period_steps == relin_period_steps == c3_dt), but
+          // computed generally in case the cadence flags are unequal.
+          if (!xplan_prev.empty() && t_prev_solve >= 0.0) {
+            const int knot_ahead = std::clamp(
+                static_cast<int>(std::lround((t - t_prev_solve) /
+                                             FLAGS_c3_dt)),
+                1, static_cast<int>(xplan_prev.size()) - 1);
+            const VectorXd& x_pred = xplan_prev[knot_ahead];
+            const VectorXd dx = x_current - x_pred;
+            const double cube_z_err =
+                x_current(n_hand_q + 6) - x_pred(n_hand_q + 6);
+            const double cube_pos_err =
+                (x_current.segment<3>(n_hand_q + 4) -
+                 x_pred.segment<3>(n_hand_q + 4)).norm();
+            std::cout << "  [linearization] knot_ahead=" << knot_ahead
+                      << "  full-state ‖error‖=" << dx.norm()
+                      << "  cube_pos ‖error‖=" << cube_pos_err
+                      << "  cube_z error=" << cube_z_err << " m\n";
+          } else {
+            std::cout << "  [linearization] no previous plan yet "
+                         "(first solve this phase)\n";
+          }
+
+          // Unit note: GetLCS()'s D/E/F/H/c are baked with C3's internal
+          // λ-scaling (C3Options::scale_lcs → LCS::ScaleComplementarityDynamics),
+          // and GetForceSolution()/GetFullSolution()'s λ block is the
+          // RESCALED-to-physical value (λ_physical = AnDn_ · λ_internal —
+          // see c3.cc: `lambda_sol_->at(i) *= AnDn_`). Combining physical λ
+          // with the scaled matrices double-counts the scale factor, so we
+          // divide back by AnDn_ below. GetDualDeltaSolution() (δ) is NEVER
+          // rescaled and is already in the same internal units as GetLCS() —
+          // no correction needed there.
+          const double an_dn = c3->GetLambdaScaling();
+
+          // (2) DYNAMICS RESIDUAL: for the SOLVED (z-side) trajectory, how
+          // well does x_{k+1} match A x_k + B u_k + D λ_k + d? This is an
+          // equality constraint inside C3's QP, so it should be ~0 for a
+          // converged solve; a large residual means the final QP didn't
+          // actually satisfy its own constraint (non-convergence / failure).
+          {
+            const LCS& lcs = c3->GetLCS();
+            const auto& A = lcs.A();
+            const auto& B = lcs.B();
+            const auto& D = lcs.D();
+            const auto& d = lcs.d();
+            const int n_knots = std::min(
+                {static_cast<int>(xplan.size()) - 1,
+                 static_cast<int>(lam_plan.size()),
+                 static_cast<int>(u_plan.size())});
+
+            double dyn_resid_max = 0.0, dyn_resid_sum = 0.0;
+            for (int k = 0; k < n_knots; ++k) {
+              const VectorXd x_next_pred =
+                  A.at(k) * xplan[k] + B.at(k) * u_plan[k] +
+                  D.at(k) * (lam_plan[k] / an_dn) + d.at(k);
+              const double dyn_resid = (xplan[k + 1] - x_next_pred).norm();
+              dyn_resid_max = std::max(dyn_resid_max, dyn_resid);
+              dyn_resid_sum += dyn_resid;
+            }
+            std::cout << "  [dynamics residual] max‖x_{k+1}−f(x_k,u_k,λ_k)‖="
+                      << dyn_resid_max << "  mean="
+                      << (n_knots > 0 ? dyn_resid_sum / n_knots : 0.0) << "\n";
+          }
+
+          // (3) COMPLEMENTARITY RESIDUAL, on δ (the projection-step copy —
+          // the copy actually meant to satisfy 0 ≤ λ ⊥ η ≥ 0; the z/QP-side
+          // λ used above is NOT expected to be complementary by
+          // construction — see GetForceSolution()'s doc comment). δ_k is a
+          // GetZSize()-vector laid out [x | λ | u], same as z_sol_.
+          //
+          // (4) ADMM CONSENSUS RESIDUAL ‖z−δ‖: the actual "has ADMM
+          // converged" signal — z enforces dynamics, δ enforces
+          // complementarity, and ADMM is trying to drive them together.
+          // Large values mean the two copies still disagree substantially.
+          {
+            const LCS& lcs = c3->GetLCS();
+            const auto& E = lcs.E();
+            const auto& F = lcs.F();
+            const auto& H = lcs.H();
+            const auto& cc = lcs.c();
+            const std::vector<VectorXd> delta = c3->GetDualDeltaSolution();
+            const std::vector<VectorXd> z = c3->GetFullSolution();
+            const int n_knots = std::min(
+                {static_cast<int>(delta.size()), static_cast<int>(z.size()),
+                 static_cast<int>(E.size())});
+
+            double lam_min = std::numeric_limits<double>::infinity();
+            double eta_min = std::numeric_limits<double>::infinity();
+            double compl_gap_max = 0.0;
+            double consensus_max = 0.0, consensus_sum = 0.0;
+            for (int k = 0; k < n_knots; ++k) {
+              const VectorXd x_d = delta[k].segment(0, n_x);
+              const VectorXd lam_d = delta[k].segment(n_x, n_lambda);
+              const VectorXd u_d = delta[k].segment(n_x + n_lambda, n_u);
+              const VectorXd eta =
+                  E.at(k) * x_d + F.at(k) * lam_d + H.at(k) * u_d + cc.at(k);
+              lam_min = std::min(lam_min, lam_d.minCoeff());
+              eta_min = std::min(eta_min, eta.minCoeff());
+              compl_gap_max = std::max(
+                  compl_gap_max, lam_d.cwiseProduct(eta).cwiseAbs().maxCoeff());
+
+              // Rescale z's λ block back to internal units to match δ before
+              // differencing (see unit note above).
+              VectorXd z_internal = z[k];
+              z_internal.segment(n_x, n_lambda) /= an_dn;
+              const double consensus = (z_internal - delta[k]).norm();
+              consensus_max = std::max(consensus_max, consensus);
+              consensus_sum += consensus;
+            }
+            std::cout << "  [complementarity(δ)]  min(λ)=" << lam_min
+                      << "  min(η)=" << eta_min
+                      << "  max|λ⊙η|=" << compl_gap_max
+                      << "  (want: both mins ≥ ~0, gap ≈ 0)\n";
+            std::cout << "  [ADMM consensus ‖z−δ‖]  max=" << consensus_max
+                      << "  mean="
+                      << (n_knots > 0 ? consensus_sum / n_knots : 0.0)
+                      << "  (want: ≈ 0 — large means ADMM hasn't converged)\n";
+          }
         }
-        std::cout << "\n";
 
-        if (FLAGS_plan_debug) {
-          const std::vector<VectorXd> xplan = c3->GetStateSolution();
-          const std::vector<VectorXd> xdes  = c3->GetDesiredState();
-          const std::vector<VectorXd> zfull = c3->GetFullSolution();
-          const std::vector<VectorXd> delta = c3->GetDualDeltaSolution();
-
-          // ── Factor 1: does the PLAN keep the cube up, and at what cost? ──
-          // planned cube-z per knot; if these stay ≈0.58 the plan believes it
-          // holds. Per-knot state cost J_k = (x_k−x*_k)ᵀQ(x_k−x*_k): low ⇒ C3
-          // thinks it is on target (fail is downstream); high ⇒ C3 knows it
-          // cannot hold (Factor 1).
-          std::cout << "   [F1] plan cube z=";
-          for (const auto& xk : xplan) std::cout << xk(n_hand_q + 6) << " ";
-          std::cout << " cost=";
-          double Jtot = 0.0;
-          for (size_t k = 0; k < xplan.size() && k < xdes.size(); ++k) {
-            const VectorXd dx = xplan[k] - xdes[k];
-            const double Jk = dx.dot(Q_knot * dx);
-            Jtot += Jk;
-            std::cout << Jk << " ";
-          }
-          std::cout << " Jtot=" << Jtot << "\n";
-
-          // ── Factor 2a: ADMM consensus residual ‖z_k − δ_k‖ per knot. ──
-          // z = cost/dynamics-optimal copy (may violate complementarity);
-          // δ = complementarity-feasible projected copy. At convergence they
-          // agree; a large gap ⇒ no single trajectory is both feasible AND
-          // what C3 wants ⇒ the committed plan is infeasible/ambiguous.
-          std::cout << "   [F2a] |z-δ|=";
-          for (size_t k = 0; k < zfull.size() && k < delta.size(); ++k)
-            std::cout << (zfull[k] - delta[k]).norm() << " ";
-          std::cout << "\n";
-
-          // ── Factor 2b: did we ACHIEVE last solve's one-step prediction? ──
-          if (have_prev_plan && x_plan_prev.size() == x_current.size()) {
-            const VectorXd terr = x_current - x_plan_prev;
-            std::cout << "   [F2b] track err: cube_pos="
-                      << terr.segment(n_hand_q + 4, 3).norm()
-                      << " cube_quat=" << terr.segment(n_hand_q, 4).norm()
-                      << " hand_q=" << terr.head(n_hand_q).norm() << "\n";
-          }
-          if (xplan.size() > 1) {
-            x_plan_prev = xplan[1];
-            have_prev_plan = true;
-          }
-        }
+        // Cache this solve's plan for next solve's linearization-accuracy
+        // check, regardless of which printout mode is active.
+        xplan_prev = xplan;
+        t_prev_solve = t;
       }
 
       if (cube_pinned) {
         // Warm-up period: cube is still pinned, so C3's cost gradient on the
         // cube is near zero and it finds near-zero torques as "optimal". This
         // causes fingers to drift away from the cube. Instead, use PD to hold
-        // fingers at q_contact (5 mm inside the faces) while C3 runs in the
+        // fingers at q_contact (3 mm inside the faces) while C3 runs in the
         // background, so they keep a real inward preload on the cube.
         const VectorXd q_hand =
             sim_plant.GetPositions(plant_ctx, sim_allegro);
@@ -1164,10 +1344,24 @@ int DoMain(int argc, char* argv[]) {
               q_contact.segment(finger_start[i], 4);
         tau_hand = FLAGS_kp * (q_tgt_c3 - q_hand) +
                    FLAGS_kd * (-v_hand) + tau_g;
-      } else if (FLAGS_use_osc) {
-        // Pin released — OSC executor. Desired per-fingertip normal force =
-        // C3's projected λ, optionally floored so the grip survives the
-        // contact-gate hover band. Thumb floor = 2× (force closure).
+
+        // Diagnostic: is the commanded torque actually saturating at
+        // ±tau_max before the clamp below? If so, kp/kd values stop
+        // mattering — the delivered torque is just the bound, every tick,
+        // which looks exactly like a gain-independent limit cycle.
+        if (do_relin && !FLAGS_contact_force_log) {
+          const int n_sat = (tau_hand.array().abs() >= FLAGS_tau_max - 1e-6)
+                                 .count();
+          std::cout << "[t=" << t << "] tau(unclamped)  |tau|=" << tau_hand.norm()
+                    << "  max|tau_i|=" << tau_hand.cwiseAbs().maxCoeff()
+                    << "  saturated_joints=" << n_sat << "/" << n_hand
+                    << "  (tau_max=" << FLAGS_tau_max << ")\n";
+        }
+      } else {
+        // Pin released — task-space PD + Jacobian-transpose grip executor.
+        // Desired per-fingertip normal force = C3's projected λ, optionally
+        // floored so the grip survives the contact-gate hover band. Thumb
+        // floor = 2× (force closure).
         const VectorXd lam_proj =
             c3->GetDualDeltaSolution()[0].segment(n_x, n_lambda);
         const std::array<double, 3> floor{FLAGS_force_floor, FLAGS_force_floor,
@@ -1178,10 +1372,11 @@ int DoMain(int argc, char* argv[]) {
           for (int idx : normal_groups[i]) fn += lam_proj(idx);
           fn_des[i] = std::max(std::max(fn, 0.0), floor[i]);
         }
-        // Fingertip position targets for the OSC. --fk_target: forward-
-        // kinematics of C3's planned next hand config q1 (where the plan says
-        // the fingertips go next). Otherwise: fixed grasp points on the upright
-        // reference cube (the geometric hold). C3's input added as feedforward.
+
+        // Fingertip position targets. --fk_target: forward-kinematics of C3's
+        // planned next hand config q1 (where the plan says the fingertips go
+        // next). Otherwise: fixed grasp points on the upright reference cube
+        // (the geometric hold).
         VectorXd p_des_all(9);
         if (FLAGS_fk_target) {
           const std::vector<VectorXd> xplan = c3->GetStateSolution();
@@ -1196,119 +1391,39 @@ int DoMain(int argc, char* argv[]) {
                                          sim_plant.get_body(tip_bodies[i]))
                     .translation();
         } else {
-          p_des_all = GetGraspPositions(X_WC0, cube_size - 0.01, a, b, c_off);
+          p_des_all = GetGraspPositions(X_WC0, cube_size - 0.006, a, b, c_off);
         }
 
-        if (FLAGS_use_jtf) {
-          // Classic task-space PD + Jacobian-transpose grip (no QP). Same goals
-          // as the OSC (p_des_all, fn_des, osc_kp/osc_kd) but realized by Jᵀ:
-          //   τ = τ_g + Σ Jᵢᵀ[ Kp(p_des−p) − Kd·ṗ + fₙ·n̂ ].
-          const VectorXd v_hand =
-              sim_plant.GetVelocities(plant_ctx, sim_allegro);
-          const VectorXd tau_g = sim_plant.GetVelocitiesFromArray(
-              sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
-          const RotationMatrix<double> R_WC =
-              CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube))
-                  .rotation();
-          const std::array<Vector3d, 3> press_C{
-              Vector3d(0, 1, 0), Vector3d(0, 1, 0), Vector3d(0, -1, 0)};
-          VectorXd tau = tau_g;
-          for (int i = 0; i < 3; ++i) {
-            Eigen::MatrixXd J(3, sim_plant.num_velocities());
-            sim_plant.CalcJacobianTranslationalVelocity(
-                plant_ctx, drake::multibody::JacobianWrtVariable::kV,
-                sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
-                sim_plant.world_frame(), sim_plant.world_frame(), &J);
-            const Eigen::MatrixXd Jh = J.leftCols(n_hand_v);
-            const Vector3d p_i =
-                sim_plant
-                    .EvalBodyPoseInWorld(plant_ctx,
-                                         sim_plant.get_body(tip_bodies[i]))
-                    .translation();
-            const Vector3d pdot = Jh * v_hand;
-            const Vector3d f_task =
-                FLAGS_osc_kp * (p_des_all.segment<3>(3 * i) - p_i) -
-                FLAGS_osc_kd * pdot + fn_des[i] * (R_WC * press_C[i]);
-            tau += Jh.transpose() * f_task;
-          }
-          tau_hand = tau + s_u * c3->GetInputSolution()[0];
-        } else {
-          tau_hand =
-              osc_torque(fn_des, p_des_all) + s_u * c3->GetInputSolution()[0];
-        }
-      } else if (FLAGS_realize_forces) {
-        // Pin released — realization layer (grasp_theory_critique.html §5c).
-        // C3 is the PLANNER here; its raw input solution is not applied. In
-        // the ADMM QP λ is a free variable, so the cube-tracking cost is
-        // absorbed directly by λ and the optimal u is ~0 (verified: |τ| ≈
-        // 0.2 Nm at pin release for every tuning tried). The grip lives in
-        // C3's planned FORCES, so realize those instead:
-        //   τ = τ_g                      (hand holds its own weight)
-        //     + Kp(q₁ - q) + Kd(v₁ - v)  (track C3's planned next state)
-        //     + Σᵢ Jᵢᵀ fᵢ                (realize C3's planned normal forces)
+        // Task-space PD + Jacobian-transpose grip, no QP:
+        //   τ = τ_g + Σ Jᵢᵀ[ Kp(p_des−p) − Kd·ṗ + fₙ·n̂ ],
+        // plus C3's raw input solution as feedforward.
         const VectorXd tau_g = sim_plant.GetVelocitiesFromArray(
             sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
-        const VectorXd q_hand =
-            sim_plant.GetPositions(plant_ctx, sim_allegro);
-
-        // C3's planned state one LCS step ahead (hand joints only). The plan
-        // comes from an ill-conditioned linearization (|A|~600), so its next
-        // state can jump far from the current one; clamp the deviation the
-        // PD sees so a garbage plan step cannot command a violent motion.
-        const std::vector<VectorXd>& x_plan = c3->GetStateSolution();
-        const VectorXd q1 = x_plan[1].head(n_hand_q);
-        const VectorXd v1 = x_plan[1].segment(n_pos, n_hand_v);
-        const VectorXd dq =
-            (q1 - q_hand)
-                .cwiseMax(-FLAGS_plan_dev_max)
-                .cwiseMin(FLAGS_plan_dev_max);
-        const VectorXd dv = (v1 - v_hand)
-                                .cwiseMax(-FLAGS_plan_vel_dev_max)
-                                .cwiseMin(FLAGS_plan_vel_dev_max);
-
-        // Projected (feasible) contact forces from the ADMM copy variable:
-        // z = [x; λ; u] → λ = delta.segment(n_x, n_lambda). Unlike the QP's
-        // λ (GetForceSolution), the projected copy respects λ ≥ 0.
-        const VectorXd lam_proj =
-            c3->GetDualDeltaSolution()[0].segment(n_x, n_lambda);
-
-        // Inward press directions in the cube frame (theory html §1):
-        // index/middle press the −Y face along +ŷ, thumb presses +Y along −ŷ.
         const RotationMatrix<double> R_WC =
             CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube))
                 .rotation();
-        const std::array<Vector3d, 3> press_C{Vector3d(0, 1, 0),
-                                              Vector3d(0, 1, 0),
-                                              Vector3d(0, -1, 0)};
-
-        VectorXd tau_grip = VectorXd::Zero(n_hand);
+        const std::array<Vector3d, 3> press_C{
+            Vector3d(0, 1, 0), Vector3d(0, 1, 0), Vector3d(0, -1, 0)};
+        VectorXd tau = tau_g;
         for (int i = 0; i < 3; ++i) {
-          double fn = 0.0;
-          for (int idx : normal_groups[i]) fn += lam_proj(idx);
-          fn = std::max(fn, 0.0);
-          const Vector3d f_W = fn * (R_WC * press_C[i]);
           Eigen::MatrixXd J(3, sim_plant.num_velocities());
           sim_plant.CalcJacobianTranslationalVelocity(
               plant_ctx, drake::multibody::JacobianWrtVariable::kV,
-              sim_plant.get_body(tip_bodies[i]).body_frame(),
-              Vector3d::Zero(), sim_plant.world_frame(),
-              sim_plant.world_frame(), &J);
-          // Hand velocities are the first n_hand_v entries of v, so the hand
-          // columns of J are its left block (state-layout comment, §7).
-          tau_grip += J.leftCols(n_hand_v).transpose() * f_W;
+              sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
+              sim_plant.world_frame(), sim_plant.world_frame(), &J);
+          const Eigen::MatrixXd Jh = J.leftCols(n_hand_v);
+          const Vector3d p_i =
+              sim_plant
+                  .EvalBodyPoseInWorld(plant_ctx,
+                                       sim_plant.get_body(tip_bodies[i]))
+                  .translation();
+          const Vector3d pdot = Jh * v_hand;
+          const Vector3d f_task =
+              FLAGS_task_kp * (p_des_all.segment<3>(3 * i) - p_i) -
+              FLAGS_task_kd * pdot + fn_des[i] * (R_WC * press_C[i]);
+          tau += Jh.transpose() * f_task;
         }
-
-        tau_hand = tau_g + FLAGS_kp_track * dq + FLAGS_kd_track * dv +
-                   FLAGS_grip_scale * tau_grip;
-
-      } else {
-        // Legacy path: apply C3's raw input solution directly. Kept for A/B
-        // only — structurally outputs ~0 torque at a grasp equilibrium.
-        tau_hand = s_u * c3->GetInputSolution()[0];
-        if (tau_hand.norm() < 1e-6) {
-          tau_hand = sim_plant.GetVelocitiesFromArray(
-              sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
-        }
+        tau_hand = tau + s_u * c3->GetInputSolution()[0];
       }
     }
 
@@ -1338,45 +1453,6 @@ int DoMain(int argc, char* argv[]) {
     const RigidTransform<double> X_WC_now = CubePoseFromPositions(
         sim_plant.GetPositions(plant_ctx, sim_cube));
     update_markers(X_WC_now);
-
-    // Throttled per-step diagnostics.
-    if (t >= next_print) {
-      next_print += 0.25;
-      const VectorXd gp =
-          GetGraspPositions(X_WC_now, cube_size, a, b, c_off);
-      std::cout << "[t=" << t << "] tip err [idx,mid,thu] = ";
-      for (int i = 0; i < 3; ++i) {
-        const Vector3d p =
-            sim_plant
-                .EvalBodyPoseInWorld(plant_ctx,
-                                     sim_plant.get_body(tip_bodies[i]))
-                .translation();
-        std::cout << (p - Vector3d(gp.segment<3>(3 * i))).norm() << " ";
-      }
-      std::cout << "m";
-      if (phase == kReach) {
-        // Joint-space tracking error of each finger vs its seat target
-        // q_contact. LARGE here (with small tip err impossible) → the PD is
-        // too weak to hold the finger against gravity/dynamics (raise kp/kd).
-        // SMALL here but tip err large → a kinematic/IK problem instead.
-        const VectorXd q_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
-        std::cout << "  qErr[idx,mid,thu]=";
-        for (int i = 0; i < 3; ++i)
-          std::cout << (q_hand.segment(finger_start[i], 4) -
-                        q_contact.segment(finger_start[i], 4))
-                           .norm()
-                    << " ";
-        std::cout << "rad  arrived=" << arrived[0] << arrived[1] << arrived[2];
-      }
-      if (phase == kC3 && c3) {
-        // Minimal outcome check — the per-solve line above (φ, C3's raw u/λ)
-        // carries the diagnostic detail now. This just tracks the cube.
-        const Vector3d cube_p = X_WC_now.translation();
-        const double ang_err = X_WC_now.rotation().ToAngleAxis().angle();
-        std::cout << "  cube z=" << cube_p.z() << " ang=" << ang_err;
-      }
-      std::cout << "\n";
-    }
   }
   return 0;
 }

@@ -365,6 +365,8 @@ cc_binary(
     deps = [
         ":allegro_hand_utils",
         "//common:find_resource",
+        "//lcmtypes:lcmt_robot",
+        "//systems/senders:c3_state_sender",
         "@c3//:libc3",
         "@drake//:drake_shared_library",
         "@gflags",
