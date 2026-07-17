@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Contact Location &amp; LCS Linearization</title>
+  <style>
+    body { font-family: Georgia, serif; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #1a1a1a; }
+    h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }
+    h2 { margin-top: 2em; color: #222; }
+    code { background: #f0f0ec; padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f7f7f4; border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; overflow-x: auto; font-size: 0.85em; line-height: 1.45; }
+    .loc { color: #666; font-size: 0.82em; }
+    .key { background: #eef3fb; border-left: 4px solid #3f6fb5; padding: 8px 14px; margin: 14px 0; font-size: 0.95em; }
+    table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+    td, th { border: 1px solid #ccc; padding: 6px 10px; text-align: left; vertical-align: top; font-size: 0.92em; }
+    th { background: #eee; }
+    ol, ul { padding-left: 1.3em; }
+    li { margin: 4px 0; }
+  </style>
+</head>
+<body>
+
+<h1>Contact Location &amp; LCS Linearization</h1>
+
+<p>Two questions, answered in code order: where does Drake decide a finger touches the cube, and how does that become the LCS's linear matrices?</p>
+
+<h2>1. Picking the contact pair</h2>
+
+<p><code>GetNClosestContactPairs</code> runs a signed-distance query on every candidate pair and keeps the <code>N</code> closest. A plain closest-N pick, done once at the current state.</p>
+<p class="loc">lcs_factory.cc:229-261</p>
+
+<h2>2. Picking the contact point</h2>
+
+<p>Fingertip collision shape = 12mm sphere. Cube collision shape = a single box (not the visual meshes).</p>
+<p class="loc">URDF sphere: allegro_hand_description_right.urdf &nbsp;·&nbsp; cube box: numbered_cube.sdf:78-90</p>
+
+<p>Sphere vs. box → general path, not the sphere-vs-mesh special case:</p>
+<pre>query_object.ComputeSignedDistancePairClosestPoints(geometry_id_A_, geometry_id_B_);</pre>
+<p class="loc">geom_geom_collider.cc:113-121 (called from GetGeometryQueryResult, line 126)</p>
+
+<p>This is Drake's real proximity engine — true closest points between the sphere and box, radius already subtracted. Returns:</p>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>distance</code></td><td>the true signed gap (this becomes <code>φ</code>)</td></tr>
+  <tr><td><code>nhat_BA_W</code></td><td>contact normal, world frame</td></tr>
+  <tr><td><code>p_ACa</code> / <code>p_BCb</code></td><td>witness points — the pair of closest points, one on the sphere's surface (<code>p_ACa</code>) and one on the box's surface (<code>p_BCb</code>), that together realize the signed distance above. When the shapes are separated they're the two nearest surface points; in penetration they're the two points of deepest overlap.</td></tr>
+</table>
+
+<div class="key">This is the actual computation <code>φ</code>/<code>η</code> come from — not a fixed local-frame offset point. That's why the earlier hand-rolled FK-distance table didn't match <code>η</code>: different computation entirely.</div>
+
+<h2>3. Contact Jacobian</h2>
+
+<p><code>PolytopeContactEvaluator::Eval</code> → <code>GeomGeomCollider::EvalPolytope</code>:</p>
+<ol>
+  <li>Re-runs the same query for <code>nhat_BA_W</code>.</li>
+  <li>Builds a contact frame: <code>RotationMatrix::MakeFromOneVector(nhat_BA_W, 0)</code>.</li>
+  <li>Builds the friction-cone basis — row 0 = normal, rows 1..2n = tangent rays at <code>θ = i·π/n</code>.</li>
+  <li>Jacobians <em>at the witness points</em> (not body origin) — so the Jacobian reflects velocity right where contact actually occurs: <code>CalcJacobianTranslationalVelocity(..., p_ACa, ...)</code> and <code>(..., p_BCb, ...)</code>, differenced, projected through the force basis.</li>
+</ol>
+<p class="loc">geom_geom_collider.cc:156-220</p>
+
+<p>Row 0 of the result → <code>Jn</code>. Remaining rows → <code>Jt</code>.</p>
+<p class="loc">lcs_factory.cc:263-288 (ComputeContactJacobian)</p>
+
+<h2>4. Linearizing the dynamics</h2>
+
+<p>Two separate pieces, both inside <code>GenerateLCS</code>:</p>
+
+<h3>(a) Smooth dynamics — autodiff</h3>
+<pre>f(q,v,u) = M(q)⁻¹(τ_g + τ_u + f_app − C(q,v))</pre>
+<p>Evaluated on an <code>AutoDiffXd</code> plant at the current <code>(q*,v*,u*)</code>; gradients extracted directly:</p>
+<pre>Jf_q, Jf_v, Jf_u = ∂f/∂q, ∂f/∂v, ∂f/∂u</pre>
+<p>A real first-order Taylor expansion, not a hand-derived formula. Builds the contact-free <code>A, B, d</code>.</p>
+<p class="loc">lcs_factory.cc:311-380</p>
+
+<h3>(b) Contact coupling — algebraic, from the frozen φ / Jn / Jt</h3>
+<table>
+  <tr><th>Matrix</th><th>Built from</th><th>Meaning</th></tr>
+  <tr><td><code>D</code></td><td><code>dt·M⁻¹Jₙᵀ</code>, <code>dt·M⁻¹Jₜᵀ</code></td><td>force → state (exactly linear)</td></tr>
+  <tr><td><code>E</code></td><td><code>dt·Jₙ + dt²·Jₙ·Jf_v</code>, ...</td><td>state → gap (one-step-ahead prediction)</td></tr>
+  <tr><td><code>F</code></td><td><code>dt²·Jₙ·M⁻¹Jₙᵀ</code>, μ, friction basis</td><td>force → gap — <strong>why η ≠ φ</strong>; pressing harder moves the predicted gap</td></tr>
+  <tr><td><code>H</code></td><td><code>dt²·Jₙ·Jf_u</code></td><td>input → gap</td></tr>
+  <tr><td><code>c</code></td><td><code>φ + ...</code></td><td>where the raw signed distance enters the model</td></tr>
+</table>
+<p class="loc">lcs_factory.cc:438-494 (FormulateStewartTrinkleContactDynamics)</p>
+
+<h2>The one fact that matters</h2>
+
+<div class="key">
+  <code>φ</code>, <code>Jn</code>, <code>Jt</code> are computed <strong>once</strong>, at <code>x₀</code>, from a real geometry query. Every LCS matrix built from them is then frozen and reused for <strong>every knot in the horizon</strong>. The ADMM/QP solve never re-queries geometry until the next relinearization.
+</div>
+
+<p>This is the exact mechanism behind everything seen in the diagnostics: FK gap growing with <code>k</code>, <code>η</code> disagreeing with a geometric distance at <code>k0</code>, the general "single linearization over the horizon" staleness — all the same fact, now pinned to exact lines.</p>
+
+</body>
+</html>

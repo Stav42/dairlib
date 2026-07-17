@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>The OSC Executor (--exec_mode=osc)</title>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+  <style>
+    body { font-family: Georgia, serif; max-width: 880px; margin: 40px auto; padding: 0 24px; line-height: 1.7; color: #1a1a1a; }
+    h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }
+    h2 { margin-top: 2.2em; color: #222; }
+    h3 { color: #444; margin-top: 1.5em; }
+    code { background: #f0f0ec; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+    pre { background: #f7f7f4; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; overflow-x: auto; font-size: 0.86em; line-height: 1.5; }
+    .note { background: #f5f5f0; border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 0.95em; }
+    .warn { background: #fdf3e7; border-left: 4px solid #ef6c00; padding: 10px 16px; margin: 16px 0; font-size: 0.95em; }
+    .verdict { display: inline-block; padding: 3px 12px; border-radius: 14px; font-family: -apple-system, Arial, sans-serif; font-size: 0.78em; font-weight: bold; letter-spacing: 0.5px; color: #fff; vertical-align: middle; }
+    .good { background: #2e7d32; }
+    .part { background: #ef6c00; }
+    .bad  { background: #c62828; }
+    table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+    td, th { border: 1px solid #ccc; padding: 8px 14px; text-align: left; vertical-align: top; }
+    th { background: #eee; }
+    .tl { font-size: 1.05em; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
+    .loc { color: #555; font-size: 0.85em; }
+    .flag { font-family: monospace; background: #eef3fb; padding: 1px 6px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<h1>The OSC Executor — <code>--exec_mode=osc</code></h1>
+
+<p class="tl">
+  A joint-space inverse-dynamics + task-space contact-force controller that realizes the C3 plan on the
+  <strong>exact</strong> nonlinear plant, instead of replaying whatever the plan's linearized model
+  assumed. This document explains the problem it solves, exactly where every number comes from in the
+  code, the math behind each term, and how it compares to the two executors that came before it.
+</p>
+
+<hr>
+
+<h2>1. The problem this solves</h2>
+
+<p>
+  C3 (Consensus Complementarity Control) is a receding-horizon MPC that, every solve, returns three
+  mutually-consistent trajectories over a short horizon: states <code>x</code>, inputs <code>u</code>,
+  and contact forces <code>&lambda;</code>. They are "consistent" only <em>inside the model it solved</em>
+  — the Linearized Complementarity System (LCS), a linear-plus-complementarity approximation of the real
+  contact dynamics, re-derived fresh at every relinearization. "Applying the plan" means taking that
+  first step and turning it into a torque command on the real, non-linear, full-friction-cone Drake
+  simulation. How you do that last step is a separate design decision from the planner itself, and it
+  turned out to matter enormously.
+</p>
+
+<h3>1a. Two executors were tried before this one</h3>
+
+<table>
+  <tr><th>Mode</th><th>What it applies</th><th>What happened</th></tr>
+  <tr>
+    <td><code class="flag">--exec_mode=direct</code><br><span class="loc">Architecture A</span></td>
+    <td><code>&tau; = s_u&middot;u&#8320;</code> — literally play back the plan's own first input,
+        nothing else.</td>
+    <td><span class="verdict bad">FAILED</span> The fingers went limp and fell, as if no torque was
+        applied at all. This showed that <code>u&#8320;</code> alone cannot be trusted as a complete,
+        directly-appliable torque command — whatever gravity/dynamics compensation the LCS's
+        linearization assumed, it was not enough to hold the real hand up.</td>
+  </tr>
+  <tr>
+    <td><code class="flag">--exec_mode=task_space</code><br><span class="loc">legacy hybrid, default</span></td>
+    <td>Hand-tuned PD-to-<code>q_contact</code> while pinned; after release, a Jacobian-transpose grip
+        force plus task-space PD to a fixed fingertip target plus <code>s_u&middot;u&#8320;</code> as a
+        small feedforward.</td>
+    <td><span class="verdict part">WORKED, BUT FOR THE WRONG REASON</span> It held the cube, but nearly
+        all of the holding force came from the hand-tuned PD and grip-force terms, <em>not</em> from
+        the plan. It doesn't actually test whether C3's plan is good — a stiff-enough PD controller
+        would hold almost any reasonable grasp on its own.</td>
+  </tr>
+</table>
+
+<p>
+  Neither answers the real question: <strong>if you faithfully realize what C3 planned — its intended
+  hand configuration and its intended grip force — on the true dynamics, does the grasp hold?</strong>
+  That's what <code class="flag">--exec_mode=osc</code> is built to answer.
+</p>
+
+<div class="note">
+  <strong>Why not just add gravity comp back to <code>direct</code> mode?</strong> Because that only
+  patches one specific failure (gravity) using the same untrustworthy source (the LCS's own model) and
+  says nothing about whether the <em>rest</em> of the input — the part meant to realize the grip and any
+  Coriolis/inertial coupling — is correct either. The principled fix is to stop trusting the LCS for
+  actuation entirely and use the real plant.
+</div>
+
+<hr>
+
+<h2>2. The design: two feedforward terms, computed on the real plant</h2>
+
+<p>
+  C3 hands the executor exactly two physically meaningful things per solve: a target configuration
+  one step ahead, and a target contact-force allocation for right now. The OSC executor takes only
+  those two — nothing else from the LCS — and realizes them with exact rigid-body dynamics.
+</p>
+
+\[
+  \tau_{\text{hand}} \;=\; \underbrace{\tau_{\text{motion}}}_{\substack{\text{joint-space}\\\text{inverse dynamics}}} \;+\; \underbrace{\tau_{\text{force}}}_{\substack{\text{task-space}\\\text{contact force}}}
+\]
+
+<h3>2a. Term 1 — joint-space motion (computed-torque control)</h3>
+
+<p>
+  <strong>Goal:</strong> drive the hand toward the configuration the plan says it should be at one step
+  from now.
+</p>
+
+<p><strong>Where the target comes from:</strong></p>
+<pre>const std::vector&lt;VectorXd&gt; xplan_now = c3-&gt;GetStateSolution();
+q_des  = xplan_now[1].head(n_hand_q);            // planned hand joint angles, one step ahead
+qd_des = xplan_now[1].segment(n_pos, n_hand_v);  // planned hand joint velocities, one step ahead</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1774&ndash;1779</p>
+
+<p>
+  <code>GetStateSolution()</code> returns the plan's state trajectory <code>x&#8320;&hellip;x_N</code>
+  over the horizon; index <code>[1]</code> is the state one <code>c3_dt</code> after now — i.e. where
+  the plan intends the system to be next, not where it is right now (<code>[0]</code>). The state layout
+  (documented at the top of the file, lines 786&ndash;789, and reused here) is
+</p>
+<pre>positions  [0 .. n_hand_q-1]        : hand joints        (16)
+positions  [n_hand_q .. n_pos-1]    : cube quaternion+xyz (7)
+velocities [n_pos .. n_pos+n_hand_v-1] : hand joint vel   (16)
+velocities [n_pos+n_hand_v .. n_x-1]   : cube vel         (6)</pre>
+<p>which is exactly why <code>q_des</code> is <code>.head(n_hand_q)</code> and <code>qd_des</code> is
+   <code>.segment(n_pos, n_hand_v)</code>.</p>
+
+<p><strong>The control law</strong> is standard computed-torque / inverse-dynamics control. First form a
+   desired joint acceleration from a PD law on the tracking error:</p>
+\[
+\ddot q_{\text{cmd}} = k_p\,(q_{\text{des}} - q) \;+\; k_d\,(\dot q_{\text{des}} - \dot q)
+\]
+<pre>const VectorXd qddot_cmd_hand =
+    FLAGS_osc_kp * (q_des - q_hand) + FLAGS_osc_kd * (qd_des - v_hand);</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1781&ndash;1782 &nbsp;&middot;&nbsp; gains: <code class="flag">--osc_kp</code> (default 300), <code class="flag">--osc_kd</code> (default 15), defined at lines 242&ndash;247</p>
+
+<p>Then convert that <em>acceleration</em> into the exact <em>torque</em> that would produce it on the
+   real plant, using the full rigid-body equations of motion</p>
+\[
+M(q)\,\ddot q + C(q,\dot q)\,\dot q = \tau_g(q) + \tau_{\text{applied}}
+\quad\Longrightarrow\quad
+\tau_{\text{applied}} = M(q)\,\ddot q_{\text{cmd}} + C(q,\dot q)\,\dot q - \tau_g(q)
+\]
+<p>
+  Drake computes the right-hand side directly &mdash; mass matrix, Coriolis/centrifugal terms, and
+  gravity, all evaluated at the plant's <em>actual current</em> state, not the plan's linearization
+  point &mdash; via <code>MultibodyPlant::CalcInverseDynamics</code>:
+</p>
+<pre>VectorXd vdot_full = VectorXd::Zero(sim_plant.num_velocities());
+sim_plant.SetVelocitiesInArray(sim_allegro, qddot_cmd_hand, &amp;vdot_full);
+drake::multibody::MultibodyForces&lt;double&gt; no_ext_forces(sim_plant);
+const VectorXd tau_id =
+    sim_plant.CalcInverseDynamics(plant_ctx, vdot_full, no_ext_forces);
+const VectorXd tau_motion =
+    sim_plant.GetVelocitiesFromArray(sim_allegro, tau_id);</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1784&ndash;1790</p>
+
+<div class="note">
+  <strong>Why <code>vdot_full</code> is built for the whole plant, not just the hand.</strong>
+  <code>sim_plant</code> also contains the free-floating cube, so
+  <code>CalcInverseDynamics</code> needs an acceleration value for every one of the plant's velocity
+  coordinates, not just the hand's 16. The cube's slots are left at zero. This is safe: the hand and the
+  cube are separate kinematic trees with no joint between them, so the mass matrix is block-diagonal
+  between them and the Coriolis terms don't cross between trees either &mdash; whatever the cube's chosen
+  <code>vdot</code> entries are, the returned <em>hand</em> rows of the generalized force are unaffected.
+  <code>GetVelocitiesFromArray</code>/<code>SetVelocitiesInArray</code> extract and inject exactly the
+  hand's block of a full-plant vector by model instance, so no manual index bookkeeping is needed.
+</div>
+
+<div class="note">
+  <strong>Why there's no separate <code>tau_g</code> term here.</strong> Unlike the <code>task_space</code>
+  executor, which explicitly adds <code>tau_g</code> computed via
+  <code>CalcGravityGeneralizedForces</code>, this term needs no such addition &mdash;
+  <code>CalcInverseDynamics</code> already subtracts <code>&tau;<sub>g</sub>(q)</code> internally as part
+  of the formula above. Passing <code>qddot_cmd_hand&nbsp;=&nbsp;0</code> at rest would, by itself,
+  return exactly the gravity-compensation torque. Adding a separate <code>tau_g</code> on top would
+  double-count it, exactly the bug fixed for the <code>task_space</code> executor's post-release branch
+  earlier (<code class="flag">--exec_grav_comp</code>, default off).
+</div>
+
+<h3>2b. Term 2 — task-space contact force (the "operational space" piece)</h3>
+
+<p>
+  <strong>Goal:</strong> exert the grip force the plan says is needed at each fingertip, right now, along
+  the direction that presses into the cube.
+</p>
+
+<p><strong>Where the force target comes from:</strong></p>
+<pre>const std::vector&lt;VectorXd&gt; lam_plan_now = c3-&gt;GetForceSolution();
+const VectorXd lam0 = lam_plan_now[0] / c3-&gt;GetLambdaScaling();</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1794&ndash;1795</p>
+<p>
+  <code>GetForceSolution()</code> returns the plan's contact-force trajectory
+  <code>&lambda;&#8320;&hellip;&lambda;<sub>N-1</sub></code>; index <code>[0]</code> is the force the plan
+  says should be active <em>right now</em> (paired with input <code>u&#8320;</code>, which this executor
+  otherwise ignores). It comes back in the solver's internal scaled units, so it is divided by
+  <code>GetLambdaScaling()</code> (the <code>AnDn_</code> factor) to recover physical Newtons &mdash; the
+  same scaling rule documented in <code>c3.h</code> and already used throughout the diagnostic prints in
+  this file.
+</p>
+<p>
+  Each contact's normal-force component is picked out of the flat 30-entry
+  <code>&lambda; = [&gamma;(3) | &lambda;<sub>n</sub>(3) | &beta;(24)]</code> vector via
+  <code>normal_groups[i]</code>, the same per-contact index groups the rest of the file already uses for
+  the same purpose:
+</p>
+<pre>for (int i = 0; i &lt; 3; ++i) {
+  double fn = 0.0;
+  for (int idx : normal_groups[i]) fn += lam0(idx);
+  ...
+}</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1802&ndash;1804</p>
+
+<p><strong>Mapping a Cartesian force to joint torque</strong> is the classic operational-space step:
+   the Jacobian-transpose relation</p>
+\[
+\tau_{\text{force}} \;=\; \sum_{i=1}^{3} J_i(q)^\top \, \big(f_n^i\, \hat n_i\big)
+\]
+<p>
+  where <code>J<sub>i</sub></code> is fingertip <code>i</code>'s translational Jacobian (world frame,
+  hand-columns only) and <code>n&#770;<sub>i</sub></code> is the direction that presses into the cube
+  face for that finger, rotated into the world by the cube's <em>current</em> orientation:
+</p>
+<pre>Eigen::MatrixXd J(3, sim_plant.num_velocities());
+sim_plant.CalcJacobianTranslationalVelocity(
+    plant_ctx, drake::multibody::JacobianWrtVariable::kV,
+    sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
+    sim_plant.world_frame(), sim_plant.world_frame(), &amp;J);
+tau_force += J.leftCols(n_hand_v).transpose() * (fn * (R_WC * press_C[i]));</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1805&ndash;1811 &nbsp;&middot;&nbsp;
+   <code>press_C</code> = <code>{(0,1,0), (0,1,0), (0,-1,0)}</code>, the same fixed per-finger press
+   direction (in the cube's local frame) already used by the <code>task_space</code> executor, rotated
+   by <code>R_WC</code> from the cube's live pose (<code>CubePoseFromPositions</code>).</p>
+
+<p>Summed over the three fingers, this is the second term added into the final command:</p>
+<pre>tau_hand = tau_motion + tau_force;</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1814</p>
+
+<h3>2c. After both terms: the shared safety clamp</h3>
+<p>
+  Like every other C3-phase executor in the file, the combined torque is clamped to the physical torque
+  budget before being sent to the simulator &mdash; this is the same guard that stopped an unclamped
+  321&nbsp;N&middot;m spike at pin-release from wrecking the grasp in an earlier debugging session:
+</p>
+<pre>if (phase == kC3) {
+  tau_hand = tau_hand.cwiseMin(FLAGS_tau_max).cwiseMax(-FLAGS_tau_max);
+}</pre>
+<p class="loc">allegro_grasp_c3_squeeze.cc:1922&ndash;1923</p>
+
+<hr>
+
+<h2>3. What this executor deliberately does <em>not</em> use</h2>
+<ul>
+  <li><strong>C3's input solution <code>u&#8320;</code></strong> &mdash; not read at all in this mode. The
+      whole point is to stop trusting the LCS's own actuation channel and instead realize the plan's
+      <em>motion</em> and <em>force</em> intentions directly on the true dynamics.</li>
+  <li><strong>Hand-tuned task-space PD to a fixed fingertip target</strong> (as in <code>task_space</code>
+      mode) &mdash; the motion target here comes from the plan's own next state, not a fixed geometric
+      grasp point, so a good plan is required for this executor to track something sensible.</li>
+  <li><strong>Force floors</strong> (<code class="flag">--force_floor</code> in <code>task_space</code>
+      mode) &mdash; the commanded normal force is exactly what C3 planned, with no artificial minimum
+      propping it up. If the plan under-grips, this executor will under-grip too, by design: that's what
+      makes it a real test of the plan.</li>
+</ul>
+
+<h2>4. Why this is the right test of the planner</h2>
+<p>
+  Because this executor does not add any independent stabilizing controller of its own beyond exact
+  physics realization of what C3 already decided, its success or failure is attributable to the plan
+  itself, not to the executor compensating for the plan's weaknesses. Concretely:
+</p>
+<ul>
+  <li>If the grasp holds under <code>osc</code> mode, C3's planned configuration and grip force are
+      genuinely sufficient to hold the cube on the real dynamics &mdash; the plan is validated
+      end-to-end.</li>
+  <li>If it still fails, the failure is in the <em>plan</em> (its target configuration or its force
+      allocation), not in how faithfully that plan was realized &mdash; ruling out actuation-mapping bugs
+      as the culprit and pointing back at the C3 cost/solver/model tuning already investigated
+      (<code class="flag">--w_cube_vel</code>, <code class="flag">--rho_scale</code>,
+      <code class="flag">--admm_iter</code>, <code class="flag">--w_G</code>).</li>
+</ul>
+
+<h2>5. Running it</h2>
+<pre>bazel run //examples/sampling_c3:allegro_grasp_c3_squeeze -- --lcm_publish=true \
+  --k_hold=0 --w_vel=0 --mu=0.5 --num_friction_directions=4 \
+  --rho_scale=1.08 --admm_iter=100 --w_G=0.5 --w_cube_vel=100 \
+  --exec_mode=osc --osc_kp=300 --osc_kd=15</pre>
+<p>
+  <code class="flag">--osc_kp</code>/<code class="flag">--osc_kd</code> are untuned defaults. Overshoot
+  or ringing &rarr; lower <code>osc_kp</code>. Sluggish tracking of the plan's motion &rarr; raise it.
+  Because <code>CalcInverseDynamics</code> already accounts for the true mass matrix, these gains behave
+  like a proper acceleration-space PD (units: rad/s&sup2; per rad and per rad/s), not a raw torque-space
+  PD &mdash; they should not need to be anywhere near the <code>task_space</code> executor's
+  <code>--task_kp</code>/<code>--task_kd</code> or the pinned-phase <code>--kp</code>/<code>--kd</code>.
+</p>
+
+<div class="warn">
+  <strong>A caveat worth stating plainly.</strong> This inline implementation is a hand-built, minimal
+  version of operational-space control &mdash; a joint-space computed-torque term plus a task-space
+  Jacobian-transpose force term, summed. It does not use an operational-space (task) inertia matrix
+  \(\Lambda = (J M^{-1} J^\top)^{-1}\) to properly decouple the two objectives, and it does not resolve
+  any conflict between the motion and force terms via a QP. dairlib has a full OSC framework
+  (<code>systems/controllers/osc/</code>: <code>operational_space_control.h</code>,
+  <code>inverse_dynamics_qp.h</code>, <code>joint_space_tracking_data.h</code>,
+  <code>external_force_tracking_data.h</code>, and friends) that does this properly, with friction-cone
+  and torque-limit constraints inside the QP. Migrating to it would be the natural next step for a
+  production-quality controller, but requires restructuring this file's manual simulation loop into a
+  Drake system diagram &mdash; a bigger change deliberately deferred here in favor of a fast, in-loop
+  answer to "does the plan actually hold."
+</div>
+
+</body>
+</html>
