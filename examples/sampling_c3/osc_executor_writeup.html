@@ -154,9 +154,10 @@ M(q)\,\ddot q + C(q,\dot q)\,\dot q = \tau_g(q) + \tau_{\text{applied}}
 </p>
 <pre>VectorXd vdot_full = VectorXd::Zero(sim_plant.num_velocities());
 sim_plant.SetVelocitiesInArray(sim_allegro, qddot_cmd_hand, &amp;vdot_full);
-drake::multibody::MultibodyForces&lt;double&gt; no_ext_forces(sim_plant);
+drake::multibody::MultibodyForces&lt;double&gt; applied_forces(sim_plant);
+sim_plant.CalcForceElementsContribution(plant_ctx, &amp;applied_forces);  // gravity!
 const VectorXd tau_id =
-    sim_plant.CalcInverseDynamics(plant_ctx, vdot_full, no_ext_forces);
+    sim_plant.CalcInverseDynamics(plant_ctx, vdot_full, applied_forces);
 const VectorXd tau_motion =
     sim_plant.GetVelocitiesFromArray(sim_allegro, tau_id);</pre>
 <p class="loc">allegro_grasp_c3_squeeze.cc:1784&ndash;1790</p>
@@ -173,15 +174,18 @@ const VectorXd tau_motion =
   hand's block of a full-plant vector by model instance, so no manual index bookkeeping is needed.
 </div>
 
-<div class="note">
-  <strong>Why there's no separate <code>tau_g</code> term here.</strong> Unlike the <code>task_space</code>
-  executor, which explicitly adds <code>tau_g</code> computed via
-  <code>CalcGravityGeneralizedForces</code>, this term needs no such addition &mdash;
-  <code>CalcInverseDynamics</code> already subtracts <code>&tau;<sub>g</sub>(q)</code> internally as part
-  of the formula above. Passing <code>qddot_cmd_hand&nbsp;=&nbsp;0</code> at rest would, by itself,
-  return exactly the gravity-compensation torque. Adding a separate <code>tau_g</code> on top would
-  double-count it, exactly the bug fixed for the <code>task_space</code> executor's post-release branch
-  earlier (<code class="flag">--exec_grav_comp</code>, default off).
+<div class="warn">
+  <strong>Gravity is NOT automatic &mdash; you must supply it.</strong> Drake's
+  <code>CalcInverseDynamics(context, vdot, external_forces)</code> computes
+  <code>&tau; = M(q)v&#775; + C(q,v)v &minus; &tau;<sub>app</sub></code>, where <code>&tau;<sub>app</sub></code>
+  comes <em>only</em> from whatever is in <code>external_forces</code>. It does <strong>not</strong> add
+  gravity by itself. So <code>CalcForceElementsContribution</code> (which loads gravity, joint damping,
+  etc. into <code>applied_forces</code>) must be called first; then the returned torque is
+  <code>M v&#775; + C v &minus; &tau;<sub>gravity</sub></code> &mdash; computed torque <em>with</em>
+  gravity compensation. Passing an empty <code>MultibodyForces</code> omits gravity entirely, so at a
+  static hold (<code>v&#775;&#8776;0, v&#8776;0</code>) the returned torque is &#8776;0 and the finger
+  joints droop as if unactuated. (This was a real bug in an earlier version of this executor: the fingers
+  fell in Meshcat despite the plan looking fine.)
 </div>
 
 <h3>2b. Term 2 — task-space contact force (the "operational space" piece)</h3>

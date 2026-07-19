@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>C3 Optimizer Internals — What Every Solver Parameter Actually Does</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script>
+  MathJax = {
+    tex: {
+      inlineMath:  [['\\(', '\\)']],
+      displayMath: [['\\[', '\\]']]
+    },
+    chtml: { scale: 1.05 }
+  };
+  </script>
+  <script id="MathJax-script" async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f7f6f2;
+      --white:     #ffffff;
+      --text:      #18181b;
+      --sub:       #374151;
+      --muted:     #9ca3af;
+      --border:    #e5e7eb;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+      --shadow:    0 1px 3px rgba(0,0,0,0.07), 0 6px 18px rgba(0,0,0,0.05);
+
+      --blue:      #1d4ed8;
+      --blue-bg:   #eff6ff;
+      --blue-bd:   #bfdbfe;
+
+      --green:     #166534;
+      --green-bg:  #f0fdf4;
+      --green-bd:  #86efac;
+
+      --red:       #991b1b;
+      --red-bg:    #fff5f5;
+      --red-bd:    #fca5a5;
+
+      --amber:     #92400e;
+      --amber-bg:  #fffbeb;
+      --amber-bd:  #fcd34d;
+
+      --indigo:    #4338ca;
+      --indigo-bg: #eef2ff;
+      --indigo-bd: #c7d2fe;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.78;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    header {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 4.5rem 2.5rem 3.5rem;
+      text-align: center;
+    }
+
+    .pill {
+      display: inline-block;
+      background: var(--indigo-bg);
+      color: var(--indigo);
+      border: 1px solid var(--indigo-bd);
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.3rem 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    header h1 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: clamp(2rem, 5vw, 2.9rem);
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      max-width: 760px;
+      margin: 0 auto 1.1rem;
+    }
+
+    header p.lead {
+      color: #6b7280;
+      max-width: 640px;
+      margin: 0 auto;
+      font-size: 0.97rem;
+      line-height: 1.65;
+    }
+
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 3rem 2.5rem 5rem;
+    }
+
+    .sec {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin: 3.2rem 0 1.4rem;
+    }
+
+    .sec .slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+
+    .sec h2 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.025em;
+      flex-shrink: 0;
+    }
+
+    .sec .rule { flex: 1; height: 1px; background: var(--border); }
+
+    p { margin-bottom: 0.95rem; color: var(--sub); }
+    p:last-child { margin-bottom: 0; }
+    strong { color: var(--text); font-weight: 600; }
+    em { font-style: italic; }
+
+    ul, ol { padding-left: 1.5rem; margin-bottom: 0.95rem; }
+    li { margin-bottom: 0.3rem; color: var(--sub); }
+
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem 1.7rem;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card.blue   { border-left: 3px solid var(--blue);   background: var(--blue-bg);  border-color: var(--blue-bd); }
+    .card.green  { border-left: 3px solid var(--green);  background: var(--green-bg); border-color: var(--green-bd); }
+    .card.red    { border-left: 3px solid var(--red);    background: var(--red-bg);   border-color: var(--red-bd); }
+    .card.amber  { border-left: 3px solid var(--amber);  background: var(--amber-bg); border-color: var(--amber-bd); }
+    .card.indigo { border-left: 3px solid var(--indigo); background: var(--indigo-bg);border-color: var(--indigo-bd); }
+
+    .card-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+    .card.blue   .card-label { color: var(--blue); }
+    .card.green  .card-label { color: var(--green); }
+    .card.red    .card-label { color: var(--red); }
+    .card.amber  .card-label { color: var(--amber); }
+    .card.indigo .card-label { color: var(--indigo); }
+
+    .card h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.55rem;
+    }
+
+    .eq {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+      text-align: center;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.84em;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 0.12em 0.42em;
+      border-radius: 4px;
+      color: #374151;
+    }
+
+    pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      box-shadow: var(--shadow-sm);
+    }
+
+    pre .kw  { color: #93c5fd; }
+    pre .ty  { color: #6ee7b7; }
+    pre .cm  { color: #6b7280; }
+    pre .st  { color: #fcd34d; }
+
+    .tbl-wrap {
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      margin: 1.1rem 0;
+    }
+
+    table { width: 100%; border-collapse: collapse; background: var(--white); font-size: 0.9rem; }
+    thead tr { background: #f9fafb; }
+    th {
+      padding: 0.7rem 1.1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #6b7280;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 0.65rem 1.1rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--sub); }
+    tr:last-child td { border-bottom: none; }
+
+    .yes    { color: var(--green); font-weight: 600; }
+    .no     { color: var(--red);   font-weight: 600; }
+    .cond   { color: var(--amber); font-weight: 600; }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 560px) { .two-col { grid-template-columns: 1fr; } }
+
+    .three-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 700px) { .three-col { grid-template-columns: 1fr; } }
+
+    blockquote {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-bg);
+      border-radius: 0 8px 8px 0;
+      padding: 0.9rem 1.3rem;
+      margin: 1.2rem 0;
+    }
+    blockquote p { color: #1e3a8a; font-style: italic; }
+
+    hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+    .step-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--indigo-bg);
+      border: 1px solid var(--indigo-bd);
+      border-radius: 8px;
+      padding: 0.3rem 0.8rem;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--indigo);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.6rem;
+    }
+
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin: 1.4rem 0;
+    }
+
+    .pipe-box {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-left: 5px solid var(--indigo);
+      border-radius: 10px;
+      padding: 1.3rem 1.6rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .pipe-box.loop2 { border-left-color: var(--blue); }
+    .pipe-box.loop3 { border-left-color: var(--green); }
+
+    .pipe-arrow {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 0.55rem 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-style: italic;
+      line-height: 1.3;
+    }
+
+    .pipe-box .pipe-label {
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--indigo);
+      margin-bottom: 0.4rem;
+    }
+    .pipe-box.loop2 .pipe-label { color: var(--blue); }
+    .pipe-box.loop3 .pipe-label { color: var(--green); }
+
+    .pipe-box .pipe-name {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+
+    .pipe-box .pipe-detail {
+      font-size: 0.98rem;
+      color: var(--sub);
+      line-height: 1.6;
+    }
+
+    #toc {
+      background: var(--white);
+      border-bottom: 1px solid var(--border);
+      padding: 1.5rem 0;
+    }
+
+    #toc .toc-title {
+      max-width: 1200px;
+      margin: 0 auto 0.9rem;
+      padding: 0 2.5rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    #toc .toc-list {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 2.5rem;
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.15rem 2rem;
+    }
+
+    #toc .toc-list li { margin: 0; }
+
+    #toc .toc-list a {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.88rem;
+      color: var(--sub);
+      transition: background 0.12s, color 0.12s;
+    }
+
+    #toc .toc-list a:hover {
+      background: var(--indigo-bg);
+      color: var(--indigo);
+    }
+
+    .toc-slug {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      flex-shrink: 0;
+      min-width: 2rem;
+    }
+
+    #toc .toc-list a:hover .toc-slug { color: var(--indigo); }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--white);
+    }
+
+    a { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+    a:hover { color: var(--indigo); }
+
+    .term { font-weight: 600; color: var(--text); }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="pill">Solver Reference</span>
+  <h1>C3 Optimizer Internals — What Every Parameter Actually Does</h1>
+  <p class="lead">
+    A parameter-first companion to <a href="../../c3_solver_internals.html">c3_solver_internals.html</a>
+    (which derives the QPCC/ADMM math from scratch). This doc assumes that math and
+    answers a narrower question: for every flag you can pass to
+    <code>allegro_grasp_c3_squeeze</code> that touches the solver — <code>w_G</code>,
+    <code>admm_iter</code>, <code>rho_scale</code>, <code>osqp_eps</code>, and the rest —
+    what is it, what does moving it actually change, and which of them silently depend
+    on each other. Every mechanism below is cited to the exact source line, and the
+    worked examples are real failures hit this session.
+  </p>
+</header>
+
+<nav id="toc" aria-label="Table of contents">
+  <p class="toc-title">Contents</p>
+  <ol class="toc-list">
+    <li><a href="#s0"><span class="toc-slug">§0</span>Three Nested Solves</a></li>
+    <li><a href="#s1"><span class="toc-slug">§1</span>G, w, rho_scale — From Scratch</a></li>
+    <li><a href="#s2"><span class="toc-slug">§2</span>admm_iter: How Many Actually Matter</a></li>
+    <li><a href="#s3"><span class="toc-slug">§3</span>w_G vs w_U</a></li>
+    <li><a href="#s4"><span class="toc-slug">§4</span>OSQP: the Solver Inside the Solver</a></li>
+    <li><a href="#s5"><span class="toc-slug">§5</span>Two Different "Warm Start"s</a></li>
+    <li><a href="#s6"><span class="toc-slug">§6</span>Cost Weights: Q and R</a></li>
+    <li><a href="#s7"><span class="toc-slug">§7</span>Physical / Model Parameters</a></li>
+    <li><a href="#s8"><span class="toc-slug">§8</span>Cadence and Compute Knobs</a></li>
+    <li><a href="#s9"><span class="toc-slug">§9</span>Diagnosing Convergence: a Playbook</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<div class="card indigo" style="margin-bottom:2.2rem;">
+  <div class="card-label">Read this first, top to bottom — the rest of the doc fills in the why and the exact numbers</div>
+  <h3>One C3 Solve, Start to Finish</h3>
+  <ol style="margin-top:0.7rem; margin-bottom:0;">
+    <li><strong>Build the problem.</strong> Relinearize around the current real state → get the LCS matrices (A, B, D, E, F, H, c). Happens every <code>relin_period_steps</code> control ticks, not every solve.</li>
+    <li><strong>Split it in two.</strong> The true problem is non-convex — a force-times-gap-equals-zero constraint can't go in a normal QP — so make two copies of the trajectory: <code>z</code> (must obey dynamics/bounds) and <code>δ</code> (must obey complementarity). Add a memory variable <code>w</code> to track how far apart they drift.</li>
+    <li><strong>z-update.</strong> With <code>δ</code> and <code>w</code> held fixed, solve one real convex QP for <code>z</code>: the true MPC cost, plus a penalty (weight <code>G</code>) for disagreeing with <code>δ</code>. One call to OSQP — the expensive step. <em>(§1, §4)</em></li>
+    <li><strong>δ-update.</strong> With the new <code>z</code> held fixed, snap onto the complementarity-legal set. For C3+ this is instant closed-form arithmetic, no solver at all. <em>(§0, §3)</em></li>
+    <li><strong>w-update.</strong> <code>w</code> is a running total of every past round's leftover gap: <code>w ← w + (z−δ)</code>. Next round's z-update then aims at <code>δ−w</code> instead of plain <code>δ</code> — so a consistent bias gets cancelled permanently instead of rediscovered from scratch each round, which is what lets z and δ eventually land <em>exactly</em> together, not just close. Then next round's "agree with each other" penalty is made stiffer too: <code>G *= rho_scale</code>, and <code>w</code> is rescaled to match. <em>(§1)</em></li>
+    <li><strong>Repeat steps 3-5, <code>admm_iter</code> times.</strong> Because <code>G</code> grows exponentially, only the first ≈ <code>log(1000)/log(rho_scale)</code> rounds actually move the answer — after that the penalty dominates and the solve is effectively frozen. <em>(§1, §2)</em></li>
+    <li><strong>One last z-update</strong> after the loop ends, so the solve finishes on a dynamics-consistent trajectory rather than a δ.</li>
+    <li><strong>Only the first knot ships.</strong> The plan covers <code>N</code> knots, but only <code>u_0</code>/<code>x_0</code> is sent to the robot. Everything past that is discarded and replanned from scratch next solve, every <code>c3_period_steps</code> control ticks.</li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     §0  THREE NESTED SOLVES
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s0">
+  <span class="slug">§0</span>
+  <h2>Three Nested Solves</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Almost every confusing interaction between parameters comes from not knowing
+  which of three nested loops a given flag lives in. The three are nested like
+  Russian dolls: one call to <code>C3::Solve()</code> runs the outer loop; every
+  single round of the outer loop makes one call into the middle loop; that one
+  call itself runs the inner loop start to finish before returning. Concretely,
+  for one solve at the defaults below (<code>admm_iter=20</code>,
+  <code>max_iter=4000</code>): the outer loop runs <strong>20 times</strong>,
+  each of those 20 times triggers one full solve of the middle loop, and each
+  of <em>those</em> solves can itself take up to <strong>4000</strong> internal
+  steps. Three completely different, unrelated things are all called an
+  "iteration" here — that's the source of almost every confusing question about
+  these flags. From the outside in:
+</p>
+
+<div class="pipeline">
+  <div class="pipe-box">
+    <div class="pipe-label">Loop 1 — Outer · runs once per C3 solve</div>
+    <div class="pipe-name">C3's own ADMM</div>
+    <div class="pipe-detail"><code>admm_iter</code> rounds of z-update → δ-update → w-update. This is the layer that takes the hard, non-convex problem and splits it into two easy pieces it alternates between — described from scratch in §1.</div>
+  </div>
+  <div class="pipe-arrow">↓ each round of Loop 1 calls this once</div>
+  <div class="pipe-box loop2">
+    <div class="pipe-label">Loop 2 — the z-update · runs once per Loop-1 round</div>
+    <div class="pipe-name">One call to OSQP</div>
+    <div class="pipe-detail">A real, standard convex QP (no complementarity, just dynamics and bounds), handed to the OSQP solver and solved to <code>osqp_eps</code> tolerance. This is the expensive step — the one actually doing the numerical heavy lifting.</div>
+  </div>
+  <div class="pipe-arrow">↓ that one call runs this internally</div>
+  <div class="pipe-box loop3">
+    <div class="pipe-label">Loop 3 — inside OSQP · runs once per Loop-2 call</div>
+    <div class="pipe-name">OSQP's own internal iteration</div>
+    <div class="pipe-detail">OSQP is, internally, its own ADMM-family algorithm — the same splitting trick one level up, used to solve one plain QP fast. It has its own internal <code>rho</code>/<code>sigma</code>/<code>alpha</code> and can take up to <code>max_iter</code> steps before returning its answer back up to Loop 1.</div>
+  </div>
+</div>
+
+<p>
+  One thing doesn't fit neatly on this ladder: the δ-update (the projection
+  onto the complementarity set) also happens once per Loop-1 round, right
+  alongside the z-update above — but for C3+ (the default here) it isn't a
+  solve at all, it's a picture worth actually drawing.
+</p>
+
+<p style="font-weight:600; color:var(--text);">The picture: an L-shaped legal zone on a 2D plane</p>
+
+<p>
+  Put λ (the force) on the x-axis and η (the gap) on the y-axis. The rule
+  \(0\leq\lambda\perp\eta\geq 0\) means exactly one of the two can be positive,
+  never both, never negative. On these axes that legal set is exactly two rays
+  glued together at the origin — the positive λ-axis, and the positive η-axis.
+  A right angle, an upside-down L. That's the <em>entire</em> legal region;
+  everywhere else on the plane — both positive, either negative — is forbidden.
+</p>
+
+<p>
+  Loop 2's z-update hands back some point \((\lambda^\circ,\eta^\circ)=z+w\)
+  that has no idea this L exists — it solved a plain QP, nothing about
+  complementarity. That point can land anywhere on the plane, usually not on
+  the L. The δ-update's whole job: snap it to the nearest legal point on the L.
+</p>
+
+<p>
+  The actual rule, matching <code>SolveSingleProjection</code>
+  (<code>c3_plus.cc:204-218</code>) exactly, is two steps, not one:
+</p>
+
+<div class="eq" style="text-align:left;">
+  1. Compare \(\lambda^\circ\) and \(\eta^\circ\). Whichever is bigger, keep it. Set the other to exactly 0.<br/>
+  2. Clip whatever's left: if it's still negative, squash it to 0 too.
+</div>
+
+<p>Three landing zones, worked with numbers:</p>
+
+<ul>
+  <li><code>(λ°,η°) = (5, 3)</code> — both positive, λ bigger. Step 1 keeps λ=5, zeros η → <code>(5, 0)</code>. Step 2 changes nothing (5 is already ≥0). <strong>Lands on the λ-axis.</strong></li>
+  <li><code>(λ°,η°) = (3, 5)</code> — η bigger. Step 1 keeps η=5, zeros λ → <code>(0, 5)</code>. <strong>Lands on the η-axis.</strong></li>
+  <li><code>(λ°,η°) = (−5, −3)</code> — both negative. −3 is "bigger" (less negative), so step 1 keeps η=−3, zeros λ → <code>(0, −3)</code>. <strong>Step 2</strong> then clips that surviving −3 down to 0 → <code>(0, 0)</code>, the corner where the two rays meet.</li>
+</ul>
+
+<p>
+  That combination is the exact geometric nearest-point snap onto the L — not
+  an approximation, just computed by one comparison instead of by solving a
+  distance-minimization problem. It's plain arithmetic: no solver, no
+  tolerance, no iteration count. Keep that in mind for §3 — it means some
+  parameters that sound like they should shape the projection's answer only
+  shape <em>which side it lands on</em>, not how far out.
+</p>
+
+<div class="card amber">
+  <div class="card-label">The name collision to watch for</div>
+  <p>
+    Loop 1 has a parameter called <code>rho_scale</code>. Loop 3 (OSQP, set up at
+    <code>allegro_grasp_c3_squeeze.cc:1340</code>) has its own, completely unrelated
+    parameter also called <code>rho</code>. They are not the same number, do not
+    affect the same thing, and changing one does nothing to the other. Every time
+    this doc says "rho_scale," it means Loop 1's; every time it says "OSQP's rho,"
+    it means Loop 3's. See §4.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §1  RHO_SCALE: THE G RAMP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s1">
+  <span class="slug">§1</span>
+  <h2>G, w, rho_scale — From Scratch</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  This is the single most consequential parameter group in the whole system,
+  and the root cause of the worst bug this session hit. Before any code: what
+  problem are <code>G</code>, <code>w</code>, and <code>rho_scale</code> even
+  for? Built up from nothing, with every symbol defined before it's used.
+</p>
+
+<p style="font-weight:600; color:var(--text);">The problem: two answers that need to agree</p>
+
+<p>
+  ADMM (companion doc §5) keeps two copies of the trajectory. \(z\) is solved to
+  satisfy the easy constraints — dynamics, box bounds — call this the
+  <span class="term">z-update</span>. \(\delta\) is solved to satisfy the hard
+  constraint — complementarity — the <span class="term">δ-update</span>. Each is
+  solved separately because each, <em>by itself</em>, is easy. The catch: with
+  nothing tying them together, solving \(z\) with zero regard for \(\delta\)
+  just gives the best trajectory while completely ignoring complementarity —
+  exactly the problem we were trying to avoid in the first place.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Fix 1: penalize disagreement — this is what G is</p>
+
+<p>
+  Add a term to the z-update's cost that punishes \(z\) for being far from
+  \(\delta\):
+</p>
+
+<div class="eq">
+  \[ \min_{z}\;\; c(z) \;+\; \frac{G}{2}\,\|z - \delta\|^2 \]
+</div>
+
+<p>
+  Read left to right: \(c(z)\) is the real thing you care about — the MPC cost
+  from §6, does the plan track the goal, avoid huge forces. \(\|z-\delta\|^2\)
+  is one number measuring how far apart the two copies currently sit — zero if
+  they match, growing the further apart they get. \(G\) is <em>just a number
+  multiplying that distance</em>. That's the entire idea of \(G\) — a dial with
+  two extremes:
+</p>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">G = 0</div>
+    <p>The penalty vanishes. This is "solve for \(z\) with no regard for \(\delta\)" — back to the broken starting point.</p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--red);">G = one million</div>
+    <p>Any disagreement \(\|z-\delta\|^2>0\), even tiny, gets multiplied by a million and becomes enormous. The optimizer sacrifices almost anything in \(c(z)\) to avoid it — \(z\) ends up equal to \(\delta\), full stop.</p>
+  </div>
+</div>
+
+<p>
+  So \(G\) is literally <em>how much do we care about agreement, relative to
+  how much we care about the plan being good</em>. The flag <code>w_G</code>
+  sets \(G\)'s starting value — the flag and the math symbol are related but
+  not the same thing: <code>w_G</code> is a number you pass on the command
+  line; \(G\) is what it becomes inside the solver, and (as §1 continues below)
+  it does not stay at that starting value.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">What "the coefficient dwarfs the cost" means — the actual mechanism</p>
+
+<p>
+  This isn't a figure of speech — it falls straight out of calculus, and it's
+  worth deriving once so it's not a black box. To minimize a smooth function,
+  set its derivative to zero. Do that to the boxed expression above, treating
+  \(\delta\) as a fixed constant (it's held fixed during the z-update):
+</p>
+
+<div class="eq">
+  \[ \frac{\partial}{\partial z}\Bigl[c(z) + \tfrac{G}{2}\|z-\delta\|^2\Bigr] = \nabla c(z) + G(z-\delta) = 0 \]
+</div>
+
+<p>Solve that one line for \(z\):</p>
+
+<div class="eq">
+  \[ z \;=\; \delta \;-\; \frac{\nabla c(z)}{G} \]
+</div>
+
+<p>
+  Look at what this says: the optimal \(z\) equals \(\delta\), corrected by a
+  term that <em>shrinks as \(G\) grows</em>. \(\nabla c(z)\) — the gradient, the
+  direction the true cost wants to move — is fixed by the actual physics and
+  goals of the problem. But it's divided by \(G\). Make \(G\) large enough and
+  \(\nabla c(z)/G\) rounds down to nothing. <strong>The true cost's entire
+  influence on the answer gets divided away</strong>, leaving \(z \approx
+  \delta\) regardless of what the real objective wanted. That is exactly what
+  "the coefficient dwarfs the cost" means: a literal division in the optimality
+  condition, zeroing out the one place the real objective enters the answer.
+</p>
+
+<div class="card amber">
+  <div class="card-label">A number to make this concrete</div>
+  <p>
+    This session's own logs put a typical per-knot cost \(c(z)\) in the tens to
+    low hundreds (any <code>COST PER KNOT</code> table). Say \(\|\nabla c(z)\|
+    \sim 100\) and \(z,\delta\) differ by 1cm (0.01) in some coordinate. At
+    \(G=1\), the correction \(\nabla c(z)/G \approx 100\) — bigger than the gap
+    itself, so the true cost has real say in where \(z\) lands. At \(G=1000\),
+    the same correction is \(100/1000=0.1\) — already smaller than the 1cm gap
+    it's supposed to help close. The true cost has been divided down to a
+    rounding error.
+  </p>
+</div>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Fix 2: a finite G alone leaves a permanent gap — this is what w fixes</p>
+
+<p>
+  Problem with fix 1 as the whole story: at any <em>finite</em> \(G\), the
+  equation \(z = \delta - \nabla c(z)/G\) says \(z\) always sits slightly off
+  from \(\delta\) — by exactly \(\nabla c(z)/G\), which never actually reaches
+  zero. Alternately solving \(z\) pulled toward \(\delta\), then \(\delta\)
+  pulled toward \(z\), with only this plain penalty, can circle forever, always
+  a hair apart, never landing on one exact shared answer.
+</p>
+
+<p>
+  The fix is a second variable \(w\) — a running memory of the gap. Penalize
+  \(\|z - \delta + w\|^2\) instead of \(\|z-\delta\|^2\), and after every round
+  update \(w\) by adding whatever gap was just observed:
+</p>
+
+<div class="eq">
+  \[ w \;\leftarrow\; w + (z - \delta) \]
+</div>
+
+<p>
+  Read this as a ledger. If \(z\) keeps landing slightly on one side of
+  \(\delta\), round after round, \(w\) keeps accumulating that same offset,
+  growing a little each iteration. That growing \(w\) then appears inside next
+  round's penalty term, nudging \(z\) a little further to compensate for the
+  persistent bias. Once \(z\) and \(\delta\) finally land on the exact same
+  point, \((z-\delta)=0\), so \(w\) stops changing — it has found the exact
+  extra push needed to make the two independent subproblems agree perfectly,
+  not just approximately. One-sentence version: \(G\) is the stiffness of the
+  spring pulling \(z\) and \(\delta\) together; \(w\) is how far that spring is
+  currently stretched.
+</p>
+
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">The actual code, and why rho_scale touches G and w together</p>
+
+<p>
+  Now <code>C3::ADMMStep</code> (<code>c3_src/core/c3.cc:419-447</code>),
+  verbatim — every single ADMM iteration, right after the z-update and δ-update
+  above run once each:
+</p>
+
+<pre>
+<span class="kw">for</span> (<span class="kw">int</span> i = 0; i &lt; N_; ++i) {
+  w-&gt;at(i) = w-&gt;at(i) + z[i] - delta-&gt;at(i);   <span class="cm">// the ledger update from Fix 2, above</span>
+  w-&gt;at(i) = w-&gt;at(i) / options_.rho_scale;     <span class="cm">// then rescaled down...</span>
+  G-&gt;at(i) = G-&gt;at(i) * options_.rho_scale;      <span class="cm">// ...as G is scaled up</span>
+}
+</pre>
+
+<p>
+  Two things happen together, and they're linked, not two separate mechanisms.
+  Multiplying <code>G</code> makes the spring stiffer — pulls \(z\) and
+  \(\delta\) together harder next round. But \(w\) (the ledger) was accumulated
+  <em>under the old, softer spring</em> — it represents a stretch calibrated to
+  the old stiffness. Make the spring stiffer without adjusting the stored
+  stretch and the same stored number now represents a very different real
+  force. Dividing \(w\) by the same <code>rho_scale</code> that multiplies
+  \(G\) keeps the actual force being applied (roughly \(G \times w\)) consistent
+  as the stiffness dial turns — recalibrating the ledger's units each time the
+  spring changes, not bolting on a second independent mechanism.
+</p>
+
+<p>
+  <code>G</code> starts at <code>w_G · I</code> and gets <strong>multiplied by
+  <code>rho_scale</code> every single ADMM iteration</strong> — not added to,
+  multiplied. After <em>i</em> iterations:
+</p>
+
+<div class="eq">
+  \[ G_i = w_G \cdot \text{rho\_scale}^{\,i} \]
+</div>
+
+<p>
+  Combine this with the amber card above and the picture is complete: every
+  ADMM round, the "spring" gets exponentially stiffer, which (by the derivation
+  two sections up) exponentially divides away the true cost's influence on the
+  z-update's answer. The flag's own help text
+  (<code>allegro_grasp_c3_squeeze.cc:325-330</code>) states the resulting rule
+  of thumb, and it's exact — exponential growth means the number of iterations
+  before the cost's influence is gone is a <em>logarithm</em>, not a fraction of
+  <code>admm_iter</code>:
+</p>
+
+<div class="eq">
+  \[ \text{useful iterations} \approx \frac{\ln(1000)}{\ln(\text{rho\_scale})} \]
+</div>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>rho_scale</th><th>Iterations until G ≈ 1000×</th><th>admm_iter needed to actually use them</th></tr></thead>
+    <tbody>
+      <tr><td><code>1.2</code></td><td>~38</td><td>≥ 40</td></tr>
+      <tr><td><code>1.08</code></td><td>~90</td><td>≥ 90</td></tr>
+      <tr><td><code>1.04</code></td><td>~176</td><td>≥ 175</td></tr>
+      <tr><td><code>3.0</code> <span class="cond">(the original bug)</span></td><td>~6.3, i.e. <strong>7</strong></td><td>anything above 7 is wasted</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card red">
+  <div class="card-label">What actually happened this session</div>
+  <p>
+    <code>rho_scale=3</code> was the original value. \(\ln(1000)/\ln(3) \approx
+    6.3\) — ADMM was effectively frozen after 7 iterations <em>no matter what
+    <code>admm_iter</code> was set to</em>. Every extra iteration beyond ~7 was
+    solving a QP whose consensus penalty so overwhelmed the true cost that the
+    answer barely moved. This looked exactly like "the plan is just bad" — the
+    real cause was a mistuned exponent, not a bug in the physics, the LCS, or the
+    executor. Fixed by exposing <code>--rho_scale</code> as a flag and dropping
+    it to <code>1.08</code>-<code>1.2</code>.
+  </p>
+</div>
+
+<p>
+  The corollary that mattered just as much, later: <strong>if you raise the cost
+  weights (Q), you must raise <code>w_G</code> to match, or lower
+  <code>rho_scale</code>/raise <code>admm_iter</code> to compensate</strong> —
+  because <code>G</code>'s starting point is <code>w_G</code>, and it needs to
+  reach a magnitude comparable to Q before the z-update's proximal term can
+  actually force agreement. Jumping <code>k_hold</code> (a Q-block weight, §6)
+  from 10 to 2000 — a 200× increase — while leaving <code>w_G=1.5</code>
+  unchanged broke convergence outright: λ at the executed knot started
+  sign-flipping solve to solve (0.81 → 1.23 → <strong>−0.17</strong> → 0.01 →
+  <strong>−1.16</strong> N across nine consecutive 40ms-apart solves, on a
+  cube that wasn't moving). Raising <code>w_G</code> to 10 fixed it. <code>G</code>
+  and <code>Q</code> are not automatically kept in balance by the solver — that's
+  a manual tuning invariant you have to maintain yourself.
+</p>
+
+<p>
+  Three knobs can technically raise <code>G_final = w_G · rho_scale^admm_iter</code>
+  to match a bigger Q, but they are not equally safe:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Lever</th><th>Effect</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>w_G</code> ↑</td>
+        <td>Scales <code>G</code> at every iteration by the same factor — same ramp shape, just shifted up. What actually fixed the 200× jump above, with only a ~7× bump (the exponential ramp itself supplies the rest).</td>
+        <td class="yes">Preferred — direct, free, no extra compute</td>
+      </tr>
+      <tr>
+        <td><code>admm_iter</code> ↑</td>
+        <td>Lets the same ramp run longer, reaching a bigger <code>G</code> just by more rounds. Has a ceiling: past ≈ <code>ln(1000)/ln(rho_scale)</code> rounds (§1's table), <code>G</code> is already ~1000× its start and further rounds barely add anything (§2).</td>
+        <td class="cond">Fine, but costs real solve time and has a ceiling</td>
+      </tr>
+      <tr>
+        <td><code>rho_scale</code> ↑</td>
+        <td>Reaches a given <code>G</code> in fewer rounds — but <code>rho_scale</code> also directly sets how many rounds are <em>useful</em> before the freeze, and a bigger <code>rho_scale</code> means <em>fewer</em> of them. This is literally the mechanism behind the original <code>rho_scale=3</code> bug.</td>
+        <td class="no">Trap — trades "G is big enough" for "not enough real rounds happened"</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §2  ADMM_ITER
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s2">
+  <span class="slug">§2</span>
+  <h2>admm_iter: How Many Iterations Actually Matter</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  <code>admm_iter</code> is a hard iteration count, not a convergence tolerance —
+  <code>c3.cc:374</code> runs exactly this many <code>ADMMStep</code> calls, then
+  does one final z-update and stops (<code>c3.cc:383</code>, <code>is_final_solve
+  = true</code>). There is no early-exit-on-convergence check. Two failure modes,
+  both real this session, sit on either side of the "right" value:
+</p>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0; border-left:3px solid var(--red); background:var(--red-bg); border-color:var(--red-bd);">
+    <div class="card-label" style="color:var(--red);">Too few</div>
+    <p>
+      Before <code>G</code> has grown enough for the z/δ copies to actually agree,
+      the returned trajectory can satisfy dynamics (z) or complementarity (δ) but
+      not both well. Symptom: the diagnostic block's
+      <code>[ADMM consensus ‖z−δ‖]</code> line stays large (not ≈0), and
+      <code>min(λ)</code>/<code>min(η)</code> in <code>[complementarity(δ)]</code>
+      read negative — the returned λ literally doesn't satisfy the LCP it's
+      supposed to.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0; border-left:3px solid var(--amber); background:var(--amber-bg); border-color:var(--amber-bd);">
+    <div class="card-label" style="color:var(--amber);">Too many, relative to rho_scale</div>
+    <p>
+      Past the \(\ln(1000)/\ln(\text{rho\_scale})\) point (§1), extra iterations
+      cost real wall-clock time inside the ~50ms control budget for essentially
+      zero improvement — <code>G</code> is already so large the QP answer has
+      stopped changing. Not incorrect, just wasted compute that could go to a
+      finer <code>osqp_eps</code> or a shorter <code>c3_period_steps</code> instead.
+    </p>
+  </div>
+</div>
+
+<p>
+  Practical rule: pick <code>rho_scale</code> first (how many <em>effective</em>
+  iterations you want), then set <code>admm_iter</code> to at least that many —
+  and re-check both together whenever you change Q-side weights (§1's corollary).
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §3  W_G VS W_U
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s3">
+  <span class="slug">§3</span>
+  <h2>w_G vs w_U: Two Weights That Behave Completely Differently</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Both are described identically in the flag list — "ADMM augmented-Lagrangian
+  weight" — which makes them look symmetric. They are not. Trace what
+  <code>ADMMStep</code> actually does with each:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th></th><th>w_G</th><th>w_U</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Initial value</strong></td>
+        <td><code>w_G · I</code></td>
+        <td><code>w_U · I</code></td>
+      </tr>
+      <tr>
+        <td><strong>Ramped by rho_scale?</strong></td>
+        <td class="no">Yes — every iteration (<code>c3.cc:445</code>)</td>
+        <td class="yes">No — never touched inside <code>ADMMStep</code></td>
+      </tr>
+      <tr>
+        <td><strong>Used where</strong></td>
+        <td>z-update's proximal penalty (always)</td>
+        <td>δ-update's projection metric — <em>only if nonzero</em>. If <code>U</code> is all-zero, <code>SolveProjection</code> falls back to using (the already-ramped) <code>G</code> instead (<code>c3.cc:436-439</code>).</td>
+      </tr>
+      <tr>
+        <td><strong>Effective magnitude after a solve</strong></td>
+        <td>Explodes to \(w_G\cdot\text{rho\_scale}^{\,i}\) — different every iteration</td>
+        <td>Constant, exactly <code>w_U</code>, for the whole solve</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p style="font-weight:600; color:var(--text);">What U actually is, in plain terms — before any code</p>
+
+<p>
+  <code>U</code> never appears in the headline z/δ/w story in §0-§1, and that's
+  not an oversight on a first read — it genuinely isn't part of that picture.
+  It's a narrow tool used at exactly one moment, described here using only λ
+  and η, no new symbols.
+</p>
+
+<p>
+  The z-update spits out some candidate \((\lambda^\circ, \eta^\circ)\) — a
+  force number and a gap number. It might come back as, say, \((50, 0.02)\):
+  both positive, which is illegal (only one of the two is ever allowed to be
+  positive). Someone has to decide, right then: is this really a "there's
+  contact, force wins, the gap number should be zeroed out" situation, or a
+  "there's a gap, no force, the force number should be zeroed out" situation?
+  Picking that winner is the <em>entire</em> job of the δ-update, every round.
+</p>
+
+<p>
+  The naive way to decide: just compare the two raw numbers — \(50 > 0.02\), so
+  force wins. The problem: λ is measured in Newtons, η in a completely
+  different, length-like unit. Comparing \(50\) to \(0.02\) directly is like
+  comparing 50 dollars to 0.02 euros and declaring dollars bigger — meaningless
+  until an exchange rate is fixed, because the raw numbers are artifacts of
+  which units happened to be used, not a real statement about which one
+  deserves to win.
+</p>
+
+<div class="card blue">
+  <p>
+    <strong>That's the entire conceptual job of <code>U</code>: it's the
+    exchange rate.</strong> A number, one per contact, that says "multiply λ
+    and η by this before comparing them, so the comparison is fair." Nothing
+    more. It has nothing to do with the z-update, nothing to do with
+    <code>G</code>'s job of pulling \(z\) toward \(\delta\) (§1) — it exists
+    solely to make one specific comparison, at one specific moment, meaningful.
+  </p>
+</div>
+
+<div class="card indigo">
+  <div class="card-label">For C3+ specifically: w_U's number is inert — only zero-vs-nonzero matters</div>
+  <p>
+    <code>SolveProjection</code> for C3+ dispatches to <code>c3_plus.cc</code>'s
+    <code>SolveSingleProjection</code>, verbatim (<code>c3_plus.cc:204-218</code>):
+  </p>
+  <pre style="margin:0.8rem 0;"><span class="cm">// Set the smaller of lambda and eta to zero</span>
+eta_larger = eta_c*sqrt(w_eta) &gt; lambda_c*sqrt(w_lambda);
+lambda_slot = eta_larger ? 0 : lambda_c;
+eta_slot    = eta_larger ? eta_c : 0;
+<span class="cm">// Clip whatever survived at 0</span>
+lambda_slot = max(lambda_slot, 0);
+eta_slot    = max(eta_slot, 0);</pre>
+  <p>
+    <code>w_eta</code>/<code>w_lambda</code> are not separate flags — they're
+    names for two <em>slices</em> of whichever matrix this function was
+    handed, three naming levels down from the command line:
+  </p>
+  <ol>
+    <li><strong>The flag.</strong> <code>w_G</code>/<code>w_U</code> — a single number you set on the command line.</li>
+    <li><strong>The full matrix.</strong> Each flag is expanded into an entire matrix, <code>allegro_grasp_c3_squeeze.cc:1275-1278</code>: <code>G_vec = w_G · Identity(n_z,n_z)</code>, <code>U_vec = w_U · Identity(n_z,n_z)</code> — uniform, covering the whole z-vector (x, λ, u, η together), no per-block distinction yet.</li>
+    <li><strong>The slice.</strong> <code>SolveSingleProjection</code> receives one of those two matrices (whichever <code>c3.cc:436</code> picked) and reads two small pieces out of it: the rows lining up with η, called <code>w_eta</code>; the rows lining up with λ, called <code>w_lambda</code>.</li>
+  </ol>
+  <p>
+    Since step 2 built a <em>uniform</em> matrix — the same number on every
+    diagonal entry — the two slices pulled out in step 3 are always identical
+    to each other, and both equal whichever flag built the matrix. That's why
+    <code>sqrt(w_eta)</code> and <code>sqrt(w_lambda)</code> are the same
+    positive factor on both sides of the comparison, and cancel completely:
+    the comparison reduces to plain, unweighted <code>eta_c &gt; lambda_c</code>
+    no matter what <code>w_U</code>'s value is.
+  </p>
+  <p style="font-size:0.85rem; color:var(--muted);">
+    One more wrinkle if you go reading <code>c3_plus.cc</code> directly:
+    <code>SolveSingleProjection</code>'s first parameter is declared
+    <code>const MatrixXd&amp; U</code> in the function signature, always —
+    regardless of whether the caller actually passed <code>G</code> or
+    <code>U</code> at the call site. The local variable name <code>U</code>
+    inside that function does not tell you which flag's data is in it; only
+    the caller (<code>c3.cc:436-439</code>) does.
+  </p>
+  <p>
+    So the honest conclusion, verified rather than guessed: <strong>for C3+
+    under this codebase's current construction, <code>w_U</code>'s specific
+    number has no effect on the projection's outcome at all.</strong> Only
+    whether it's exactly zero or not (the <code>c3.cc:436</code> gate) does
+    anything — and what that gate actually buys you is a tie-break that stays
+    <em>flat and fixed</em> round to round, decoupled from <code>G</code>'s
+    exponential growth (§1), rather than "favor λ over η" or vice versa as the
+    name <code>w_U</code> might suggest. That would only start being true if
+    <code>G_vec</code>/<code>U_vec</code> were built to weight the λ- and
+    η-blocks differently — the code supports it structurally, but this flag
+    doesn't exercise it. Matters far more for C3QP/C3MIQP, where the
+    projection is a real weighted distance minimization and any asymmetry in
+    the metric shapes the answer directly.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §4  OSQP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s4">
+  <span class="slug">§4</span>
+  <h2>OSQP: the Solver Inside the Solver</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Every z-update (Loop 2, §0) is one call into OSQP (Operator Splitting Quadratic
+  Program solver), via Drake's <code>drake::solvers::OsqpSolver</code>. OSQP is
+  itself an ADMM-family algorithm — it splits the QP into an equality-constrained
+  linear system and a simple box-projection, and alternates between them, exactly
+  the same shape of trick C3 uses one level up. That's why it's fast and
+  warm-startable: each z-update's QP differs from the previous ADMM iteration's
+  only in the right-hand side (a new <code>δ − w</code>), so OSQP can resume
+  from its last internal state instead of starting cold.
+</p>
+
+<p>
+  The full option block, set once per relinearization at
+  <code>allegro_grasp_c3_squeeze.cc:1329-1345</code>:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Option</th><th>Value here</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>max_iter</code></td><td>4000</td><td>Hard cap on OSQP's own inner iterations (Loop 3). A safety bound, not a target — hitting it means OSQP gave up, which is itself a signal worth logging.</td></tr>
+      <tr><td><code>eps_abs</code> / <code>eps_rel</code></td><td><code>osqp_eps</code> (default <code>1e-3</code>)</td><td>The <em>only</em> flag-exposed OSQP tolerance. Tighter (smaller) means each individual z-update is solved more exactly, at more inner iterations. This is a completely separate axis from <code>admm_iter</code>/<code>rho_scale</code> — it controls how well <em>one</em> QP is solved, not how many ADMM rounds happen.</td></tr>
+      <tr><td><code>warm_starting</code></td><td>1 (on)</td><td>Reuse OSQP's own internal state across calls rather than re-deriving it — the mechanism that makes repeated z-updates cheap.</td></tr>
+      <tr><td><code>adaptive_rho</code></td><td>1 (on)</td><td>Let OSQP retune its <em>own</em> internal <code>rho</code> (see the §0 name-collision warning) automatically as it solves, rather than holding it fixed.</td></tr>
+      <tr><td><code>rho</code></td><td>1e-4 (initial guess)</td><td>OSQP's internal operator-splitting step size — nothing to do with C3's <code>rho_scale</code>. Only an initial guess, since <code>adaptive_rho</code> is on.</td></tr>
+      <tr><td><code>sigma</code></td><td>1e-6</td><td>OSQP's regularization term for numerical stability. Rarely worth touching.</td></tr>
+      <tr><td><code>alpha</code></td><td>1.6</td><td>OSQP's relaxation parameter (over-relaxation typically speeds convergence for values in ~1.5-1.8).</td></tr>
+      <tr><td><code>polishing</code> / <code>polish_refine_iter</code></td><td>1 / 3</td><td>A refinement pass after the main solve that resolves the active-set exactly — improves final accuracy at small extra cost.</td></tr>
+      <tr><td><code>scaling</code></td><td>15</td><td>Number of OSQP's internal problem-rescaling iterations, for numerical conditioning of badly-scaled QPs.</td></tr>
+      <tr><td><code>check_termination</code></td><td>25</td><td>Check the stopping criteria every 25 inner iterations rather than every one — cheaper, at the cost of possibly running a few extra iterations past convergence.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Practically: if the diagnostic block's <code>[dynamics residual]</code>
+  (<code>‖x_{k+1} − f(x_k,u_k,λ_k)‖</code>) is unexpectedly large — meaning the
+  z-update's own equality constraint isn't actually satisfied — that's an
+  <code>osqp_eps</code> problem, not an <code>admm_iter</code>/<code>rho_scale</code>
+  problem. It means individual QPs are being solved loosely, independent of how
+  many ADMM rounds run.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §5  TWO WARM STARTS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s5">
+  <span class="slug">§5</span>
+  <h2>Two Different "Warm Start"s</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Two independent flags, easy to conflate:
+</p>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--blue);">--warm_start</div>
+    <h3>Within one solve</h3>
+    <p>
+      Seeds each ADMM iteration's z-update QP with the previous iteration's
+      solution as OSQP's initial guess (<code>SetInitialGuessQP</code>,
+      <code>c3.cc:449</code>). Helps OSQP converge faster <em>inside</em> a single
+      <code>Solve()</code> call. Has no memory across separate <code>Solve()</code>
+      calls.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-label" style="color:var(--indigo);">--warm_start_admm</div>
+    <h3>Across separate solves</h3>
+    <p>
+      Carries the ADMM <code>δ</code>/<code>w</code> state from the <em>end</em>
+      of one <code>Solve()</code> into the <em>start</em> of the next
+      (<code>c3.cc:349-361</code>), instead of cold-starting <code>δ=0, w=0</code>
+      every ~40ms control step. Anchors each new solve near the previous plan — a
+      low-pass on solve-to-solve churn. Directly relevant to solve-to-solve λ
+      jitter (§9): if λ at the executed knot is sign-flipping between consecutive
+      solves on a barely-moving system, a cold ADMM restart landing in a different
+      point of an indeterminate force-nullspace is a real candidate cause, and
+      this flag is the first thing to try.
+    </p>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §6  COST WEIGHTS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s6">
+  <span class="slug">§6</span>
+  <h2>Cost Weights: Q and R</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  These decide <em>what the plan wants</em>. They are a completely separate axis
+  from <code>G</code>/<code>U</code> (§1/§3), which decide <em>how hard ADMM
+  enforces agreement between its two internal copies</em> — the same distinction
+  as the companion doc's §0 correction that <code>D</code>, not <code>Q</code>,
+  couples forces to motion. Raising a Q-block weight never by itself helps ADMM
+  converge; it can actively hurt convergence unless <code>G</code> is raised too
+  (§1).
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Default</th><th>What it weights</th></tr></thead>
+    <tbody>
+      <tr><td><code>k_hold</code></td><td>0.0</td><td>Hand-joint deviation from <code>q_contact</code>. The regularizer for the contact Jacobian's null space (§ null-space discussion, companion doc) — prices hand motion the frozen linearization can't see, keeping the plan's fingers near the true contact configuration instead of drifting for free.</td></tr>
+      <tr><td><code>w_cube</code></td><td>10000.0</td><td>Cube <em>pose</em> error only. The load-bearing term — this is what forces <code>Σμλ_n ≥ mg</code> in the first place.</td></tr>
+      <tr><td><code>w_cube_vel</code></td><td>0.0</td><td>Cube <em>velocity</em> error, split out from <code>w_cube</code> so it can't dominate and drown out the position anchor (an earlier, since-fixed bug: both were folded into one weight at 1000, and the velocity term won).</td></tr>
+      <tr><td><code>w_vel</code></td><td>0.0</td><td>Hand joint velocity — light damping on the plan's own hand trajectory.</td></tr>
+      <tr><td><code>w_R</code></td><td>0.01</td><td>Control effort <code>‖u‖²</code>. Small values allow aggressive commanded torque; large values force gentle motion.</td></tr>
+      <tr><td><code>w_lambda</code> / <code>alpha_m</code></td><td>0.0 / 1.0</td><td>Optional force-reference cost pulling each finger's normal force toward a target (index = middle = <code>alpha_m</code>, thumb = <code>2·alpha_m</code>). Disabled by default — hardcoding a target force in the nullspace of an indeterminate grasp is a real design choice with tradeoffs, not a free win; commanding real penetration (§7's <code>penetration_index_middle</code>) is the alternative that lets contact forces arise from physics instead.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §7  PHYSICAL / MODEL PARAMETERS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s7">
+  <span class="slug">§7</span>
+  <h2>Physical / Model Parameters</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  These change the actual optimization problem being posed — dimensions,
+  physics, horizon — not how well it's solved.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>mu</code></td><td>0.5</td><td>Friction coefficient in the LCS. Directly scales how much normal force converts to usable friction — the <code>μΣλ_n ≥ mg</code> requirement.</td></tr>
+      <tr><td><code>num_friction_directions</code></td><td>2</td><td>Edges in the polyhedral friction-cone approximation per contact. Changes <code>n_λ</code> (and therefore <code>n_z</code>) directly: <code>n_λ = n_c · (1 + 1 + 2·num_friction_directions)</code> for Stewart-Trinkle. More directions = a rounder cone approximation and a bigger QP.</td></tr>
+      <tr><td><code>contact_model</code></td><td>stewart_and_trinkle</td><td>Switches the entire D/E/F/H/c construction (see companion doc §7 of <code>lcs_factory.cc</code>). <code>anitescu</code> is a convex reformulation where normal force is the sum of cone-edge forces, avoiding the explicit complementarity gate on λ_n's cap that Stewart-Trinkle enforces — a structurally different lever than any solver-tuning flag, held in reserve this session.</td></tr>
+      <tr><td><code>N</code></td><td>5</td><td>Horizon length in knots. Every extra knot adds a full block of <code>(x,λ,u,η)</code> to the z-update QP — linear cost in problem size, but also more room for the frozen linearization to go stale by the last knot.</td></tr>
+      <tr><td><code>c3_dt</code></td><td>0.05</td><td>LCS timestep. Appears squared in the F-matrix's force→gap coupling (companion doc §7) — halving <code>c3_dt</code> roughly quadruples the achievable λ_n at a given penetration depth. The other lever (besides commanded penetration) for escaping the "λ0≈0 at zero penetration" complementarity cap.</td></tr>
+      <tr><td><code>input_scale</code></td><td>0.0 (auto)</td><td>Rescales the optimized input <code>ũ</code> so <code>τ=s_u·ũ</code> and <code>|B_scaled|≈|A|</code> — a QP-conditioning change of variables, not a physical one. λ is untouched by this.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §8  CADENCE
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s8">
+  <span class="slug">§8</span>
+  <h2>Cadence and Compute Knobs</h2>
+  <div class="rule"></div>
+</div>
+
+<div class="two-col">
+  <div class="card" style="margin-bottom:0;">
+    <h3><code>c3_period_steps</code> <span style="font-weight:400; color:var(--muted);">(default 40)</span></h3>
+    <p>
+      Run a full C3 solve once every this many 1kHz control ticks. Does not
+      change the plan itself, only how often it's recomputed. Between solves,
+      the previous solution is reused — the executor is still reading the same
+      <code>xplan[0]</code>/<code>λ0</code> for the whole window.
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:0;">
+    <h3><code>relin_period_steps</code> <span style="font-weight:400; color:var(--muted);">(default 40)</span></h3>
+    <p>
+      Re-linearize the LCS (fresh <code>φ</code>/<code>Jn</code>/<code>Jt</code>
+      from real geometry) this often. Keep it a multiple of
+      <code>c3_period_steps</code> so every solve gets a fresh LCS rather than
+      solving against an increasingly stale one.
+    </p>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §9  DIAGNOSTIC PLAYBOOK
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s9">
+  <span class="slug">§9</span>
+  <h2>Diagnosing Convergence: a Playbook</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  Reading <code>--plan_debug</code>'s SOLVER DIAG block against this table
+  usually identifies which of the three loops (§0) is actually at fault, before
+  touching a single flag:
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Symptom</th><th>Likely layer</th><th>First thing to try</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>[ADMM consensus ‖z−δ‖]</code> stays large across the whole solve</td>
+        <td>Loop 1 — not enough <em>effective</em> ADMM iterations</td>
+        <td>Check <code>rho_scale</code> vs <code>admm_iter</code> against the §1 table first. If they're already matched, raise <code>w_G</code>.</td>
+      </tr>
+      <tr>
+        <td><code>min(λ)</code> or <code>min(η)</code> reads clearly negative</td>
+        <td>Loop 1 — solve stopped before z/δ agreed</td>
+        <td>Same as above. A negative λ or η in the reported solution is not a valid LCP point at all.</td>
+      </tr>
+      <tr>
+        <td><code>[dynamics residual]</code> (‖x_{k+1}−f(...)‖) is large</td>
+        <td>Loop 2 — the z-update QP itself wasn't solved tightly</td>
+        <td>Tighten <code>osqp_eps</code>. This is independent of <code>admm_iter</code>/<code>rho_scale</code> — don't chase it there.</td>
+      </tr>
+      <tr>
+        <td>λ0 sign-flips or swings by 10-100× between consecutive ~40ms solves on a system that isn't moving</td>
+        <td>Loop 1 — cold-started ADMM landing in different points of an indeterminate solution manifold each time</td>
+        <td>Try <code>--warm_start_admm=true</code> (§5) before anything else — this is exactly the symptom it targets.</td>
+      </tr>
+      <tr>
+        <td>Recently raised a Q-block weight (<code>k_hold</code>, <code>w_cube</code>, ...) and convergence got worse</td>
+        <td>Loop 1 — Q/G imbalance (§1's corollary)</td>
+        <td>Raise <code>w_G</code> proportionally. A 200× Q jump needs roughly a 200× (or log-scale, via more <code>admm_iter</code>) G response, not a 2× one.</td>
+      </tr>
+      <tr>
+        <td>OSQP itself reports infeasible/unbounded</td>
+        <td>Problem formulation, not tuning</td>
+        <td>Check for missing box bounds on <code>u</code> (an unbounded primal looks exactly like this) before touching any tolerance.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<blockquote>
+  <p>
+    The fastest way to misdiagnose this system is to treat every bad plan as a
+    physics problem or an executor problem before checking whether ADMM actually
+    converged at all. Read <code>‖z−δ‖</code> first.
+  </p>
+</blockquote>
+
+</main>
+
+<footer>
+  dairlib &nbsp;/&nbsp; c3_optimizer_parameters.html &nbsp;·&nbsp;
+  Companion: <a href="../../c3_solver_internals.html">c3_solver_internals.html</a>
+</footer>
+
+</body>
+</html>

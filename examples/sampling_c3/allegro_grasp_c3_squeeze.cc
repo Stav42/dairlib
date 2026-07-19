@@ -135,6 +135,12 @@ DEFINE_double(tip_surface_offset_z, 0.0115,
               "q_contact/q_pregrasp, so the IK constrains the real surface "
               "point (not the frame origin) to sit at the intended margin "
               "from the cube face.");
+DEFINE_bool(track_cube_contact, false,
+            "Re-solve the 3-point grasp IK against the CURRENT cube pose "
+            "every relin (once unpinned), so the C3 cost's hand-q reference "
+            "(k_hold) AND the OSC anchor track the cube as it moves, instead "
+            "of pointing at the static t=0 q_contact. Default false keeps the "
+            "static q_contact (A/B toggle).");
 DEFINE_bool(contact_force_log, false,
             "Print the sim plant's resolved contact force (ContactResults, "
             "one PointPairContactInfo per colliding geometry pair), "
@@ -201,7 +207,7 @@ DEFINE_double(cube_bob_amp, 0.0,
               "Amplitude (m) of the up/down sine the cube z-reference follows "
               "after pin release. 0 = static hold. A moving reference gives C3 "
               "a nonzero tracking error to chase (movement-vs-holding test).");
-DEFINE_double(cube_bob_period, 3.0,
+DEFINE_double(cube_bob_period, 1.0,
               "Period (s) of the cube z-reference sine.");
 // ── Low-level realization layer ──────────────────────────────────────────────
 // C3 PLANS (low rate); a task-space PD + Jacobian-transpose grip EXECUTES (high
@@ -210,6 +216,11 @@ DEFINE_double(cube_bob_period, 3.0,
 // target (fixed grasp points, or C3's planned config — see --fk_target); fₙ is
 // the desired per-fingertip normal force (C3's projected λ, optionally floored
 // — see --force_floor).
+DEFINE_bool(lambda_map_debug, false,
+            "Print the '=== D: cube xyz <- lambda ===' breakdown (physical D "
+            "matrix restricted to cube rows, per contact) after every solve. "
+            "Off by default — verbose, rarely needed once the D-map's "
+            "structure (which columns move cube x/y/z) is already known.");
 DEFINE_bool(plan_debug, false,
             "Replace the per-solve C3 PLAN printout (contact gap / normal "
             "force / cube-z tables) with solver-quality diagnostics: "
@@ -285,6 +296,15 @@ DEFINE_double(input_scale, 0.0,
 DEFINE_bool(relinearize, true,
             "Re-linearize the LCS at the current state each control step. "
             "More accurate for a drifting contact configuration; heavier.");
+DEFINE_bool(warm_start_admm, false,
+            "Carry the ADMM consensus solution (delta) across consecutive C3 "
+            "solves instead of cold-starting each from zero. Anchors each "
+            "solve to the previous one — a low-pass on the plan itself — which "
+            "kills solve-to-solve churn where cold starts fall into different "
+            "local optima of the non-convex complementarity problem. Persists "
+            "across relinearizations (c3->UpdateLCS keeps the object). Lets "
+            "you cut --admm_iter once the plan stops re-deriving from scratch. "
+            "Distinct from --warm_start (that's the within-solve QP guess).");
 DEFINE_int32(c3_period_steps, 40,
              "Solve C3 once every this many control steps (control_dt=1ms). "
              "Between solves the previous input solution is reused. 1 = the old "
@@ -930,6 +950,35 @@ int DoMain(int argc, char* argv[]) {
   // disturb the simulation; FK needs no scene-graph query object.
   auto fk_ctx = sim_plant.CreateDefaultContext();
 
+  // --track_cube_contact: the hand-q reference the cost pulls toward (k_hold)
+  // and the OSC anchor pulls toward. Initialized to the static t=0 q_contact;
+  // if tracking is enabled, re-solved every relin against the live cube pose
+  // (below) so it follows the cube. With tracking off it stays == q_contact,
+  // so every consumer can read q_contact_live unconditionally.
+  VectorXd q_contact_live = q_contact;
+
+  // Dedicated scratch context for the moving-contact IK. Standalone so the
+  // solve never disturbs the live sim context (plant_ctx) or the LCS context.
+  auto ik_ctx = sim_plant.CreateDefaultContext();
+
+  // Re-solve the 3-point grasp IK so the three fingertips land on the current
+  // cube faces (same per-finger penetration + tip-surface offset as the t=0
+  // q_contact). Warm-started from the last solution for speed and to keep the
+  // hand config from jumping between IK branches. Returns hand-only joints.
+  auto resolve_contact_ik =
+      [&](const RigidTransform<double>& X_WC) -> VectorXd {
+    const double h = cube_size / 2.0;
+    VectorXd targets(9);
+    targets << X_WC * Vector3d(a, -(h - FLAGS_penetration_index_middle), 0),
+        X_WC * Vector3d(b, -(h - FLAGS_penetration_index_middle), 0),
+        X_WC * Vector3d(c_off, h - FLAGS_penetration_thumb, 0);
+    sim_plant.SetPositions(ik_ctx.get(), sim_allegro, q_contact_live);
+    const VectorXd q_full =
+        SolveGraspIK(sim_plant, ik_ctx.get(), targets, tip_surface_pt);
+    sim_plant.SetPositions(ik_ctx.get(), q_full);
+    return sim_plant.GetPositions(*ik_ctx, sim_allegro);
+  };
+
   // --contact_force_log cadence: control_dt is 1kHz, throttle down to
   // --contact_force_log_hz.
   long contact_log_iter = 0;
@@ -1239,6 +1288,10 @@ int DoMain(int argc, char* argv[]) {
         c3 = std::make_unique<C3Plus>(
             lcs_init, C3::CostMatrices(Q_vec, R_vec, G_vec, U_vec),
             x_desired, c3_opts);
+        // Carry ADMM state across solves (see --warm_start_admm). The object
+        // outlives relinearizations (UpdateLCS below), so the warm start
+        // persists; the first solve after this fresh construction cold-starts.
+        c3->SetAdmmWarmStartAcrossSolves(FLAGS_warm_start_admm);
 
         // Force reference on each contact's NORMAL force — seeds a real grip
         // and regularises the squeeze nullspace. A contact's normal force is
@@ -1349,24 +1402,58 @@ int DoMain(int argc, char* argv[]) {
         ++relin_calls;
       }
 
-      // Moving cube reference: overwrite the cube z-target (and its velocity)
-      // with a sine once the pin is released, giving C3 a nonzero tracking
-      // error to chase. State layout: cube z-position at index n_hand_q+6, cube
-      // linear-z velocity at n_pos+n_hand_v+5. The whole horizon k=0..N is
-      // filled with the look-ahead so C3 tracks a moving target, not a lagged
-      // step. amp=0 or still pinned → base (static) target, unchanged.
-      if (FLAGS_cube_bob_amp != 0.0 && !cube_pinned) {
-        const double t_ref = std::max(0.0, t - (handoff_t + 0.5));
-        const double w = 2.0 * M_PI / FLAGS_cube_bob_period;
+      // Moving contact reference: re-solve the 3-point grasp IK against the
+      // CURRENT cube pose so the cost's hand-q target (k_hold pulls here) and
+      // the OSC anchor follow the cube instead of the static t=0 config. Done
+      // at relin cadence (an IK solve per control tick would be wasteful; the
+      // cube barely moves in one relin period). Pinned → cube frozen, skip.
+      if (FLAGS_track_cube_contact && !cube_pinned && do_relin) {
+        const auto ik_t0 = std::chrono::steady_clock::now();
+        const RigidTransform<double> X_WC_now = CubePoseFromPositions(
+            sim_plant.GetPositions(plant_ctx, sim_cube));
+        q_contact_live = resolve_contact_ik(X_WC_now);
+        const double ik_ms = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - ik_t0)
+                                 .count();
+        // Save/restore stream format — a bare setprecision here leaks into
+        // every later print (the "dt=0.0" / "|A|=70.3" corruption).
+        const auto cout_flags = std::cout.flags();
+        const auto cout_prec = std::cout.precision();
+        std::cout << "  [track IK] " << std::fixed << std::setprecision(1)
+                  << ik_ms << " ms\n";
+        std::cout.flags(cout_flags);
+        std::cout.precision(cout_prec);
+      }
+
+      // Update C3's desired-state trajectory. Two independent overrides on top
+      // of x_des_base, either of which triggers a rebuild:
+      //   track: the 3 grasping fingers' q-target ← live IK (moving contact).
+      //   bob:   the cube z-target (+velocity) ← sine, giving C3 a moving
+      //          setpoint to chase. State layout: cube z at n_hand_q+6, cube
+      //          linear-z velocity at n_pos+n_hand_v+5. Horizon k=0..N filled
+      //          with the look-ahead so C3 tracks ahead, not a lagged step.
+      const bool track = (FLAGS_track_cube_contact && !cube_pinned);
+      const bool bob = (FLAGS_cube_bob_amp != 0.0 && !cube_pinned);
+      if (track || bob) {
         std::vector<VectorXd> x_des_traj(FLAGS_N + 1, x_des_base);
-        for (int k = 0; k <= FLAGS_N; ++k) {
-          const double tk = t_ref + k * FLAGS_c3_dt;
-          x_des_traj[k](n_hand_q + 6) =
-              cube_z0 + FLAGS_cube_bob_amp * std::sin(w * tk);
-          x_des_traj[k](n_pos + n_hand_v + 5) =
-              FLAGS_cube_bob_amp * w * std::cos(w * tk);
+        if (track) {
+          for (int k = 0; k <= FLAGS_N; ++k)
+            for (int i = 0; i < 3; ++i)
+              x_des_traj[k].segment(finger_start[i], 4) =
+                  q_contact_live.segment(finger_start[i], 4);
         }
-        last_zref = x_des_traj[0](n_hand_q + 6);
+        if (bob) {
+          const double t_ref = std::max(0.0, t - (handoff_t + 0.5));
+          const double w = 2.0 * M_PI / FLAGS_cube_bob_period;
+          for (int k = 0; k <= FLAGS_N; ++k) {
+            const double tk = t_ref + k * FLAGS_c3_dt;
+            x_des_traj[k](n_hand_q + 6) =
+                cube_z0 + FLAGS_cube_bob_amp * std::sin(w * tk);
+            x_des_traj[k](n_pos + n_hand_v + 5) =
+                FLAGS_cube_bob_amp * w * std::cos(w * tk);
+          }
+          last_zref = x_des_traj[0](n_hand_q + 6);
+        }
         c3->UpdateTarget(x_des_traj);
       }
 
@@ -1382,7 +1469,10 @@ int DoMain(int argc, char* argv[]) {
 
         // Print the map for every completed solve, including after each
         // relinearization, so changes in contact geometry are visible.
-        print_cube_lambda_map(c3->GetLCS(), t);
+        // Gated behind --lambda_map_debug (off by default) — see flag doc.
+        if (FLAGS_lambda_map_debug) {
+          print_cube_lambda_map(c3->GetLCS(), t);
+        }
 
         const std::vector<VectorXd> xplan     = c3->GetStateSolution();
         const std::vector<VectorXd> lam_plan  = c3->GetForceSolution();
@@ -1497,6 +1587,46 @@ int DoMain(int argc, char* argv[]) {
                 fk_gap_plan, c_labels);
 
             print_table("NORMAL FORCE λ_n (per contact, force)", lamn_plan, c_labels);
+
+            // NET FRICTION FORCE (global +Z): the vertical support the grasp
+            // actually provides against gravity. Normal forces are horizontal
+            // (±Y) so give ~0 vertical support — ALL vertical hold is friction.
+            // Reconstructed from the LCS's own contact model: the physical D
+            // matrix maps physical friction β to the cube's z-velocity
+            // increment Δvz, so the friction force is Fz = m_cube/dt · Δvz.
+            // Per contact + total; compare total to mg (printed). β for contact
+            // i occupies λ cols [2nc + i·(2·n_fd) .. +2·n_fd); the cube's linear
+            // z-velocity is state row n_pos+n_hand_v+5.
+            {
+              const MatrixXd D_phys = lcs.D()[0] / an_dn;
+              const int i_vz = n_pos + n_hand_v + 5;
+              const int n_beta_per = 2 * FLAGS_num_friction_directions;
+              const double m_cube =
+                  lcs_plant.get_body(lcs_plant.GetBodyIndices(lcs_cube)[0])
+                      .get_mass(lcs_ctx);
+              std::vector<VectorXd> ffz_plan(n_knots);
+              std::vector<double> ffz_total(n_knots, 0.0);
+              for (int k = 0; k < n_knots; ++k) {
+                VectorXd fz(nc);
+                for (int i = 0; i < nc; ++i) {
+                  const int b0 = 2 * nc + i * n_beta_per;
+                  double dvz = 0.0;
+                  for (int j = 0; j < n_beta_per; ++j)
+                    dvz += D_phys(i_vz, b0 + j) * lam_plan[k](b0 + j);
+                  fz(i) = m_cube / FLAGS_c3_dt * dvz;
+                }
+                ffz_plan[k] = fz;
+                ffz_total[k] = fz.sum();
+              }
+              print_table("NET FRICTION FORCE Fz (global +Z, per contact, N)",
+                          ffz_plan, c_labels);
+              std::cout << std::setw(10) << "total";
+              for (int k = 0; k < n_knots; ++k)
+                std::cout << std::setw(12) << std::fixed << std::setprecision(4)
+                          << ffz_total[k];
+              std::cout << "    (mg=" << std::setprecision(4) << (m_cube * 9.81)
+                        << " N)\n";
+            }
 
             // Cube z-position from the STATE plan (N+1 knots, unlike the N-knot
             // force tables above). State layout: cube xyz sits at
@@ -1694,36 +1824,27 @@ int DoMain(int argc, char* argv[]) {
         // plan holds the cube. Clamped to the torque budget below (kC3).
         tau_hand = s_u * c3->GetInputSolution()[0];
       } else if (FLAGS_exec_mode == "osc") {
-        // Architecture B — inverse-dynamics realization of the plan's motion
-        // + force targets on the EXACT nonlinear plant, ignoring u0/tau_g
-        // entirely (no trust placed in whatever the LCS linearization
-        // assumed about gravity/Coriolis/actuation). Two feedforward pieces:
-        //   1. Joint-space motion: computed-torque tracking of the plan's
-        //      next hand config q1 = GetStateSolution()[1]. CalcInverseDynamics
-        //      supplies the plant's true M(q)*qddot + C(q,v) - tau_g(q) for
-        //      the commanded qddot, so gravity/Coriolis comp is always exact
-        //      regardless of dynamics used inside C3.
-        //   2. Task-space force: C3's own planned normal force lambda_n at
-        //      each fingertip, applied along the (rotating) contact normal
-        //      via Jacobian-transpose — the "operational space" piece.
+        // Simple joint-space controller (replaces the inverse-dynamics OSC):
+        //   tau = tau_grav + kp*(q_plan0 - q_hand) + Σ_i J_iᵀ (fn_i · n_i)
+        // Three additive pieces, nothing more:
+        //   tau_grav : hand gravity compensation (holds static under gravity).
+        //   kp*(..)  : pure proportional pull toward the plan's knot-0 hand
+        //              config (xplan[0], hard-constrained to the measured state
+        //              at solve time). No mass matrix, no Coriolis, no velocity
+        //              damping term.
+        //   J^T·fn   : C3's planned normal grip lambda_n at each fingertip,
+        //              applied along the (rotating) contact normal via
+        //              Jacobian-transpose — the task-space force piece.
         const VectorXd q_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
         const std::vector<VectorXd> xplan_now = c3->GetStateSolution();
         VectorXd q_des = q_hand;
-        VectorXd qd_des = VectorXd::Zero(n_hand_v);
-        if (xplan_now.size() > 1) {
-          q_des = xplan_now[1].head(n_hand_q);
-          qd_des = xplan_now[1].segment(n_pos, n_hand_v);
-        }
-        const VectorXd qddot_cmd_hand =
-            FLAGS_osc_kp * (q_des - q_hand) + FLAGS_osc_kd * (qd_des - v_hand);
+        if (!xplan_now.empty()) q_des = xplan_now[0].head(n_hand_q);
 
-        VectorXd vdot_full = VectorXd::Zero(sim_plant.num_velocities());
-        sim_plant.SetVelocitiesInArray(sim_allegro, qddot_cmd_hand, &vdot_full);
-        drake::multibody::MultibodyForces<double> no_ext_forces(sim_plant);
-        const VectorXd tau_id =
-            sim_plant.CalcInverseDynamics(plant_ctx, vdot_full, no_ext_forces);
-        const VectorXd tau_motion =
-            sim_plant.GetVelocitiesFromArray(sim_allegro, tau_id);
+        // Gravity compensation: tau = -tau_gravity holds the hand static.
+        const VectorXd tau_grav = sim_plant.GetVelocitiesFromArray(
+            sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
+
+        const VectorXd tau_pd = FLAGS_osc_kp * (q_des - q_hand);
 
         // Feedforward contact normal force from C3's own planned lambda_n
         // (physical units: GetForceSolution() / GetLambdaScaling()).
@@ -1747,7 +1868,7 @@ int DoMain(int argc, char* argv[]) {
               J.leftCols(n_hand_v).transpose() * (fn * (R_WC * press_C[i]));
         }
 
-        tau_hand = tau_motion + tau_force;
+        tau_hand = tau_grav + tau_pd + tau_force;
       } else if (cube_pinned) {
         // Warm-up period: cube is still pinned, so C3's cost gradient on the
         // cube is near zero and it finds near-zero torques as "optimal". This
