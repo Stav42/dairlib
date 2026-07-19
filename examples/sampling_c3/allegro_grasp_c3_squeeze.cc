@@ -203,12 +203,46 @@ DEFINE_double(w_lambda, 0.0,
 DEFINE_double(alpha_m, 1.0,
               "Per-finger normal grip-force target (N) for the λ_n reference. "
               "Thumb target = 2·alpha_m (force closure vs index+middle).");
-DEFINE_double(cube_bob_amp, 0.0,
-              "Amplitude (m) of the up/down sine the cube z-reference follows "
-              "after pin release. 0 = static hold. A moving reference gives C3 "
-              "a nonzero tracking error to chase (movement-vs-holding test).");
-DEFINE_double(cube_bob_period, 1.0,
-              "Period (s) of the cube z-reference sine.");
+DEFINE_string(cube_motion_mode, "none",
+              "Cube reference-pose motion after pin release (generalizes the "
+              "old z-only --cube_bob_amp sine to a full 6-DOF profile):\n"
+              "  none - static hold at X_WC0 (default).\n"
+              "  step - min-jerk ramp from X_WC0 to X_WC0 composed with the "
+              "--cube_move_{dx,dy,dz,roll,pitch,yaw} offset, over "
+              "--cube_move_duration seconds, then holds there.\n"
+              "  sine - the same offset oscillates sinusoidally about X_WC0 "
+              "at --cube_move_period, its amplitude ramped in over "
+              "--cube_move_duration so the reference starts at rest instead "
+              "of stepping the velocity the instant the pin releases.");
+DEFINE_double(cube_move_dx, 0.0,
+              "Step target / sine amplitude, world-frame x translation (m).");
+DEFINE_double(cube_move_dy, 0.0,
+              "Step target / sine amplitude, world-frame y translation (m).");
+DEFINE_double(cube_move_dz, 0.0,
+              "Step target / sine amplitude, world-frame z translation (m).");
+DEFINE_double(cube_move_roll, 0.0,
+              "Step target / sine amplitude, roll (rad) about X_WC0's own "
+              "x-axis (rotation is about the cube's own center, not the "
+              "world origin).");
+DEFINE_double(cube_move_pitch, 0.0,
+              "Step target / sine amplitude, pitch (rad) about X_WC0's own "
+              "y-axis.");
+DEFINE_double(cube_move_yaw, 0.0,
+              "Step target / sine amplitude, yaw (rad) about X_WC0's own "
+              "z-axis.");
+DEFINE_double(cube_move_period, 1.0, "sine mode: oscillation period (s).");
+DEFINE_double(cube_move_duration, 0.5,
+              "step: min-jerk ramp time to the target (s). sine: amplitude "
+              "ramp-in time (s) — avoids a velocity step at release.");
+DEFINE_double(cube_ik_lead_pos_max, 0.05,
+              "Safety clamp (m): the moving-contact IK target pose is capped "
+              "to this far from the CURRENTLY MEASURED cube pose, so if the "
+              "cube lags the reference the fingers don't chase an "
+              "unreachable target. Generous default — only binds if the cube "
+              "falls far behind a fast/large commanded motion.");
+DEFINE_double(cube_ik_lead_rot_max, 0.3,
+              "Safety clamp (rad): same as --cube_ik_lead_pos_max for the "
+              "rotational part of the IK lead.");
 // ── Low-level realization layer ──────────────────────────────────────────────
 // C3 PLANS (low rate); a task-space PD + Jacobian-transpose grip EXECUTES (high
 // rate, every control tick): τ = τ_g + Σ Jᵢᵀ[Kp(p_des−p) − Kd·ṗ + fₙ·n̂], with
@@ -251,7 +285,10 @@ DEFINE_string(exec_mode, "task_space",
               "PLUS a task-space feedforward normal force at each fingertip "
               "equal to C3's planned lambda_n (Jacobian-transpose). Ignores "
               "u0 entirely — realizes (x1, lambda0) on the exact plant "
-              "instead of replaying the LCS's own input.");
+              "instead of replaying the LCS's own input. The position target "
+              "is q_contact_live (live grasp-IK against the desired cube "
+              "pose, Mods 2-4) if --track_cube_contact, else C3's own "
+              "knot-1 hand config (x1).");
 DEFINE_double(osc_kp, 300.0,
               "OSC joint-space position gain (rad/s^2 per rad) inside the "
               "commanded acceleration qddot_cmd = kp*(q_des-q)+kd*(qd_des-qd) "
@@ -926,7 +963,7 @@ int DoMain(int argc, char* argv[]) {
   };
 
   // Base C3 state target (built at handoff) and the cube's nominal z. The C3
-  // phase overwrites the cube z-reference with a sine (see --cube_bob_amp).
+  // phase overwrites the cube pose reference per --cube_motion_mode.
   VectorXd x_des_base;
   const double cube_z0 = X_WC0.translation().z();
   double last_zref = cube_z0;  // most recent commanded cube-z target (logging)
@@ -956,6 +993,10 @@ int DoMain(int argc, char* argv[]) {
   // (below) so it follows the cube. With tracking off it stays == q_contact,
   // so every consumer can read q_contact_live unconditionally.
   VectorXd q_contact_live = q_contact;
+  // Horizon-end IK solve (t_ref_now + N*c3_dt) — Mod 3 linearly interpolates
+  // the plan's per-knot hand-q reference between q_contact_live (k=0) and
+  // this (k=N) instead of freezing the whole horizon at a single instant.
+  VectorXd q_contact_live_end = q_contact;
 
   // Dedicated scratch context for the moving-contact IK. Standalone so the
   // solve never disturbs the live sim context (plant_ctx) or the LCS context.
@@ -977,6 +1018,90 @@ int DoMain(int argc, char* argv[]) {
         SolveGraspIK(sim_plant, ik_ctx.get(), targets, tip_surface_pt);
     sim_plant.SetPositions(ik_ctx.get(), q_full);
     return sim_plant.GetPositions(*ik_ctx, sim_allegro);
+  };
+
+  // ── Cube reference-pose generator (--cube_motion_mode) ──────────────────
+  // alpha(t_ref) in [0,1] scales BOTH the translation and rotation offsets so
+  // they move in lockstep; dalpha/dt rides along for the translational-
+  // velocity feedforward below. "step" is a min-jerk ramp (zero velocity AND
+  // zero acceleration at both ends) from 0 to 1 that then holds; "sine" is
+  // the same min-jerk ramp used as an AMPLITUDE envelope on a sinusoid, so
+  // oscillation eases in from rest instead of stepping velocity the instant
+  // the pin releases.
+  auto motion_alpha = [&](double t_ref) -> std::pair<double, double> {
+    const double T = std::max(1e-6, FLAGS_cube_move_duration);
+    const double s = std::clamp(t_ref / T, 0.0, 1.0);
+    const double ramp = 10.0 * s * s * s - 15.0 * s * s * s * s +
+                        6.0 * s * s * s * s * s;
+    const double dramp_dt =
+        (t_ref <= 0.0 || t_ref >= T)
+            ? 0.0
+            : (30.0 * s * s - 60.0 * s * s * s + 30.0 * s * s * s * s) / T;
+    if (FLAGS_cube_motion_mode == "step") {
+      return {ramp, dramp_dt};
+    } else if (FLAGS_cube_motion_mode == "sine") {
+      const double w = 2.0 * M_PI / std::max(1e-6, FLAGS_cube_move_period);
+      const double sn = std::sin(w * t_ref), cs = std::cos(w * t_ref);
+      return {ramp * sn, dramp_dt * sn + ramp * w * cs};
+    }
+    return {0.0, 0.0};  // "none"
+  };
+
+  // Desired cube pose + its translational velocity, t_ref seconds after pin
+  // release. Rotation is composed about the CUBE's own nominal frame
+  // (X_WC0's axes) about its own center, then the whole cube (rotated) is
+  // translated in world frame — so --cube_move_roll/pitch/yaw spin the cube
+  // in place and --cube_move_dx/dy/dz then carries it there.
+  // NOTE: only translational velocity is populated (matching the convention
+  // this file already verified for the old z-only bob term, below); the
+  // angular-velocity feedforward is left at zero. Drake's floating-base
+  // generalized-velocity frame convention for the rotational block was not
+  // re-derived here, and getting it wrong would inject a wrong-frame signal
+  // into the cost — at the small, slow angles this flag targets, the
+  // resulting tracking lag is negligible against --w_cube_vel's light
+  // weight, and it costs nothing extra to add later if it matters.
+  auto cube_target_pose =
+      [&](double t_ref) -> std::pair<RigidTransform<double>, Vector3d> {
+    const std::pair<double, double> ad = motion_alpha(t_ref);
+    const double alpha = ad.first, dalpha = ad.second;
+    const Vector3d delta_p(FLAGS_cube_move_dx, FLAGS_cube_move_dy,
+                           FLAGS_cube_move_dz);
+    const RotationMatrix<double> R_delta(
+        drake::math::RollPitchYaw<double>(alpha * FLAGS_cube_move_roll,
+                                          alpha * FLAGS_cube_move_pitch,
+                                          alpha * FLAGS_cube_move_yaw));
+    const RigidTransform<double> X_WC_des =
+        RigidTransform<double>(alpha * delta_p) * X_WC0 *
+        RigidTransform<double>(R_delta);
+    return {X_WC_des, Vector3d(dalpha * delta_p)};
+  };
+
+  // Mod 2 safety clamp: cap the IK target pose to within
+  // --cube_ik_lead_{pos,rot}_max of the CURRENTLY MEASURED cube pose, so a
+  // cube that lags a fast/large commanded motion doesn't yank the fingers
+  // toward a target the physical grasp can't reach yet.
+  auto clamp_ik_lead =
+      [&](const RigidTransform<double>& X_des,
+          const RigidTransform<double>& X_meas) -> RigidTransform<double> {
+    const Vector3d dp = X_des.translation() - X_meas.translation();
+    const double dp_norm = dp.norm();
+    const Vector3d p_clamped =
+        (dp_norm > FLAGS_cube_ik_lead_pos_max)
+            ? Vector3d(X_meas.translation() +
+                       dp * (FLAGS_cube_ik_lead_pos_max / dp_norm))
+            : X_des.translation();
+
+    const Eigen::Quaterniond q_meas = X_meas.rotation().ToQuaternion();
+    const Eigen::Quaterniond q_des = X_des.rotation().ToQuaternion();
+    const Eigen::AngleAxisd aa_diff(q_des * q_meas.inverse());
+    RotationMatrix<double> R_clamped = X_des.rotation();
+    if (aa_diff.angle() > FLAGS_cube_ik_lead_rot_max) {
+      const Eigen::AngleAxisd aa_capped(FLAGS_cube_ik_lead_rot_max,
+                                        aa_diff.axis());
+      R_clamped =
+          RotationMatrix<double>(Eigen::Quaterniond(aa_capped) * q_meas);
+    }
+    return RigidTransform<double>(R_clamped, p_clamped);
   };
 
   // --contact_force_log cadence: control_dt is 1kHz, throttle down to
@@ -1402,16 +1527,35 @@ int DoMain(int argc, char* argv[]) {
         ++relin_calls;
       }
 
-      // Moving contact reference: re-solve the 3-point grasp IK against the
-      // CURRENT cube pose so the cost's hand-q target (k_hold pulls here) and
-      // the OSC anchor follow the cube instead of the static t=0 config. Done
-      // at relin cadence (an IK solve per control tick would be wasteful; the
-      // cube barely moves in one relin period). Pinned → cube frozen, skip.
+      // t_ref_now: seconds since pin release, clamped to 0 beforehand — the
+      // single time base shared by the IK target, the plan's cube-pose
+      // reference, and (one horizon ahead) the plan's hand-q reference.
+      const double t_ref_now = std::max(0.0, t - (handoff_t + 0.5));
+      const double t_ref_end = t_ref_now + FLAGS_N * FLAGS_c3_dt;
+
+      // Moving contact reference (Mod 2 + Mod 3): re-solve the 3-point grasp
+      // IK against the DESIRED cube pose — not the measured one — so the
+      // fingers LEAD the commanded motion instead of re-wrapping around
+      // wherever the cube currently is (which is what made --cube_bob_amp
+      // produce lateral chasing instead of vertical motion: the old IK call
+      // tracked the MEASURED pose while the cube's z-target moved
+      // independently, so the two references fought). Two solves per relin —
+      // now (k=0) and one horizon ahead (k=N) — so the per-knot hand-q
+      // reference below can interpolate instead of freezing the whole
+      // horizon at a single instant. Done at relin cadence (an IK solve per
+      // control tick would be wasteful). Pinned → cube frozen, skip.
       if (FLAGS_track_cube_contact && !cube_pinned && do_relin) {
         const auto ik_t0 = std::chrono::steady_clock::now();
-        const RigidTransform<double> X_WC_now = CubePoseFromPositions(
+        const RigidTransform<double> X_WC_meas = CubePoseFromPositions(
             sim_plant.GetPositions(plant_ctx, sim_cube));
-        q_contact_live = resolve_contact_ik(X_WC_now);
+        const std::pair<RigidTransform<double>, Vector3d> pose_now =
+            cube_target_pose(t_ref_now);
+        const std::pair<RigidTransform<double>, Vector3d> pose_end =
+            cube_target_pose(t_ref_end);
+        q_contact_live =
+            resolve_contact_ik(clamp_ik_lead(pose_now.first, X_WC_meas));
+        q_contact_live_end =
+            resolve_contact_ik(clamp_ik_lead(pose_end.first, X_WC_meas));
         const double ik_ms = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - ik_t0)
                                  .count();
@@ -1425,32 +1569,49 @@ int DoMain(int argc, char* argv[]) {
         std::cout.precision(cout_prec);
       }
 
-      // Update C3's desired-state trajectory. Two independent overrides on top
-      // of x_des_base, either of which triggers a rebuild:
-      //   track: the 3 grasping fingers' q-target ← live IK (moving contact).
-      //   bob:   the cube z-target (+velocity) ← sine, giving C3 a moving
-      //          setpoint to chase. State layout: cube z at n_hand_q+6, cube
-      //          linear-z velocity at n_pos+n_hand_v+5. Horizon k=0..N filled
-      //          with the look-ahead so C3 tracks ahead, not a lagged step.
+      // Update C3's desired-state trajectory. Two overrides on top of
+      // x_des_base, either of which triggers a rebuild — and, unlike before,
+      // both now come from the SAME --cube_motion_mode pose function, so
+      // they can no longer disagree about where the cube should be:
+      //   track:  the 3 grasping fingers' per-knot q-target ← linear
+      //           interpolation between the k=0 and k=N IK solves above
+      //           (Mod 3), instead of one IK solve pasted across every knot.
+      //   motion: the cube's full pose (quaternion + xyz) and translational
+      //           velocity, per knot, from cube_target_pose(tk). State
+      //           layout: cube quaternion at n_hand_q..+3, cube xyz at
+      //           n_hand_q+4..+6, cube linear velocity at
+      //           n_pos+n_hand_v+3..+5. Horizon k=0..N filled with the
+      //           look-ahead so C3 tracks ahead, not a lagged step.
       const bool track = (FLAGS_track_cube_contact && !cube_pinned);
-      const bool bob = (FLAGS_cube_bob_amp != 0.0 && !cube_pinned);
-      if (track || bob) {
+      const bool motion = (FLAGS_cube_motion_mode != "none" && !cube_pinned);
+      if (track || motion) {
         std::vector<VectorXd> x_des_traj(FLAGS_N + 1, x_des_base);
         if (track) {
-          for (int k = 0; k <= FLAGS_N; ++k)
+          for (int k = 0; k <= FLAGS_N; ++k) {
+            const double frac =
+                FLAGS_N > 0 ? static_cast<double>(k) / FLAGS_N : 0.0;
+            const VectorXd q_k =
+                (1.0 - frac) * q_contact_live + frac * q_contact_live_end;
             for (int i = 0; i < 3; ++i)
               x_des_traj[k].segment(finger_start[i], 4) =
-                  q_contact_live.segment(finger_start[i], 4);
+                  q_k.segment(finger_start[i], 4);
+          }
         }
-        if (bob) {
-          const double t_ref = std::max(0.0, t - (handoff_t + 0.5));
-          const double w = 2.0 * M_PI / FLAGS_cube_bob_period;
+        if (motion) {
           for (int k = 0; k <= FLAGS_N; ++k) {
-            const double tk = t_ref + k * FLAGS_c3_dt;
-            x_des_traj[k](n_hand_q + 6) =
-                cube_z0 + FLAGS_cube_bob_amp * std::sin(w * tk);
-            x_des_traj[k](n_pos + n_hand_v + 5) =
-                FLAGS_cube_bob_amp * w * std::cos(w * tk);
+            const double tk = t_ref_now + k * FLAGS_c3_dt;
+            const std::pair<RigidTransform<double>, Vector3d> pose_vel =
+                cube_target_pose(tk);
+            Eigen::Quaterniond quat = pose_vel.first.rotation().ToQuaternion();
+            if (quat.w() < 0.0) quat.coeffs() *= -1.0;  // match q_cube0's +w
+            x_des_traj[k](n_hand_q + 0) = quat.w();
+            x_des_traj[k](n_hand_q + 1) = quat.x();
+            x_des_traj[k](n_hand_q + 2) = quat.y();
+            x_des_traj[k](n_hand_q + 3) = quat.z();
+            x_des_traj[k].segment(n_hand_q + 4, 3) = pose_vel.first.translation();
+            x_des_traj[k](n_pos + n_hand_v + 3) = pose_vel.second.x();
+            x_des_traj[k](n_pos + n_hand_v + 4) = pose_vel.second.y();
+            x_des_traj[k](n_pos + n_hand_v + 5) = pose_vel.second.z();
           }
           last_zref = x_des_traj[0](n_hand_q + 6);
         }
@@ -1825,20 +1986,42 @@ int DoMain(int argc, char* argv[]) {
         tau_hand = s_u * c3->GetInputSolution()[0];
       } else if (FLAGS_exec_mode == "osc") {
         // Simple joint-space controller (replaces the inverse-dynamics OSC):
-        //   tau = tau_grav + kp*(q_plan0 - q_hand) + Σ_i J_iᵀ (fn_i · n_i)
+        //   tau = tau_grav + kp*(q_target - q_hand) + Σ_i J_iᵀ (fn_i · n_i)
         // Three additive pieces, nothing more:
         //   tau_grav : hand gravity compensation (holds static under gravity).
-        //   kp*(..)  : pure proportional pull toward the plan's knot-0 hand
-        //              config (xplan[0], hard-constrained to the measured state
-        //              at solve time). No mass matrix, no Coriolis, no velocity
-        //              damping term.
+        //   kp*(..)  : pure proportional pull toward q_target (below). No mass
+        //              matrix, no Coriolis, no velocity damping term.
         //   J^T·fn   : C3's planned normal grip lambda_n at each fingertip,
         //              applied along the (rotating) contact normal via
         //              Jacobian-transpose — the task-space force piece.
+        //
+        // q_target (Mod 4): previously xplan_now[0] — C3's knot-0 hand config,
+        // which the QP's own initial-condition constraint HARD-PINS to the
+        // measured state at every solve. That made this PD term a structural
+        // no-op (q_target ≈ q_hand always, by construction — no plan, however
+        // good, can ever move it): with a moving --cube_motion_mode reference,
+        // the cube's target visibly moved in the plan/IK, but nothing here
+        // ever read it, so the hand never chased it. Two real targets used
+        // instead, both able to actually move:
+        //   --track_cube_contact on:  q_contact_live, the live grasp-IK
+        //     solution against the DESIRED cube pose (Mods 2/3) — the
+        //     fingertips lead the commanded motion, and the cube rides along
+        //     via contact/friction, exactly as a real grasp transports an
+        //     object.
+        //   --track_cube_contact off: xplan_now[1], C3's own solved NEXT
+        //     knot — the fix the exec_mode=osc flag's docstring already
+        //     promised ("realizes (x1, lambda0)") but the code never
+        //     implemented. Knot 1 is the earliest knot the QP can actually
+        //     move (knot 0 can't, per above), so this is the plan's real
+        //     one-step-ahead intent, not a frozen restatement of "now."
         const VectorXd q_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
         const std::vector<VectorXd> xplan_now = c3->GetStateSolution();
         VectorXd q_des = q_hand;
-        if (!xplan_now.empty()) q_des = xplan_now[0].head(n_hand_q);
+        if (FLAGS_track_cube_contact) {
+          q_des = q_contact_live;
+        } else if (xplan_now.size() > 1) {
+          q_des = xplan_now[1].head(n_hand_q);
+        }
 
         // Gravity compensation: tau = -tau_gravity holds the hand static.
         const VectorXd tau_grav = sim_plant.GetVelocitiesFromArray(
