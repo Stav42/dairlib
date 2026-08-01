@@ -290,11 +290,19 @@ DEFINE_string(exec_mode, "task_space",
               "pose, Mods 2-4) if --track_cube_contact, else C3's own "
               "knot-1 hand config (x1).");
 DEFINE_double(osc_kp, 300.0,
-              "OSC joint-space position gain (rad/s^2 per rad) inside the "
-              "commanded acceleration qddot_cmd = kp*(q_des-q)+kd*(qd_des-qd) "
-              "before CalcInverseDynamics converts it to torque via M(q).");
+              "OSC joint-space position gain (Nm/rad), applied directly in "
+              "torque space as kp*(q_des-q) — NOT an inverse-dynamics "
+              "acceleration gain despite the units its name suggests; the "
+              "current exec_mode=osc law never calls CalcInverseDynamics.");
 DEFINE_double(osc_kd, 15.0,
-              "OSC joint-space velocity gain, same qddot_cmd as osc_kp.");
+              "OSC joint-space damping gain (Nm*s/rad), applied directly in "
+              "torque space as -kd*qdot (implicit qd_des=0 — pure damping, "
+              "same convention as the reach-phase --kd). Previously defined "
+              "but unused: exec_mode=osc was simplified to a bare P law after "
+              "an earlier inverse-dynamics/kd variant injected energy at pin "
+              "release and kicked the cube loose. This direct-torque form "
+              "skips M(q) entirely so it's architecturally gentler than that "
+              "one, but is still untested — A/B against --osc_kd=0.");
 DEFINE_bool(exec_grav_comp, false,
             "Post-release C3 executor: add explicit gravity compensation "
             "(tau_g) on top of s_u*u0. Default false: gravity is already "
@@ -2027,7 +2035,13 @@ int DoMain(int argc, char* argv[]) {
         const VectorXd tau_grav = sim_plant.GetVelocitiesFromArray(
             sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
 
-        const VectorXd tau_pd = FLAGS_osc_kp * (q_des - q_hand);
+        // Pure joint-space PD, implicit qd_des=0 (same "hold still" damping
+        // convention as the reach-phase PD) — NOT via CalcInverseDynamics/
+        // M(q), which was the earlier, heavier architecture that injected
+        // energy at pin release and kicked the cube loose. See --osc_kd's
+        // doc: this direct-torque damping is gentler than that but untested.
+        const VectorXd tau_pd =
+            FLAGS_osc_kp * (q_des - q_hand) - FLAGS_osc_kd * v_hand;
 
         // Feedforward contact normal force from C3's own planned lambda_n
         // (physical units: GetForceSolution() / GetLambdaScaling()).
