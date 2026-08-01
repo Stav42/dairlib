@@ -243,6 +243,18 @@ DEFINE_double(cube_ik_lead_pos_max, 0.05,
 DEFINE_double(cube_ik_lead_rot_max, 0.3,
               "Safety clamp (rad): same as --cube_ik_lead_pos_max for the "
               "rotational part of the IK lead.");
+DEFINE_bool(show_cube_target, true,
+            "Draw a translucent CYAN 'ghost' cube in Meshcat at the raw "
+            "(pre-clamp) --cube_motion_mode target pose, updated every "
+            "control step post-handoff. Lets you see tracking quality — "
+            "sag, lag, drift — directly: compare the real (opaque) cube "
+            "against the ghost. Set false for a clean recording.");
+DEFINE_bool(show_cube_start, true,
+            "Draw a translucent RED 'ghost' cube in Meshcat at the fixed "
+            "starting/nominal pose X_WC0 — the pose every --cube_move_* "
+            "offset is measured from. Static (set once, never updated), "
+            "unlike --show_cube_target's live ghost, so it stays put as a "
+            "constant visual anchor for how far the cube has moved.");
 // ── Low-level realization layer ──────────────────────────────────────────────
 // C3 PLANS (low rate); a task-space PD + Jacobian-transpose grip EXECUTES (high
 // rate, every control tick): τ = τ_g + Σ Jᵢᵀ[Kp(p_des−p) − Kd·ṗ + fₙ·n̂], with
@@ -730,6 +742,36 @@ int DoMain(int argc, char* argv[]) {
                                      Vector3d(0.0, 0.0, 0.58));
   VectorXd q_cube0(7);
   q_cube0 << 1, 0, 0, 0, X_WC0.translation();
+
+  // Translucent "ghost" cube at the --cube_motion_mode commanded target pose
+  // (see the kC3-phase update below) — makes tracking quality (sag, lag,
+  // drift) visible directly against the real, opaque cube. Slightly
+  // inflated so its faces don't z-fight the real cube's when the two
+  // coincide (perfect tracking, or before any motion is commanded).
+  if (FLAGS_show_cube_target) {
+    const drake::geometry::Rgba kGhostCyan(0.0, 0.9, 1.0, 0.35);
+    meshcat->SetObject(
+        "/cube_target",
+        drake::geometry::Box(cube_size + 0.002, cube_size + 0.002,
+                             cube_size + 0.002),
+        kGhostCyan);
+    meshcat->SetTransform("/cube_target", X_WC0);
+  }
+
+  // Static red start-pose ghost, set once — X_WC0 never changes during a
+  // run, so (unlike /cube_target) this needs no per-tick update anywhere.
+  // Inflated further than /cube_target (+4mm vs +2mm) so the two ghosts
+  // render as distinct concentric shells around the real cube instead of
+  // z-fighting when both sit at X_WC0 (e.g. before any motion starts).
+  if (FLAGS_show_cube_start) {
+    const drake::geometry::Rgba kGhostRed(1.0, 0.0, 0.0, 0.35);
+    meshcat->SetObject(
+        "/cube_start",
+        drake::geometry::Box(cube_size + 0.004, cube_size + 0.004,
+                             cube_size + 0.004),
+        kGhostRed);
+    meshcat->SetTransform("/cube_start", X_WC0);
+  }
 
   const std::array<std::string, 3> tip_names{"link_3_tip", "link_7_tip",
                                              "link_15_tip"};
@@ -1540,6 +1582,15 @@ int DoMain(int argc, char* argv[]) {
       // reference, and (one horizon ahead) the plan's hand-q reference.
       const double t_ref_now = std::max(0.0, t - (handoff_t + 0.5));
       const double t_ref_end = t_ref_now + FLAGS_N * FLAGS_c3_dt;
+
+      // Ghost cube: raw (unclamped) commanded target, same call the IK lead
+      // and the C3 cube-pose cost use at k=0 — so it always matches what's
+      // actually being commanded, including when the IK-lead clamp is
+      // silently capping how far the fingers can chase it.
+      if (FLAGS_show_cube_target) {
+        meshcat->SetTransform("/cube_target",
+                              cube_target_pose(t_ref_now).first);
+      }
 
       // Moving contact reference (Mod 2 + Mod 3): re-solve the 3-point grasp
       // IK against the DESIRED cube pose — not the measured one — so the
