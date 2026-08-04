@@ -145,7 +145,8 @@ DEFINE_double(ring_tip_surface_offset_z, 0.0115,
               "/tip_frame/ring_surface cube. Used for real: "
               "SolveGraspIKWithRing constrains this point (combined with "
               "--ring_tip_surface_offset_y) when solving q_contact/"
-              "q_pregrasp/q_release_middle, not just for the cube marker.");
+              "q_pregrasp/q_release_middle/q_regrasp_ring, not just for "
+              "the cube marker.");
 DEFINE_double(ring_tip_surface_offset_y, 0.005,
               "Offset (m) along link_11_tip's own local +Y from the frame "
               "origin to the true fingertip collision surface — confirmed "
@@ -155,7 +156,7 @@ DEFINE_double(ring_tip_surface_offset_y, 0.005,
               "Now used for real, not just visualization: "
               "SolveGraspIKWithRing constrains this point — not "
               "link_11_tip's raw origin — when solving q_contact/"
-              "q_pregrasp/q_release_middle.");
+              "q_pregrasp/q_release_middle/q_regrasp_ring.");
 DEFINE_bool(track_cube_contact, false,
             "Re-solve the 3-point grasp IK against the CURRENT cube pose "
             "every relin (once unpinned), so the C3 cost's hand-q reference "
@@ -410,23 +411,67 @@ DEFINE_bool(warm_start, false,
             "Warm-start each C3 solve from the previous solution. Helps "
             "convergence when solving repeatedly at a slowly drifting state.");
 
-// ── Middle-finger release (step 1 of finger-gaiting, built incrementally) ───
-// At --release_middle_t seconds after the cube unpins, retract the middle
-// finger off the cube (no recontact/regrasp yet — that's a later step) and
-// rebuild C3 to solve with only the remaining 2 contacts (index, thumb),
-// not a stale 3-contact problem with the 3rd masked downstream.
+// ── Single-finger release (step 1 of finger-gaiting, built incrementally) ──
+// 4-finger triangle grasp (index/middle/ring on -Y, thumb on +Y). At
+// --release_middle_t seconds after the cube unpins, retract --release_finger
+// (middle or ring) off the cube and rebuild C3 to solve with only the
+// remaining 3 contacts, not a stale 4-contact problem with the released one
+// masked downstream. --release_finger=middle stays retracted forever (no
+// recontact built yet); --release_finger=ring instead free-space PD-drives
+// toward a new point (same X, middle's Z height) and rejoins C3 once it
+// touches there — see q_regrasp_ring/ring_touch_latched/finger_rejoined.
 DEFINE_bool(release_middle, false,
-            "If true, release the middle finger partway through the run "
-            "(see --release_middle_t/--release_middle_offset). Default "
-            "false is a no-op — behavior is unchanged from before this "
-            "flag existed.");
+            "If true, run the 4-finger triangle grasp (index/middle/ring "
+            "on -Y, thumb on +Y) and retract one of {middle, ring} "
+            "partway through the run — see --release_finger, "
+            "--release_middle_t/--release_middle_offset. Default false is "
+            "a no-op — behavior is unchanged from before this flag "
+            "existed.");
+DEFINE_string(release_finger, "middle",
+              "Which finger --release_middle retracts at "
+              "--release_middle_t: \"middle\" or \"ring\". If \"ring\", it "
+              "PD-moves to a new point (same X, middle's Z height) and "
+              "rejoins C3 on touch (see --regrasp_settle_time); if "
+              "\"middle\", it just stays retracted. The two fingers not "
+              "picked keep holding at their triangle positions throughout.");
 DEFINE_double(release_middle_t, 3.0,
               "Seconds after the cube unpins (not absolute sim time) to "
-              "release the middle finger.");
+              "release --release_finger.");
 DEFINE_double(release_middle_offset, 0.02,
-              "How far outward (m), along the middle finger's current "
+              "How far outward (m), along --release_finger's current "
               "face normal, to retract it once released — just enough to "
               "break contact.");
+DEFINE_double(regrasp_settle_time, 0.15,
+              "Seconds to hold contact at a regrasp's new point (ring's, "
+              "then middle's — see q_regrasp_ring/q_regrasp_middle) before "
+              "trusting it and rejoining C3 — same rationale as "
+              "--handoff_settle_time, independently tunable. Shared by "
+              "both regrasp legs.");
+DEFINE_double(regrasp_duration, 1.0,
+              "Seconds for a regrasp's PD motion from its old contact "
+              "point to the new one to cover, via a CubicShapePreserving "
+              "spline built at the moment of release from wherever the "
+              "finger actually is then — not an instant position-target "
+              "jump. Shared by both regrasp legs (ring, then middle).");
+DEFINE_double(regrasp_touch_tol, 0.01,
+              "Max distance (m) from a regrasp's target point (ring_"
+              "regrasp_target, then middle_regrasp_target) for a "
+              "touching[] reading to count as the real regrasp. Without "
+              "this, a sagging cube (weaker grip with a finger out of the "
+              "LCS) can swing back into contact with it while it's still "
+              "near its OLD point early in the slow-starting spline, and "
+              "that false touch would rejoin C3 there instead of at the "
+              "new point. Shared by both regrasp legs.");
+DEFINE_double(regrasp_arc_clearance, 0.03,
+              "How far outward (m) beyond the face, along its -Y normal, "
+              "a regrasp path's midpoint bulges before sliding to the new "
+              "Z height and back in. A plain 2-knot joint-space spline "
+              "from the old point straight to the new one has no notion "
+              "of the cube's geometry and can stay close to (or drag "
+              "across) the face the whole way; routing through this "
+              "lifted midpoint forces a real arc that clears the surface. "
+              "Shared by both regrasp legs (q_regrasp_ring_mid, then "
+              "q_regrasp_middle_mid).");
 // (Superseded: ring used to target the +X face independently, with its own
 // --release_middle_ring_penetration/offset_{y,z} flags. Now it sits on the
 // -Y face as the triangle's base-right point, mirroring index — see
@@ -497,6 +542,10 @@ int DoMain(int argc, char* argv[]) {
       FLAGS_contact_model != "anitescu") {
     throw std::runtime_error(
         "contact_model must be 'stewart_and_trinkle' or 'anitescu'.");
+  }
+
+  if (FLAGS_release_finger != "middle" && FLAGS_release_finger != "ring") {
+    throw std::runtime_error("--release_finger must be 'middle' or 'ring'.");
   }
 
   if (FLAGS_release_middle && FLAGS_exec_mode != "osc") {
@@ -899,8 +948,9 @@ int DoMain(int argc, char* argv[]) {
   // apex positions (ring will mirror index at base-right — see
   // ring_target below), forming a triangle with ring. Used from the very
   // start (reach phase, q_contact, q_pregrasp), not just after the
-  // middle-release trigger — so there's no separate jump for index at
-  // trigger time, only middle retracting (see q_release_middle).
+  // release trigger — so there's no separate jump for the two fingers
+  // --release_finger DIDN'T pick; only the picked one retracts (see
+  // q_release_middle/q_regrasp_ring).
   const double index_x =
       FLAGS_release_middle ? -FLAGS_release_middle_tri_spread : a;
   const double index_z =
@@ -1023,6 +1073,49 @@ int DoMain(int argc, char* argv[]) {
   const Vector3d ring_pregrasp_target = X_WC0 * Vector3d(
       FLAGS_release_middle_tri_spread, -(h_cube + 0.01),
       FLAGS_release_middle_tri_base_z);
+  // Ring's regrasp destination (--release_finger=ring): same X as
+  // ring_target, raised to middle's Z height. Declared here (not just
+  // inline where q_regrasp_ring is solved below) because the main loop's
+  // touch-detection also needs it, as a world-frame point to confirm ring
+  // actually got there — see FLAGS_regrasp_touch_tol below.
+  const Vector3d ring_regrasp_target = X_WC0 * Vector3d(
+      FLAGS_release_middle_tri_spread,
+      -(h_cube - FLAGS_penetration_index_middle), middle_z);
+  // Arc midpoint for the regrasp path: same X as ring_regrasp_target
+  // (old and new points already share X — the whole move is a Y/Z arc),
+  // pulled outward past the face by --regrasp_arc_clearance, at the Z
+  // height halfway between the old and new points. q_regrasp_ring_mid
+  // (solved below) is this midpoint's hand config — the 2nd of 3 spline
+  // knots the main loop builds at release time.
+  const Vector3d ring_regrasp_mid_target = X_WC0 * Vector3d(
+      FLAGS_release_middle_tri_spread,
+      -(h_cube + FLAGS_regrasp_arc_clearance),
+      0.5 * (FLAGS_release_middle_tri_base_z + middle_z));
+  // Middle's regrasp destination, chained after ring's: once ring rejoins
+  // C3 (finger_rejoined), middle loosens and moves DOWN to index's
+  // height. Same X as middle's current position (middle_x, unchanged —
+  // this move is a Y/Z arc, same shape as ring's) but Z lowered to the
+  // triangle-base height index already sits at.
+  const Vector3d middle_regrasp_target = X_WC0 * Vector3d(
+      middle_x, -(h_cube - FLAGS_penetration_index_middle),
+      FLAGS_release_middle_tri_base_z);
+  // Arc midpoint for middle's regrasp path — same construction as ring's
+  // (ring_regrasp_mid_target above).
+  const Vector3d middle_regrasp_mid_target = X_WC0 * Vector3d(
+      middle_x, -(h_cube + FLAGS_regrasp_arc_clearance),
+      0.5 * (middle_z + FLAGS_release_middle_tri_base_z));
+  // Index's regrasp destination, chained after middle's rejoin: once
+  // middle is back in the LCS (middle_rejoined), index loosens and moves
+  // UP to the top line (middle's original apex height — same height ring
+  // moved to earlier). Same X as index's current position (index_x,
+  // unchanged — same Y/Z-arc shape as ring's and middle's moves).
+  const Vector3d index_regrasp_target = X_WC0 * Vector3d(
+      index_x, -(h_cube - FLAGS_penetration_index_middle), middle_z);
+  // Arc midpoint for index's regrasp path — same construction as ring's
+  // and middle's above.
+  const Vector3d index_regrasp_mid_target = X_WC0 * Vector3d(
+      index_x, -(h_cube + FLAGS_regrasp_arc_clearance),
+      0.5 * (index_z + middle_z));
 
   // Ring's own frame-origin-to-true-surface offset — confirmed by eye via
   // the /tip_frame/ring_surface cube (--ring_tip_surface_offset_{y,z}).
@@ -1066,22 +1159,73 @@ int DoMain(int argc, char* argv[]) {
           ? solve_ik_with_ring("contact", q_contact_targets, ring_target)
           : solve_ik("contact", q_contact_targets);
 
-  // Retracted-middle target for --release_middle: index/thumb/ring stay at
-  // their established points (ring is already touching -Y, same as the
-  // others — nothing further changes for any of them at trigger time).
-  // Middle's segment moves outward along the -Y face normal FROM THE APEX
-  // position (middle_x, middle_z) by --release_middle_offset — just enough
-  // to break contact, not from its old pre-triangle spot. No new face /
-  // recontact for middle, that's a later step; this one only ever retracts
-  // middle and stays there. Post-retraction the remaining 3-contact grasp
-  // is index+ring (the triangle's base, now the sole -Y contacts) + thumb.
-  VectorXd q_release_middle;
-  if (FLAGS_release_middle) {
+  // Retracted-finger target for --release_middle/--release_finger: the
+  // other three fingers stay at their established points — nothing further
+  // changes for them at trigger time. Middle's segment (--release_finger=
+  // middle) moves outward along the -Y face normal FROM ITS TRIANGLE
+  // POSITION by --release_middle_offset — just enough to break contact —
+  // and stays there forever; no recontact/regrasp for middle yet, that's
+  // unbuilt. Ring's segment (--release_finger=ring) instead targets a NEW
+  // point on the same face — same X (its triangle base-right spot) but
+  // raised to middle's Z height, at the SAME penetration as a normal touch
+  // (not just outside) — so PD naturally drives it to make contact there;
+  // the main loop below detects that touch and rejoins ring to C3 (see
+  // ring_touch_latched/finger_rejoined). Only the selected finger's target
+  // is solved (the other stays an empty, unused vector).
+  VectorXd q_release_middle, q_regrasp_ring, q_regrasp_ring_mid,
+      q_regrasp_middle, q_regrasp_middle_mid, q_regrasp_index,
+      q_regrasp_index_mid;
+  if (FLAGS_release_middle && FLAGS_release_finger == "middle") {
+    // Post-retraction the remaining 3-contact grasp is index+ring (the
+    // triangle's base, now the sole -Y contacts) + thumb.
     VectorXd release_targets = q_contact_targets;
     release_targets.segment<3>(3) = X_WC0 * Vector3d(
         middle_x, -(h_cube + FLAGS_release_middle_offset), middle_z);
     q_release_middle =
         solve_ik_with_ring("release_middle", release_targets, ring_target);
+  } else if (FLAGS_release_middle && FLAGS_release_finger == "ring") {
+    // While released/moving, the remaining C3 grasp is index+middle (back
+    // to the classic two-fingers-one-face layout) + thumb; ring itself is
+    // PD-driven (not C3) toward this new point until it rejoins. Two
+    // targets solved: the lifted arc midpoint (q_regrasp_ring_mid) and
+    // the final new point (q_regrasp_ring) — the main loop's spline
+    // routes through both, not straight to the final one.
+    q_regrasp_ring_mid = solve_ik_with_ring(
+        "regrasp_ring_mid", q_contact_targets, ring_regrasp_mid_target);
+    q_regrasp_ring = solve_ik_with_ring("regrasp_ring", q_contact_targets,
+                                        ring_regrasp_target);
+    // Middle's regrasp targets, chained after ring's (see
+    // middle_regrasp_target above) — solved here too, at setup time,
+    // even though middle doesn't loosen until ring actually rejoins at
+    // runtime, same as how q_regrasp_ring itself is precomputed before
+    // release ever happens. index/thumb held at their normal
+    // q_contact_targets slots; ring held at ITS new point
+    // (ring_regrasp_target), not its original ring_target — by the time
+    // middle loosens, ring is already there.
+    VectorXd middle_regrasp_targets9_mid = q_contact_targets;
+    middle_regrasp_targets9_mid.segment<3>(3) = middle_regrasp_mid_target;
+    q_regrasp_middle_mid = solve_ik_with_ring(
+        "regrasp_middle_mid", middle_regrasp_targets9_mid, ring_regrasp_target);
+    VectorXd middle_regrasp_targets9 = q_contact_targets;
+    middle_regrasp_targets9.segment<3>(3) = middle_regrasp_target;
+    q_regrasp_middle = solve_ik_with_ring(
+        "regrasp_middle", middle_regrasp_targets9, ring_regrasp_target);
+    // Index's regrasp targets, chained after middle's (see
+    // index_regrasp_target above) — solved here too, at setup time.
+    // middle held at ITS new point (middle_regrasp_target, not
+    // middle_x/middle_z's original apex) and ring held at ITS new point
+    // (ring_regrasp_target) — by the time index loosens, both have
+    // already moved there. Thumb unchanged, from q_contact_targets.
+    VectorXd index_regrasp_targets9_mid = q_contact_targets;
+    index_regrasp_targets9_mid.segment<3>(0) = index_regrasp_mid_target;
+    index_regrasp_targets9_mid.segment<3>(3) = middle_regrasp_target;
+    q_regrasp_index_mid = solve_ik_with_ring(
+        "regrasp_index_mid", index_regrasp_targets9_mid, ring_regrasp_target);
+    VectorXd index_regrasp_targets9 = q_contact_targets;
+    index_regrasp_targets9.segment<3>(0) = index_regrasp_target;
+    index_regrasp_targets9.segment<3>(3) = middle_regrasp_target;
+    q_regrasp_index = solve_ik_with_ring(
+        "regrasp_index", index_regrasp_targets9, ring_regrasp_target);
   }
 
   // Publish q_contact once on GRASP_Q_CONTACT (see the LCM wiring above) —
@@ -1128,6 +1272,60 @@ int DoMain(int argc, char* argv[]) {
   auto& act_fixed = sim_plant.get_actuation_input_port(sim_allegro)
                         .FixValue(&plant_ctx, VectorXd::Zero(n_hand));
 
+  // Physical finger indices (0=index,1=middle,2=thumb,3=ring) currently
+  // modeled as LCS contacts. Normally {0,1,2}; {0,1,2,3} once
+  // --release_middle brings ring in during the initial reach phase; drops
+  // to 3 (excluding whichever --release_finger picked) once the release
+  // trigger fires. normal_groups (and anything λ-derived) is indexed by
+  // POSITION in this list, not by physical finger — the two only coincide
+  // while all active fingers are present. Declared here (before
+  // update_markers, update_force_tracking, and rebuild_c3 below) since all
+  // three lambdas capture it by reference — a `[&]` capture only sees
+  // names already in scope at the lambda's definition point, not ones
+  // declared later in the function.
+  std::vector<int> active_fingers{0, 1, 2};
+  bool finger_released = false;  // one-shot latch for --release_middle
+  // --release_finger=ring regrasp bookkeeping (see q_regrasp_ring above).
+  // ring_left_surface debounces: touching[3] can still read true for a
+  // tick or two right as ring starts pulling away from its OLD point, so
+  // the "re-contacted" latch below only arms once a genuine break has been
+  // observed first — otherwise it could false-latch instantly at the old
+  // contact instead of the new one.
+  bool ring_left_surface = false;
+  bool ring_touch_latched = false;
+  double ring_touch_time = -1.0;
+  bool finger_rejoined = false;  // true once ring is back in the LCS
+  // Ring's old-point→new-point PD path (--release_finger=ring only): a
+  // 3-knot (old point, lifted arc midpoint, new point) CubicShapePreserving
+  // spline, built fresh at the moment of release from wherever ring's
+  // actual joint config is then (not a precomputed/static target like
+  // q_pregrasp/q_contact's spline, since the release moment — and so the
+  // spline's start point — isn't known until runtime). Default-constructed
+  // empty here; real content assigned once, at the trigger.
+  PiecewisePolynomial<double> ring_regrasp_traj;
+  double ring_regrasp_start_t = 0.0;
+  // Middle's regrasp bookkeeping, chained after ring's — mirrors every
+  // ring_* variable above exactly, just triggered by finger_rejoined
+  // (ring's own rejoin) instead of the --release_middle_t timer. See the
+  // middle-loosen trigger block and middle-rejoin detection block below.
+  bool middle_left_surface = false;
+  bool middle_touch_latched = false;
+  double middle_touch_time = -1.0;
+  bool middle_loosened = false;   // true once middle has been dropped
+  bool middle_rejoined = false;   // true once middle is back in the LCS
+  PiecewisePolynomial<double> middle_regrasp_traj;
+  double middle_regrasp_start_t = 0.0;
+  // Index's regrasp bookkeeping, chained after middle's — mirrors every
+  // middle_* variable above exactly, just triggered by middle_rejoined
+  // instead of finger_rejoined.
+  bool index_left_surface = false;
+  bool index_touch_latched = false;
+  double index_touch_time = -1.0;
+  bool index_loosened = false;   // true once index has been dropped
+  bool index_rejoined = false;   // true once index is back in the LCS
+  PiecewisePolynomial<double> index_regrasp_traj;
+  double index_regrasp_start_t = 0.0;
+
   auto update_markers = [&](const RigidTransform<double>& X_WC) {
     // index/middle computed directly (index_x/z, middle_x/z), not via
     // GetGraspPositions (cube_kinematics.h, shared by other binaries) —
@@ -1145,13 +1343,20 @@ int DoMain(int argc, char* argv[]) {
         "/grasp/thumb",
         RigidTransform<double>(X_WC * Vector3d(c_off, h_cube, 0)));
     if (FLAGS_release_middle) {
-      // Ring's dot: base-right of the triangle, mirroring index — same -Y
-      // face, same convention as index/middle above.
+      // Ring's dot: normally base-right of the triangle, mirroring index
+      // (same -Y face, same convention as index/middle above). Once
+      // --release_finger=ring has actually fired, ring is off the cube —
+      // the dot instead shows the new desired point: same X (its original
+      // base-right spot) but raised to middle's Z height. Visual-only for
+      // now, not wired into any real IK/LCS/finger motion.
+      const bool ring_relocated =
+          finger_released && FLAGS_release_finger == "ring";
+      const double ring_dot_z =
+          ring_relocated ? middle_z : FLAGS_release_middle_tri_base_z;
       meshcat->SetTransform(
           "/grasp/ring",
-          RigidTransform<double>(
-              X_WC * Vector3d(FLAGS_release_middle_tri_spread, -h_cube,
-                              FLAGS_release_middle_tri_base_z)));
+          RigidTransform<double>(X_WC * Vector3d(
+              FLAGS_release_middle_tri_spread, -h_cube, ring_dot_z)));
       // Guessed fingertip-surface cube: ring's tip BODY pose, offset along
       // its own local frame by --ring_tip_surface_offset_{y,z} — a
       // mechanical property of the finger itself, independent of which
@@ -1259,16 +1464,8 @@ int DoMain(int argc, char* argv[]) {
   for (int i = n_pos; i < n_pos + n_hand_v; ++i) Q_knot(i, i) = FLAGS_w_vel;
   for (int i = n_pos + n_hand_v; i < n_x; ++i)   Q_knot(i, i) = FLAGS_w_cube_vel;
 
-  // Physical finger indices (0=index,1=middle,2=thumb) currently modeled as
-  // LCS contacts. Normally {0,1,2}; drops to {0,2} once --release_middle
-  // triggers. normal_groups (and anything λ-derived) is indexed by
-  // POSITION in this list, not by physical finger — the two only coincide
-  // while all 3 are active. Declared here (before update_force_tracking and
-  // rebuild_c3 below) since both lambdas capture it by reference — a `[&]`
-  // capture only sees names already in scope at the lambda's definition
-  // point, not ones declared later in the function.
-  std::vector<int> active_fingers{0, 1, 2};
-  bool middle_released = false;  // one-shot latch for --release_middle
+  // active_fingers/finger_released now declared earlier, right before
+  // update_markers — see the comment there.
 
   // ══════════════════════════════════════════════════════════════════════════
   // 8. Initial sim state and simulator initialization.
@@ -1502,9 +1699,20 @@ int DoMain(int argc, char* argv[]) {
   auto resolve_contact_ik =
       [&](const RigidTransform<double>& X_WC) -> VectorXd {
     const double h = cube_size / 2.0;
+    // index_z/middle_z are --release_middle's ORIGINAL (base/apex)
+    // targets. Once a finger has rejoined C3 at its new point
+    // (middle_rejoined/index_rejoined), track THAT instead — this
+    // re-solve runs every relin under --track_cube_contact, so leaving
+    // either on its original value would silently overwrite
+    // q_contact_live's segment back to the old position within one relin
+    // cycle, undoing the rejoin fix in the main loop above (ring is
+    // exempt from this function entirely, so it never had this problem).
+    const double index_z_live = index_rejoined ? middle_z : index_z;
+    const double middle_z_live =
+        middle_rejoined ? FLAGS_release_middle_tri_base_z : middle_z;
     VectorXd targets(9);
-    targets << X_WC * Vector3d(index_x, -(h - FLAGS_penetration_index_middle), index_z),
-        X_WC * Vector3d(middle_x, -(h - FLAGS_penetration_index_middle), middle_z),
+    targets << X_WC * Vector3d(index_x, -(h - FLAGS_penetration_index_middle), index_z_live),
+        X_WC * Vector3d(middle_x, -(h - FLAGS_penetration_index_middle), middle_z_live),
         X_WC * Vector3d(c_off, h - FLAGS_penetration_thumb, 0);
     // NOTE: still 3-point (SolveGraspIK below, not SolveGraspIKWithRing) —
     // ring is not re-solved here regardless of --release_middle. This path
@@ -1948,20 +2156,245 @@ int DoMain(int argc, char* argv[]) {
       const double t_ref_end = t_ref_now + FLAGS_N * FLAGS_c3_dt;
 
       // --release_middle: one-shot, at --release_middle_t seconds after the
-      // cube unpins (t_ref_now is already exactly that time base). Ring has
-      // already been in the LCS since the original handoff (it reached and
-      // arrived alongside index/middle/thumb — see n_grasp_fingers), so the
-      // only thing that changes here is middle dropping out: it retracts
-      // off the face via q_release_middle (picked up in the osc executor
-      // below); index has already been at its triangle base-left position
-      // (index_x/index_z) since the reach phase, so it doesn't move here.
-      if (FLAGS_release_middle && !middle_released &&
+      // cube unpins (t_ref_now is already exactly that time base). All 4
+      // fingers have already been in the LCS since the original handoff
+      // (they reached and arrived together — see n_grasp_fingers), so the
+      // only thing that changes here is --release_finger dropping out: it
+      // retracts off the face via q_release_middle/q_regrasp_ring (picked
+      // up in the osc executor below); the other three have already been
+      // at their triangle positions since the reach phase, so nothing
+      // moves for them at trigger time.
+      if (FLAGS_release_middle && !finger_released &&
           t_ref_now >= FLAGS_release_middle_t) {
+        if (FLAGS_release_finger == "middle") {
+          rebuild_c3({0, 2, 3}, x_current);
+          std::cout << "[t=" << t << "] release_middle: middle finger "
+                       "retracted, C3 now solving 3 contacts "
+                       "(index, thumb, ring)\n";
+        } else {  // "ring"
+          rebuild_c3({0, 1, 2}, x_current);
+          std::cout << "[t=" << t << "] release_middle: ring finger "
+                       "retracted, C3 now solving 3 contacts "
+                       "(index, middle, thumb)\n";
+          // 3-knot arc from wherever ring actually is right now, through
+          // the lifted midpoint (q_regrasp_ring_mid), to q_regrasp_ring —
+          // CubicShapePreserving same as the reach phase's q_pregrasp→
+          // q_contact spline (traj/traj_dot above), just with a real
+          // waypoint in the middle instead of 2 knots straight-line-
+          // interpolated in joint space (which has no notion of the
+          // cube's geometry and can stay close to, or drag across, the
+          // face the whole way). Only finger_start[3]'s segment is ever
+          // read out of it (see the osc executor below). Built here, not
+          // at setup time, since the start point (ring's actual config
+          // right now) isn't known until release actually happens.
+          // n_hand_q, not n_pos: solve_ik_with_ring (and so
+          // q_regrasp_ring/q_regrasp_ring_mid) returns sim_plant.
+          // GetPositions(..., sim_allegro) — the HAND-ONLY 16 dof, not
+          // the full hand+cube plant vector — same convention q_contact/
+          // q_release_middle already use, which is what finger_start[]
+          // indexes into everywhere else.
+          std::vector<MatrixXd> ring_spline_pts{x_current.head(n_hand_q),
+                                                 q_regrasp_ring_mid,
+                                                 q_regrasp_ring};
+          ring_regrasp_traj = PiecewisePolynomial<double>::CubicShapePreserving(
+              {0.0, 0.5 * FLAGS_regrasp_duration, FLAGS_regrasp_duration},
+              ring_spline_pts, true);
+          ring_regrasp_start_t = t;
+        }
+        finger_released = true;
+      }
+
+      // --release_finger=ring regrasp: while released and not yet
+      // rejoined, ring is PD-driven (see the osc executor below) toward
+      // q_regrasp_ring, not solved by C3 — index/middle/thumb keep running
+      // under C3 the whole time, unaffected. touching[3] (computed once
+      // per tick above, independent of phase) is reused here as the
+      // re-contact signal, but force alone isn't enough: if the weaker
+      // 3-finger grip lets the cube sag, its face can swing back into
+      // contact with ring while ring is still near its OLD point early in
+      // the slow-starting spline (CubicShapePreserving eases in from zero
+      // velocity at both ends) — that reads as touching[3] too, and would
+      // rejoin C3 back at the old spot instead of the new one.
+      // ring_near_target (FK vs ring_regrasp_target, --regrasp_touch_tol)
+      // requires ring to actually be AT the new point, not just touched
+      // somewhere. ring_left_surface separately debounces the just-broken
+      // OLD contact still reading true for a tick or two right after the
+      // trigger — only a genuine break-then-remake-at-the-right-place
+      // latches. Once latched and held for --regrasp_settle_time (same
+      // rationale as --handoff_settle_time), ring rejoins C3.
+      if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
+          finger_released && !finger_rejoined) {
+        if (!ring_left_surface && !touching[3]) {
+          ring_left_surface = true;
+        }
+        const Vector3d ring_tip_pos =
+            sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                          sim_plant.get_body(tip_bodies[3])) *
+            ring_surface_offset;
+        const bool ring_near_target =
+            (ring_tip_pos - ring_regrasp_target).norm() <
+            FLAGS_regrasp_touch_tol;
+        if (ring_left_surface && !ring_touch_latched && touching[3] &&
+            ring_near_target) {
+          ring_touch_latched = true;
+          ring_touch_time = t;
+          std::cout << "[t=" << t << "] release_middle: ring re-contacted "
+                       "the new point, settling " << FLAGS_regrasp_settle_time
+                    << " s before rejoining C3\n";
+        }
+        if (ring_touch_latched &&
+            t >= ring_touch_time + FLAGS_regrasp_settle_time) {
+          // Ring's OLD position is baked into x_des_base (C3's own cost
+          // target, set once at the original handoff and otherwise left
+          // alone across rebuilds) and into q_contact_live/_end (the
+          // --track_cube_contact executor target — resolve_contact_ik
+          // never touches ring's segment, still 3-point-only). Left
+          // unrefreshed, both pull ring straight back to its old point
+          // the instant the osc executor's override below stops
+          // overriding it (once finger_rejoined) — update all three to
+          // the new point FIRST, before rebuild_c3 reads x_des_base.
+          x_des_base.segment(finger_start[3], 4) =
+              q_regrasp_ring.segment(finger_start[3], 4);
+          q_contact_live.segment(finger_start[3], 4) =
+              q_regrasp_ring.segment(finger_start[3], 4);
+          q_contact_live_end.segment(finger_start[3], 4) =
+              q_regrasp_ring.segment(finger_start[3], 4);
+          rebuild_c3({0, 1, 2, 3}, x_current);
+          finger_rejoined = true;
+          std::cout << "[t=" << t << "] release_middle: ring rejoined C3, "
+                       "solving 4 contacts (index, middle, thumb, ring)\n";
+        }
+      }
+
+      // Middle loosens, chained after ring's rejoin: once ring is back in
+      // the LCS, middle drops out and arcs DOWN to index's height (same
+      // rebuild/spline pattern as ring's own release above, just
+      // triggered by finger_rejoined instead of --release_middle_t).
+      if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
+          finger_rejoined && !middle_loosened) {
         rebuild_c3({0, 2, 3}, x_current);
-        middle_released = true;
         std::cout << "[t=" << t << "] release_middle: middle finger "
-                     "retracted, C3 now solving 3 contacts "
+                     "loosened, C3 now solving 3 contacts "
                      "(index, thumb, ring)\n";
+        std::vector<MatrixXd> middle_spline_pts{x_current.head(n_hand_q),
+                                                 q_regrasp_middle_mid,
+                                                 q_regrasp_middle};
+        middle_regrasp_traj = PiecewisePolynomial<double>::CubicShapePreserving(
+            {0.0, 0.5 * FLAGS_regrasp_duration, FLAGS_regrasp_duration},
+            middle_spline_pts, true);
+        middle_regrasp_start_t = t;
+        middle_loosened = true;
+      }
+
+      // Middle rejoin detection — mirrors the ring-rejoin block above
+      // exactly: touching[1] (middle's physical index) + FK-position
+      // check against middle_regrasp_target (tip_bodies[1]/tip_surface_pt
+      // — middle uses the shared index/middle/thumb surface-offset
+      // convention, not ring_surface_offset) + middle_left_surface
+      // debounce + --regrasp_settle_time dwell, then rejoin C3 as all 4
+      // contacts and refresh x_des_base/q_contact_live/_end's
+      // finger_start[1] segment (same staleness fix as ring's, same
+      // reason: resolve_contact_ik is 3-point-only and x_des_base is
+      // otherwise left alone across rebuilds).
+      if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
+          middle_loosened && !middle_rejoined) {
+        if (!middle_left_surface && !touching[1]) {
+          middle_left_surface = true;
+        }
+        const Vector3d middle_tip_pos =
+            sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                          sim_plant.get_body(tip_bodies[1])) *
+            tip_surface_pt;
+        const bool middle_near_target =
+            (middle_tip_pos - middle_regrasp_target).norm() <
+            FLAGS_regrasp_touch_tol;
+        if (middle_left_surface && !middle_touch_latched && touching[1] &&
+            middle_near_target) {
+          middle_touch_latched = true;
+          middle_touch_time = t;
+          std::cout << "[t=" << t << "] release_middle: middle "
+                       "re-contacted the new point, settling "
+                    << FLAGS_regrasp_settle_time
+                    << " s before rejoining C3\n";
+        }
+        if (middle_touch_latched &&
+            t >= middle_touch_time + FLAGS_regrasp_settle_time) {
+          x_des_base.segment(finger_start[1], 4) =
+              q_regrasp_middle.segment(finger_start[1], 4);
+          q_contact_live.segment(finger_start[1], 4) =
+              q_regrasp_middle.segment(finger_start[1], 4);
+          q_contact_live_end.segment(finger_start[1], 4) =
+              q_regrasp_middle.segment(finger_start[1], 4);
+          rebuild_c3({0, 1, 2, 3}, x_current);
+          middle_rejoined = true;
+          std::cout << "[t=" << t << "] release_middle: middle rejoined "
+                       "C3, solving 4 contacts (index, middle, thumb, "
+                       "ring)\n";
+        }
+      }
+
+      // Index loosens, chained after middle's rejoin: once middle is back
+      // in the LCS, index drops out and arcs UP to the top line (same
+      // rebuild/spline pattern as ring's and middle's releases above,
+      // just triggered by middle_rejoined).
+      if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
+          middle_rejoined && !index_loosened) {
+        rebuild_c3({1, 2, 3}, x_current);
+        std::cout << "[t=" << t << "] release_middle: index finger "
+                     "loosened, C3 now solving 3 contacts "
+                     "(middle, thumb, ring)\n";
+        std::vector<MatrixXd> index_spline_pts{x_current.head(n_hand_q),
+                                                q_regrasp_index_mid,
+                                                q_regrasp_index};
+        index_regrasp_traj = PiecewisePolynomial<double>::CubicShapePreserving(
+            {0.0, 0.5 * FLAGS_regrasp_duration, FLAGS_regrasp_duration},
+            index_spline_pts, true);
+        index_regrasp_start_t = t;
+        index_loosened = true;
+      }
+
+      // Index rejoin detection — mirrors the ring/middle rejoin blocks
+      // above exactly: touching[0] (index's physical index) + FK-position
+      // check against index_regrasp_target (tip_bodies[0]/tip_surface_pt)
+      // + index_left_surface debounce + --regrasp_settle_time dwell, then
+      // rejoin C3 as all 4 contacts and refresh x_des_base/q_contact_live/
+      // _end's finger_start[0] segment (same staleness fix as ring's and
+      // middle's, same reason).
+      if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
+          index_loosened && !index_rejoined) {
+        if (!index_left_surface && !touching[0]) {
+          index_left_surface = true;
+        }
+        const Vector3d index_tip_pos =
+            sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                          sim_plant.get_body(tip_bodies[0])) *
+            tip_surface_pt;
+        const bool index_near_target =
+            (index_tip_pos - index_regrasp_target).norm() <
+            FLAGS_regrasp_touch_tol;
+        if (index_left_surface && !index_touch_latched && touching[0] &&
+            index_near_target) {
+          index_touch_latched = true;
+          index_touch_time = t;
+          std::cout << "[t=" << t << "] release_middle: index "
+                       "re-contacted the new point, settling "
+                    << FLAGS_regrasp_settle_time
+                    << " s before rejoining C3\n";
+        }
+        if (index_touch_latched &&
+            t >= index_touch_time + FLAGS_regrasp_settle_time) {
+          x_des_base.segment(finger_start[0], 4) =
+              q_regrasp_index.segment(finger_start[0], 4);
+          q_contact_live.segment(finger_start[0], 4) =
+              q_regrasp_index.segment(finger_start[0], 4);
+          q_contact_live_end.segment(finger_start[0], 4) =
+              q_regrasp_index.segment(finger_start[0], 4);
+          rebuild_c3({0, 1, 2, 3}, x_current);
+          index_rejoined = true;
+          std::cout << "[t=" << t << "] release_middle: index rejoined "
+                       "C3, solving 4 contacts (index, middle, thumb, "
+                       "ring)\n";
+        }
       }
 
       // Ghost cube: raw (unclamped) commanded target, same call the IK lead
@@ -2489,15 +2922,58 @@ int DoMain(int argc, char* argv[]) {
           q_des = xplan_now[1].head(n_hand_q);
         }
 
-        // --release_middle: once triggered, middle's 4 joints are pinned to
-        // the precomputed retracted target instead of whatever q_des picked
-        // above — unconditional, so it wins regardless of
-        // --track_cube_contact. finger_start[1] = middle. Index needs no
-        // override here — it's been at its triangle position since the
-        // reach phase, so nothing changes for it at trigger time.
-        if (middle_released) {
+        // --release_middle: once triggered and until it rejoins C3 (ring
+        // only — see finger_rejoined), --release_finger's 4 joints are
+        // pinned to a target instead of whatever q_des picked above — this
+        // IS the PD control: no C3 lambda feedforward reaches this finger
+        // (excluded from active_fingers below) and q_des feeds straight
+        // into the same tau_pd law as everyone else, so a plain position
+        // error is all that drives it. Middle just pins to its fixed
+        // retracted target forever; ring instead reads a time-indexed
+        // point off ring_regrasp_traj — the spline built at release time —
+        // so it travels smoothly from its old contact point to the new
+        // one instead of q_des jumping straight there. Unconditional
+        // otherwise, so it wins regardless of --track_cube_contact. The
+        // other fingers need no override here — they've been at their
+        // triangle positions since the reach phase (or are back under
+        // normal C3 tracking, for ring, once finger_rejoined).
+        if (finger_released && !finger_rejoined) {
+          if (FLAGS_release_finger == "middle") {
+            q_des.segment(finger_start[1], 4) =
+                q_release_middle.segment(finger_start[1], 4);
+          } else {  // "ring"
+            const double tl = std::clamp(t - ring_regrasp_start_t, 0.0,
+                                          ring_regrasp_traj.end_time());
+            const VectorXd q_ring_spline = ring_regrasp_traj.value(tl).col(0);
+            q_des.segment(finger_start[3], 4) =
+                q_ring_spline.segment(finger_start[3], 4);
+          }
+        }
+        // Middle's loosen phase, chained after ring's rejoin: same
+        // PD-not-C3 mechanism as the block above, just for middle and
+        // gated on middle_loosened/middle_rejoined instead of
+        // finger_released/finger_rejoined — these never overlap in time
+        // (middle_loosened only ever goes true after finger_rejoined
+        // already has, at which point the block above is already
+        // inactive) and never touch the same finger_start[] slot.
+        if (middle_loosened && !middle_rejoined) {
+          const double tl = std::clamp(t - middle_regrasp_start_t, 0.0,
+                                        middle_regrasp_traj.end_time());
+          const VectorXd q_middle_spline =
+              middle_regrasp_traj.value(tl).col(0);
           q_des.segment(finger_start[1], 4) =
-              q_release_middle.segment(finger_start[1], 4);
+              q_middle_spline.segment(finger_start[1], 4);
+        }
+        // Index's loosen phase, chained after middle's rejoin: same
+        // PD-not-C3 mechanism as the two blocks above, just for index and
+        // gated on index_loosened/index_rejoined.
+        if (index_loosened && !index_rejoined) {
+          const double tl = std::clamp(t - index_regrasp_start_t, 0.0,
+                                        index_regrasp_traj.end_time());
+          const VectorXd q_index_spline =
+              index_regrasp_traj.value(tl).col(0);
+          q_des.segment(finger_start[0], 4) =
+              q_index_spline.segment(finger_start[0], 4);
         }
 
         // Gravity compensation: tau = -tau_gravity holds the hand static.
