@@ -135,6 +135,27 @@ DEFINE_double(tip_surface_offset_z, 0.0115,
               "q_contact/q_pregrasp, so the IK constrains the real surface "
               "point (not the frame origin) to sit at the intended margin "
               "from the cube face.");
+DEFINE_double(ring_tip_surface_offset_z, 0.0115,
+              "Same meaning as --tip_surface_offset_z (offset along "
+              "link_11_tip's own local +Z from its frame origin to the "
+              "true fingertip collision surface), but for ring specifically "
+              "— started from the SAME empirically-found value as "
+              "index/middle/thumb (0.0115, ring is mechanically the same "
+              "finger module), pulled in slightly per visual tuning via the "
+              "/tip_frame/ring_surface cube. Used for real: "
+              "SolveGraspIKWithRing constrains this point (combined with "
+              "--ring_tip_surface_offset_y) when solving q_contact/"
+              "q_pregrasp/q_release_middle, not just for the cube marker.");
+DEFINE_double(ring_tip_surface_offset_y, 0.005,
+              "Offset (m) along link_11_tip's own local +Y from the frame "
+              "origin to the true fingertip collision surface — confirmed "
+              "by eye via the /tip_frame/ring_surface cube (X tried first, "
+              "moved to Y; 0.005 is the visually-confirmed value, same "
+              "convention as --tip_surface_offset_z for the other three). "
+              "Now used for real, not just visualization: "
+              "SolveGraspIKWithRing constrains this point — not "
+              "link_11_tip's raw origin — when solving q_contact/"
+              "q_pregrasp/q_release_middle.");
 DEFINE_bool(track_cube_contact, false,
             "Re-solve the 3-point grasp IK against the CURRENT cube pose "
             "every relin (once unpinned), so the C3 cost's hand-q reference "
@@ -389,6 +410,47 @@ DEFINE_bool(warm_start, false,
             "Warm-start each C3 solve from the previous solution. Helps "
             "convergence when solving repeatedly at a slowly drifting state.");
 
+// ── Middle-finger release (step 1 of finger-gaiting, built incrementally) ───
+// At --release_middle_t seconds after the cube unpins, retract the middle
+// finger off the cube (no recontact/regrasp yet — that's a later step) and
+// rebuild C3 to solve with only the remaining 2 contacts (index, thumb),
+// not a stale 3-contact problem with the 3rd masked downstream.
+DEFINE_bool(release_middle, false,
+            "If true, release the middle finger partway through the run "
+            "(see --release_middle_t/--release_middle_offset). Default "
+            "false is a no-op — behavior is unchanged from before this "
+            "flag existed.");
+DEFINE_double(release_middle_t, 3.0,
+              "Seconds after the cube unpins (not absolute sim time) to "
+              "release the middle finger.");
+DEFINE_double(release_middle_offset, 0.02,
+              "How far outward (m), along the middle finger's current "
+              "face normal, to retract it once released — just enough to "
+              "break contact.");
+// (Superseded: ring used to target the +X face independently, with its own
+// --release_middle_ring_penetration/offset_{y,z} flags. Now it sits on the
+// -Y face as the triangle's base-right point, mirroring index — see
+// --release_middle_tri_* below and ring_target's construction.)
+
+// ── Triangle topology: index/middle/ring, all on -Y (--release_middle) ────
+// The real --release_middle grasp target: index and ring level with each
+// other (the triangle's base), middle above them (the apex), all three on
+// the -Y face — wired into q_contact_targets/pregrasp/IK/LCS, not just a
+// preview. Thumb is unchanged, still on +Y.
+DEFINE_double(release_middle_tri_spread, 0.015,
+              "Half-distance (m) between index and ring along the face's "
+              "lateral (X) axis — the triangle's base half-width. Face "
+              "half-width is 0.03 (cube_size/2), so this leaves ~15mm "
+              "margin to the edge. Was 0.022 (~8mm margin) until "
+              "empirical testing found index/ring too far apart.");
+DEFINE_double(release_middle_tri_base_z, -0.008,
+              "Index/ring's vertical (Z) offset (m) from the -Y face's "
+              "center — the triangle's base, below center by default.");
+DEFINE_double(release_middle_tri_apex_z, 0.02,
+              "Middle's vertical (Z) offset (m) from the -Y face's center "
+              "— the triangle's apex, above center by default. Face "
+              "half-width is 0.03, so this leaves ~1cm margin to the edge.");
+
 // ── General ──────────────────────────────────────────────────────────────────
 DEFINE_double(sim_time, std::numeric_limits<double>::infinity(),
               "Total simulation time (s).");
@@ -437,6 +499,15 @@ int DoMain(int argc, char* argv[]) {
         "contact_model must be 'stewart_and_trinkle' or 'anitescu'.");
   }
 
+  if (FLAGS_release_middle && FLAGS_exec_mode != "osc") {
+    // The task_space executor branch's force-feedforward loop still
+    // iterates a hardcoded 0..3 over normal_groups/press_C, which becomes
+    // an out-of-bounds read once release_middle reduces the LCS to 2
+    // contacts. Only the osc branch has been made release_middle-aware.
+    throw std::runtime_error(
+        "--release_middle is only implemented for --exec_mode=osc.");
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // 1. Sim plant — discrete (1 ms), SAP, connected to the Drake simulator
   //    and Meshcat. This is the plant that runs the physics.
@@ -475,25 +546,73 @@ int DoMain(int argc, char* argv[]) {
                     sim_plant.GetBodyByName("palm_link", sim_allegro)))));
   }
 
-  // Isolate the cube: filter it against EVERY hand geometry except the three
-  // grasping fingertips, so only link_3_tip / link_7_tip / link_15_tip can ever
-  // touch it. This makes the physics world match the LCS model world by
-  // construction — the LCS only knows those three contact pairs, so any other
-  // link touching the cube would inject a force C3 never modelled and corrupt
-  // its plan (model mismatch). See grasp_questions_answered.html §Q2.
+  // Filter index/middle/ring links against each other. The --release_middle
+  // triangle brings these three fingertips close together on one face, and
+  // unlike a finger-cube contact, a finger-finger collision is invisible to
+  // the LCS/C3 model (only finger-cube pairs are ever in contact_pairs) —
+  // SAP would still resolve real impulses from it every step, the same
+  // class of problem the thumb/palm filter above already exists to prevent.
+  // Thumb is untouched (opposite face, never close enough to matter).
+  // Harmless when --release_middle is off too: index/middle sit far enough
+  // apart there that this filter just never activates.
+  {
+    std::vector<GeometryId> index_geoms, middle_geoms, ring_geoms;
+    for (const char* name :
+         {"link_0", "link_1", "link_2", "link_3", "link_3_tip"}) {
+      const auto& g = sim_plant.GetCollisionGeometriesForBody(
+          sim_plant.GetBodyByName(name, sim_allegro));
+      index_geoms.insert(index_geoms.end(), g.begin(), g.end());
+    }
+    for (const char* name :
+         {"link_4", "link_5", "link_6", "link_7", "link_7_tip"}) {
+      const auto& g = sim_plant.GetCollisionGeometriesForBody(
+          sim_plant.GetBodyByName(name, sim_allegro));
+      middle_geoms.insert(middle_geoms.end(), g.begin(), g.end());
+    }
+    for (const char* name :
+         {"link_8", "link_9", "link_10", "link_11", "link_11_tip"}) {
+      const auto& g = sim_plant.GetCollisionGeometriesForBody(
+          sim_plant.GetBodyByName(name, sim_allegro));
+      ring_geoms.insert(ring_geoms.end(), g.begin(), g.end());
+    }
+    sim_scene_graph.collision_filter_manager().Apply(
+        drake::geometry::CollisionFilterDeclaration().ExcludeBetween(
+            drake::geometry::GeometrySet(index_geoms),
+            drake::geometry::GeometrySet(middle_geoms)));
+    sim_scene_graph.collision_filter_manager().Apply(
+        drake::geometry::CollisionFilterDeclaration().ExcludeBetween(
+            drake::geometry::GeometrySet(index_geoms),
+            drake::geometry::GeometrySet(ring_geoms)));
+    sim_scene_graph.collision_filter_manager().Apply(
+        drake::geometry::CollisionFilterDeclaration().ExcludeBetween(
+            drake::geometry::GeometrySet(middle_geoms),
+            drake::geometry::GeometrySet(ring_geoms)));
+    std::cout << "[setup] finger-finger collision filter APPLIED: "
+                 "index/middle/ring excluded from colliding with each "
+                 "other.\n";
+  }
+
+  // Isolate the cube: filter it against EVERY hand geometry except the four
+  // fingertips this file knows how to place — index/middle/thumb always,
+  // plus ring (link_11_tip) whenever --release_middle reaches it to the +X
+  // face during the initial reach phase (see n_grasp_fingers). This makes
+  // the physics world match the LCS model world by construction: ring joins
+  // contact_pairs (via rebuild_c3) at the same handoff where it starts
+  // physically touching, so there's no window where it's a real,
+  // LCS-unmodeled contact. See grasp_questions_answered.html §Q2.
   //
   // CAVEAT: the reach phase relies on full-hand collision to seat the fingers,
   // so this can stop index/middle from ever reaching the cube. Gated behind
   // --isolate_cube for A/B testing.
   if (FLAGS_isolate_cube) {
-    const std::array<std::string, 3> tip_names{"link_3_tip", "link_7_tip",
-                                               "link_15_tip"};
+    const std::array<std::string, 4> tip_names{
+        "link_3_tip", "link_7_tip", "link_15_tip", "link_11_tip"};
     std::vector<GeometryId> non_tip_geoms;
     for (BodyIndex bi : sim_plant.GetBodyIndices(sim_allegro)) {
       const auto& body = sim_plant.get_body(bi);
       if (std::find(tip_names.begin(), tip_names.end(), body.name()) !=
           tip_names.end())
-        continue;  // keep the three fingertips able to hit the cube
+        continue;  // keep these fingertips able to hit the cube
       const auto& g = sim_plant.GetCollisionGeometriesForBody(body);
       non_tip_geoms.insert(non_tip_geoms.end(), g.begin(), g.end());
     }
@@ -506,7 +625,7 @@ int DoMain(int argc, char* argv[]) {
             drake::geometry::GeometrySet(cube_geoms),
             drake::geometry::GeometrySet(non_tip_geoms)));
     std::cout << "[setup] cube-isolation filter APPLIED: cube collides only "
-                 "with the 3 fingertips (" << non_tip_geoms.size()
+                 "with the 4 fingertips (" << non_tip_geoms.size()
               << " non-tip geoms excluded).\n";
   } else {
     std::cout << "[setup] cube-isolation filter SKIPPED (--isolate_cube=false): "
@@ -534,10 +653,31 @@ int DoMain(int argc, char* argv[]) {
   AddFrameTriad(meshcat.get(), "/tip_frame/middle", 0.0015, 0.02);
   AddFrameTriad(meshcat.get(), "/tip_frame/thumb",  0.0015, 0.02);
 
+  // Ring's guessed fingertip-surface point (--ring_tip_surface_offset_z),
+  // same idea as the /tip_frame/* triads above but a small cube instead of
+  // a triad — easier to eyeball as a single point against the rendered
+  // fingertip. Starts at the SAME offset already found for index/middle/
+  // thumb (ring is the same finger module), independently adjustable if it
+  // turns out not to match. --release_middle only.
+  if (FLAGS_release_middle) {
+    meshcat->SetObject("/tip_frame/ring_surface",
+                       drake::geometry::Box(0.004, 0.004, 0.004),
+                       drake::geometry::Rgba(1.0, 1.0, 0.0, 1.0));
+  }
+
   const drake::geometry::Rgba kRed(1.0, 0.0, 0.0, 1.0);
   meshcat->SetObject("/grasp/index",  drake::geometry::Sphere(0.006), kRed);
   meshcat->SetObject("/grasp/middle", drake::geometry::Sphere(0.006), kRed);
   meshcat->SetObject("/grasp/thumb",  drake::geometry::Sphere(0.006), kRed);
+  // Same dot, same size/color as the other three — where ring is meant to
+  // touch (base-right of the triangle, -Y face). Only meaningful once
+  // --release_middle has ring reaching for it, so only created in that
+  // mode. (The separate green /grasp_tri/* preview markers from when this
+  // was still just a proposal are gone now — /grasp/index,middle,ring
+  // themselves show the real triangle target, making them redundant.)
+  if (FLAGS_release_middle) {
+    meshcat->SetObject("/grasp/ring", drake::geometry::Sphere(0.006), kRed);
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // Live LCM state telemetry for real-time plotting (signalscope). Publishes
@@ -725,8 +865,23 @@ int DoMain(int argc, char* argv[]) {
   const GeometryId lcs_thumb_geom =
       lcs_plant.GetCollisionGeometriesForBody(
           lcs_plant.GetBodyByName("link_15_tip", lcs_allegro))[0];
+  const GeometryId lcs_ring_geom =
+      lcs_plant.GetCollisionGeometriesForBody(
+          lcs_plant.GetBodyByName("link_11_tip", lcs_allegro))[0];
 
-  const std::vector<SortedPair<GeometryId>> contact_pairs{
+  // Indexed by physical finger (0=index,1=middle,2=thumb,3=ring) — for
+  // building whichever subset of contact_pairs is currently active (see
+  // rebuild_c3 below). Fixed: all 4 geoms always exist, only which ones are
+  // IN contact_pairs varies. Ring (--release_middle only, once triggered)
+  // is the 4th entry.
+  const std::array<GeometryId, 4> lcs_finger_geoms{
+      lcs_index_geom, lcs_middle_geom, lcs_thumb_geom, lcs_ring_geom};
+
+  // Mutable: normally all 3 pairs, temporarily 2 once --release_middle
+  // triggers. rebuild_c3 (below) rebuilds this from active_fingers. Read by
+  // BOTH the one-time (re)construction and the steady-state per-tick relin
+  // call further down, so both always see the currently-active set.
+  std::vector<SortedPair<GeometryId>> contact_pairs{
       SortedPair<GeometryId>(lcs_index_geom,  lcs_cube_geom),
       SortedPair<GeometryId>(lcs_middle_geom, lcs_cube_geom),
       SortedPair<GeometryId>(lcs_thumb_geom,  lcs_cube_geom)};
@@ -738,6 +893,28 @@ int DoMain(int argc, char* argv[]) {
   // ══════════════════════════════════════════════════════════════════════════
   const double cube_size = 0.06;
   const double a = -0.02, b = 0.02, c_off = 0.0;
+  // Index/middle's lateral (X) and vertical (Z) position on the -Y face:
+  // normally (a,0)/(b,0) — same height, no triangle — but when
+  // --release_middle is set, they instead sit at the triangle's base-left/
+  // apex positions (ring will mirror index at base-right — see
+  // ring_target below), forming a triangle with ring. Used from the very
+  // start (reach phase, q_contact, q_pregrasp), not just after the
+  // middle-release trigger — so there's no separate jump for index at
+  // trigger time, only middle retracting (see q_release_middle).
+  const double index_x =
+      FLAGS_release_middle ? -FLAGS_release_middle_tri_spread : a;
+  const double index_z =
+      FLAGS_release_middle ? FLAGS_release_middle_tri_base_z : 0.0;
+  const double middle_x = FLAGS_release_middle ? 0.0 : b;
+  const double middle_z =
+      FLAGS_release_middle ? FLAGS_release_middle_tri_apex_z : 0.0;
+  // How many fingers take part in the initial reach phase (pregrasp spline,
+  // arrived[]/touching[] latch, handoff). 3 normally; 4 when
+  // --release_middle, so ring reaches and establishes contact on +X
+  // alongside index/middle/thumb, instead of appearing in the LCS later
+  // with no physical reach behind it. Referenced throughout the reach/
+  // handoff logic below in place of a hardcoded 3.
+  const int n_grasp_fingers = FLAGS_release_middle ? 4 : 3;
   const RigidTransform<double> X_WC0(RotationMatrix<double>(),
                                      Vector3d(0.0, 0.0, 0.58));
   VectorXd q_cube0(7);
@@ -773,10 +950,13 @@ int DoMain(int argc, char* argv[]) {
     meshcat->SetTransform("/cube_start", X_WC0);
   }
 
-  const std::array<std::string, 3> tip_names{"link_3_tip", "link_7_tip",
-                                             "link_15_tip"};
-  std::array<BodyIndex, 3> tip_bodies;
-  for (int i = 0; i < 3; ++i)
+  // 4th entry (ring, link_11_tip) is --release_middle only, but harmless to
+  // always populate — every OTHER existing loop over tip_bodies/tip_names
+  // is hardcoded `for i<3` and simply never reaches index 3.
+  const std::array<std::string, 4> tip_names{"link_3_tip", "link_7_tip",
+                                             "link_15_tip", "link_11_tip"};
+  std::array<BodyIndex, 4> tip_bodies;
+  for (int i = 0; i < 4; ++i)
     tip_bodies[i] =
         sim_plant.GetBodyByName(tip_names[i], sim_allegro).index();
   const BodyIndex cube_body = sim_plant.GetBodyIndices(sim_cube)[0];
@@ -822,10 +1002,87 @@ int DoMain(int argc, char* argv[]) {
   // target directly here, mirroring its internal formula.
   const double h_cube = cube_size / 2.0;
   VectorXd q_contact_targets(9);
-  q_contact_targets << X_WC0 * Vector3d(a, -(h_cube - FLAGS_penetration_index_middle), 0),
-                       X_WC0 * Vector3d(b, -(h_cube - FLAGS_penetration_index_middle), 0),
+  q_contact_targets << X_WC0 * Vector3d(index_x, -(h_cube - FLAGS_penetration_index_middle), index_z),
+                       X_WC0 * Vector3d(middle_x, -(h_cube - FLAGS_penetration_index_middle), middle_z),
                        X_WC0 * Vector3d(c_off, h_cube - FLAGS_penetration_thumb, 0);
-  const VectorXd q_contact = solve_ik("contact", q_contact_targets);
+
+  // Ring's contact/pregrasp points: base-right of the triangle on the -Y
+  // face, mirroring index's base-left position (see index_x/index_z
+  // above) — index and ring level (the base), middle above (the apex).
+  // Same --penetration_index_middle depth convention as index/middle,
+  // since ring is now doing the same kind of face-press they are (no
+  // longer a separate --release_middle_ring_penetration for a different
+  // face). Computed here, not just at the --release_middle trigger,
+  // because ring now reaches and establishes contact during the SAME
+  // initial reach phase as the other three when --release_middle is set
+  // — see n_grasp_fingers below.
+  const Vector3d ring_target = X_WC0 * Vector3d(
+      FLAGS_release_middle_tri_spread,
+      -(h_cube - FLAGS_penetration_index_middle), FLAGS_release_middle_tri_base_z);
+  // 1cm outside, same convention as the other 3 fingers' pregrasp.
+  const Vector3d ring_pregrasp_target = X_WC0 * Vector3d(
+      FLAGS_release_middle_tri_spread, -(h_cube + 0.01),
+      FLAGS_release_middle_tri_base_z);
+
+  // Ring's own frame-origin-to-true-surface offset — confirmed by eye via
+  // the /tip_frame/ring_surface cube (--ring_tip_surface_offset_{y,z}).
+  // Different from tip_surface_pt (index/middle/thumb's offset, pure +Z) —
+  // this is what SolveGraspIKWithRing now constrains to ring_target/
+  // ring_pregrasp_target below, instead of incorrectly reusing
+  // tip_surface_pt for ring the way the first version of this did.
+  const Vector3d ring_surface_offset(0, FLAGS_ring_tip_surface_offset_y,
+                                     FLAGS_ring_tip_surface_offset_z);
+
+  // 4-point IK (index/middle/thumb + ring), used instead of solve_ik
+  // whenever --release_middle is set. Mirrors solve_ik's own structure
+  // (thumb-seed reset, FK-error check) but calls SolveGraspIKWithRing
+  // instead of the 3-point SolveGraspIK.
+  auto solve_ik_with_ring = [&](const char* label, const VectorXd& targets9,
+                                const Vector3d& ring_pt) {
+    SetThumbSeed(sim_plant, sim_allegro, &plant_ctx);
+    sim_plant.SetPositions(&plant_ctx, sim_cube, q_cube0);
+    sim_plant.SetPositions(
+        &plant_ctx,
+        SolveGraspIKWithRing(sim_plant, &plant_ctx, targets9, ring_pt,
+                             tip_surface_pt, ring_surface_offset));
+    const VectorXd q = sim_plant.GetPositions(plant_ctx, sim_allegro);
+    double err = (sim_plant.EvalBodyPoseInWorld(
+                      plant_ctx,
+                      sim_plant.GetBodyByName("link_11_tip", sim_allegro)) *
+                  ring_surface_offset - ring_pt).norm();
+    for (int i = 0; i < 3; ++i)
+      err += (sim_plant
+                  .EvalBodyPoseInWorld(plant_ctx,
+                                       sim_plant.get_body(tip_bodies[i])) *
+                  tip_surface_pt -
+              targets9.template segment<3>(3 * i))
+                 .norm();
+    std::cout << "IK " << label << " total FK error = " << err << " m\n";
+    return q;
+  };
+
+  const VectorXd q_contact =
+      FLAGS_release_middle
+          ? solve_ik_with_ring("contact", q_contact_targets, ring_target)
+          : solve_ik("contact", q_contact_targets);
+
+  // Retracted-middle target for --release_middle: index/thumb/ring stay at
+  // their established points (ring is already touching -Y, same as the
+  // others — nothing further changes for any of them at trigger time).
+  // Middle's segment moves outward along the -Y face normal FROM THE APEX
+  // position (middle_x, middle_z) by --release_middle_offset — just enough
+  // to break contact, not from its old pre-triangle spot. No new face /
+  // recontact for middle, that's a later step; this one only ever retracts
+  // middle and stays there. Post-retraction the remaining 3-contact grasp
+  // is index+ring (the triangle's base, now the sole -Y contacts) + thumb.
+  VectorXd q_release_middle;
+  if (FLAGS_release_middle) {
+    VectorXd release_targets = q_contact_targets;
+    release_targets.segment<3>(3) = X_WC0 * Vector3d(
+        middle_x, -(h_cube + FLAGS_release_middle_offset), middle_z);
+    q_release_middle =
+        solve_ik_with_ring("release_middle", release_targets, ring_target);
+  }
 
   // Publish q_contact once on GRASP_Q_CONTACT (see the LCM wiring above) —
   // it's a static IK target, doesn't change after this point. Only the
@@ -842,8 +1099,20 @@ int DoMain(int argc, char* argv[]) {
   // Seed the pregrasp IK from q_contact so the solver finds the same
   // approach direction rather than a wrapped-around local minimum.
   sim_plant.SetPositions(&plant_ctx, sim_allegro, q_contact);
-  const VectorXd q_pregrasp = solve_ik(
-      "pregrasp", GetGraspPositions(X_WC0, cube_size + 0.02, a, b, c_off));
+  // Built directly rather than via GetGraspPositions (cube_kinematics.h):
+  // that helper hardcodes zero vertical offset for every point, so it
+  // cannot represent the triangle's index_z/middle_z at all. 1cm outside
+  // each face, same convention as GetGraspPositions(..., cube_size+0.02,
+  // ...) used to encode via the halved margin.
+  VectorXd pregrasp_targets(9);
+  pregrasp_targets << X_WC0 * Vector3d(index_x, -(h_cube + 0.01), index_z),
+                      X_WC0 * Vector3d(middle_x, -(h_cube + 0.01), middle_z),
+                      X_WC0 * Vector3d(c_off, h_cube + 0.01, 0);
+  const VectorXd q_pregrasp =
+      FLAGS_release_middle
+          ? solve_ik_with_ring("pregrasp", pregrasp_targets,
+                               ring_pregrasp_target)
+          : solve_ik("pregrasp", pregrasp_targets);
 
   // ══════════════════════════════════════════════════════════════════════════
   // 5. Reach spline: q_pregrasp → q_contact over t_contact seconds.
@@ -860,13 +1129,41 @@ int DoMain(int argc, char* argv[]) {
                         .FixValue(&plant_ctx, VectorXd::Zero(n_hand));
 
   auto update_markers = [&](const RigidTransform<double>& X_WC) {
-    const VectorXd gp = GetGraspPositions(X_WC, cube_size, a, b, c_off);
-    meshcat->SetTransform("/grasp/index",
-                          RigidTransform<double>(Vector3d(gp.segment<3>(0))));
-    meshcat->SetTransform("/grasp/middle",
-                          RigidTransform<double>(Vector3d(gp.segment<3>(3))));
-    meshcat->SetTransform("/grasp/thumb",
-                          RigidTransform<double>(Vector3d(gp.segment<3>(6))));
+    // index/middle computed directly (index_x/z, middle_x/z), not via
+    // GetGraspPositions (cube_kinematics.h, shared by other binaries) —
+    // that helper hardcodes zero vertical offset, so it can't show the
+    // triangle's apex/base height. No --penetration_* inset here, matching
+    // this block's existing convention of showing the nominal face point,
+    // not the tiny IK inset.
+    meshcat->SetTransform(
+        "/grasp/index",
+        RigidTransform<double>(X_WC * Vector3d(index_x, -h_cube, index_z)));
+    meshcat->SetTransform(
+        "/grasp/middle",
+        RigidTransform<double>(X_WC * Vector3d(middle_x, -h_cube, middle_z)));
+    meshcat->SetTransform(
+        "/grasp/thumb",
+        RigidTransform<double>(X_WC * Vector3d(c_off, h_cube, 0)));
+    if (FLAGS_release_middle) {
+      // Ring's dot: base-right of the triangle, mirroring index — same -Y
+      // face, same convention as index/middle above.
+      meshcat->SetTransform(
+          "/grasp/ring",
+          RigidTransform<double>(
+              X_WC * Vector3d(FLAGS_release_middle_tri_spread, -h_cube,
+                              FLAGS_release_middle_tri_base_z)));
+      // Guessed fingertip-surface cube: ring's tip BODY pose, offset along
+      // its own local frame by --ring_tip_surface_offset_{y,z} — a
+      // mechanical property of the finger itself, independent of which
+      // face it's targeting, so this doesn't change with the topology.
+      meshcat->SetTransform(
+          "/tip_frame/ring_surface",
+          sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                        sim_plant.get_body(tip_bodies[3])) *
+              RigidTransform<double>(
+                  Vector3d(0, FLAGS_ring_tip_surface_offset_y,
+                          FLAGS_ring_tip_surface_offset_z)));
+    }
     meshcat->SetTransform("/cube_frame", X_WC);
 
     // Live "*_tip" body-frame-origin triads, offset by --tip_frame_viz_offset_z
@@ -902,7 +1199,10 @@ int DoMain(int argc, char* argv[]) {
   preview("q_pregrasp  (1 cm outside cube faces — sim starts here)");
 
   sim_plant.SetPositions(&plant_ctx, sim_allegro, q_contact);
-  preview("q_contact  (on cube faces — C3 target configuration)");
+  preview(FLAGS_release_middle
+              ? "q_contact  (index/middle/ring triangle on -Y face, thumb "
+                "on +Y — C3 target configuration)"
+              : "q_contact  (on cube faces — C3 target configuration)");
 
   // ══════════════════════════════════════════════════════════════════════════
   // 7. LCS factory options and C3 dimension bookkeeping.
@@ -918,17 +1218,22 @@ int DoMain(int argc, char* argv[]) {
 
   const int n_x = lcs_plant.num_positions() + lcs_plant.num_velocities();
   const int n_u = lcs_plant.num_actuators();
-  const int n_lambda = LCSFactory::GetNumContactVariables(
+  // n_lambda/n_z/n_contacts/normal_groups are mutable (not const): once
+  // --release_middle triggers, rebuild_c3 (below) recomputes all four for
+  // the reduced contact set, since C3's dimensions are fixed at
+  // construction and must be rebuilt from scratch to change contact count
+  // (UpdateLCS alone cannot resize them).
+  int n_lambda = LCSFactory::GetNumContactVariables(
       GetContactModelMap().at(lcs_opts.contact_model), 3,
       FLAGS_num_friction_directions);
   // C3+ augments z with an explicit η variable (n_lambda extra), so its
   // z-size is n_x + n_u + 2·n_lambda (plain C3/C3QP would be n_x + n_u + n_lambda).
-  const int n_z = n_x + n_u + 2 * n_lambda;
+  int n_z = n_x + n_u + 2 * n_lambda;
 
-  // Model-specific bookkeeping, derived once from the contact-model flag and
-  // reused by the force reference and the λ_n diagnostic below.
-  const int n_contacts = lcs_opts.num_contacts.value();
-  const std::vector<std::vector<int>> normal_groups = NormalForceGroups(
+  // Model-specific bookkeeping, reused by the force reference and the λ_n
+  // diagnostic below.
+  int n_contacts = lcs_opts.num_contacts.value();
+  std::vector<std::vector<int>> normal_groups = NormalForceGroups(
       FLAGS_contact_model, n_contacts, FLAGS_num_friction_directions);
 
   std::cout << "C3 dimensions: n_x=" << n_x << "  n_u=" << n_u
@@ -954,6 +1259,17 @@ int DoMain(int argc, char* argv[]) {
   for (int i = n_pos; i < n_pos + n_hand_v; ++i) Q_knot(i, i) = FLAGS_w_vel;
   for (int i = n_pos + n_hand_v; i < n_x; ++i)   Q_knot(i, i) = FLAGS_w_cube_vel;
 
+  // Physical finger indices (0=index,1=middle,2=thumb) currently modeled as
+  // LCS contacts. Normally {0,1,2}; drops to {0,2} once --release_middle
+  // triggers. normal_groups (and anything λ-derived) is indexed by
+  // POSITION in this list, not by physical finger — the two only coincide
+  // while all 3 are active. Declared here (before update_force_tracking and
+  // rebuild_c3 below) since both lambdas capture it by reference — a `[&]`
+  // capture only sees names already in scope at the lambda's definition
+  // point, not ones declared later in the function.
+  std::vector<int> active_fingers{0, 1, 2};
+  bool middle_released = false;  // one-shot latch for --release_middle
+
   // ══════════════════════════════════════════════════════════════════════════
   // 8. Initial sim state and simulator initialization.
   // ══════════════════════════════════════════════════════════════════════════
@@ -971,9 +1287,15 @@ int DoMain(int argc, char* argv[]) {
   bool cube_pinned = true;
   const double control_dt = 0.001;
 
-  std::array<bool, 3>    arrived{false, false, false};
-  std::array<double, 3>  arrived_time{-1.0, -1.0, -1.0};  // set when arrived[i] latches
-  const std::array<int, 3> finger_start{0, 4, 12};  // index, middle, thumb
+  // 4th entry (ring) only ever latches when n_grasp_fingers==4
+  // (--release_middle); the loops below are bounded by n_grasp_fingers, not
+  // hardcoded 3, so ring's entries are simply never touched otherwise.
+  std::array<bool, 4>    arrived{false, false, false, false};
+  std::array<double, 4>  arrived_time{-1.0, -1.0, -1.0, -1.0};  // set when arrived[i] latches
+  // 4th entry (8) is ring's joint start — link_8..link_11, see
+  // cube_kinematics.h's finger table. --release_middle only; every other
+  // existing loop over finger_start is hardcoded `for i<3`.
+  const std::array<int, 4> finger_start{0, 4, 12, 8};  // idx, mid, thu, ring
 
   // C3 objects allocated at handoff.
   std::unique_ptr<C3> c3;
@@ -994,9 +1316,15 @@ int DoMain(int argc, char* argv[]) {
         FLAGS_N, MatrixXd::Zero(n_lambda, n_lambda));
     std::vector<VectorXd> lambda_des(
         FLAGS_N, VectorXd::Zero(n_lambda));
+    // normal_groups is indexed by POSITION IN active_fingers (LCS/λ order),
+    // not by physical finger — the two only coincide when all 3 fingers are
+    // active. alpha[] IS indexed by physical finger (index=alpha_m,
+    // middle=alpha_m, thumb=2*alpha_m), so af and finger=active_fingers[af]
+    // are both needed here.
     for (int k = 0; k < FLAGS_N; ++k) {
-      for (int i = 0; i < 3; ++i) {
-        const std::vector<int>& g = normal_groups[i];
+      for (size_t af = 0; af < active_fingers.size(); ++af) {
+        const int finger = active_fingers[af];
+        const std::vector<int>& g = normal_groups[af];
         for (int a : g) {
           for (int b : g) {
             // w*(lambda_physical-alpha)^2 expressed in internal lambda.
@@ -1004,7 +1332,7 @@ int DoMain(int argc, char* argv[]) {
                 FLAGS_w_lambda * lambda_scale * lambda_scale;
           }
           lambda_des[k](a) =
-              alpha[i] / (static_cast<double>(g.size()) * lambda_scale);
+              alpha[finger] / (static_cast<double>(g.size()) * lambda_scale);
         }
       }
     }
@@ -1017,6 +1345,121 @@ int DoMain(int argc, char* argv[]) {
   VectorXd x_des_base;
   const double cube_z0 = X_WC0.translation().z();
   double last_zref = cube_z0;  // most recent commanded cube-z target (logging)
+
+  // ADMM options — fixed for the whole run, independent of contact count.
+  // Read by rebuild_c3 below.
+  C3Options c3_opts;
+  c3_opts.admm_iter  = FLAGS_admm_iter;
+  c3_opts.rho_scale  = FLAGS_rho_scale;
+  c3_opts.warm_start = FLAGS_warm_start;
+  c3_opts.scale_lcs  = true;
+  c3_opts.gamma      = 1.0;
+
+  // (Re)construct c3 from scratch for the given active contact set. Called
+  // at the original reach→C3 handoff ({0,1,2}) and, once, when
+  // --release_middle triggers (drops to {0,2}). C3's dimensions (n_lambda,
+  // n_z, and the cost matrices sized off n_z) are fixed at construction and
+  // never resized by UpdateLCS, so changing contact count means building a
+  // new object, not relinearizing the old one. x_des_base/Q_knot/c3_opts
+  // are read via closure, unchanged by which fingers are active.
+  auto rebuild_c3 = [&](const std::vector<int>& fingers,
+                        const VectorXd& x_now) {
+    active_fingers = fingers;
+    lcs_opts.num_contacts = static_cast<int>(fingers.size());
+    n_lambda = LCSFactory::GetNumContactVariables(
+        GetContactModelMap().at(lcs_opts.contact_model),
+        static_cast<int>(fingers.size()), FLAGS_num_friction_directions);
+    n_z = n_x + n_u + 2 * n_lambda;
+    n_contacts = static_cast<int>(fingers.size());
+    normal_groups = NormalForceGroups(FLAGS_contact_model, n_contacts,
+                                      FLAGS_num_friction_directions);
+
+    contact_pairs.clear();
+    for (int f : fingers)
+      contact_pairs.push_back(
+          SortedPair<GeometryId>(lcs_finger_geoms[f], lcs_cube_geom));
+
+    lcs_plant.SetPositionsAndVelocities(&lcs_ctx, x_now);
+    LCS lcs_new = LCSFactory::LinearizePlantToLCS(
+        lcs_plant, lcs_ctx, *lcs_plant_ad, *lcs_ctx_ad, contact_pairs,
+        lcs_opts, x_now, VectorXd::Zero(n_u));
+    std::cout << "  C3 rebuild: active fingers=[";
+    for (size_t k = 0; k < fingers.size(); ++k)
+      std::cout << fingers[k] << (k + 1 < fingers.size() ? "," : "");
+    std::cout << "]  n_lambda=" << n_lambda << "  n_z=" << n_z
+              << "  |A|=" << lcs_new.A()[0].norm()
+              << "  |B|=" << lcs_new.B()[0].norm() << "\n";
+
+    // Input scaling s_u is derived ONCE, from the very first linearization
+    // (the original reach→C3 handoff, all 3 contacts) — kept fixed across
+    // a later release-triggered rebuild so the effective torque penalty
+    // (R) and input scaling don't shift at the contact-count change. !c3
+    // detects "is this the first-ever construction" (c3 starts null).
+    if (!c3) {
+      s_u = FLAGS_input_scale > 0.0
+                ? FLAGS_input_scale
+                : lcs_new.A()[0].norm() / lcs_new.B()[0].norm();
+    }
+    {
+      std::vector<MatrixXd> B_sc = lcs_new.B();
+      for (auto& Bk : B_sc) Bk *= s_u;
+      lcs_new.set_B(B_sc);
+    }
+    std::cout << "  s_u=" << s_u << "  |B| now=" << lcs_new.B()[0].norm()
+              << "\n";
+
+    const std::vector<VectorXd> x_desired(FLAGS_N + 1, x_des_base);
+    const std::vector<MatrixXd> Q_vec(FLAGS_N + 1, Q_knot);
+    const std::vector<MatrixXd> R_vec(
+        FLAGS_N, (s_u * s_u) * FLAGS_w_R * MatrixXd::Identity(n_u, n_u));
+    const std::vector<MatrixXd> G_vec(
+        FLAGS_N, FLAGS_w_G * MatrixXd::Identity(n_z, n_z));
+    const std::vector<MatrixXd> U_vec(
+        FLAGS_N, FLAGS_w_U * MatrixXd::Identity(n_z, n_z));
+
+    c3 = std::make_unique<C3Plus>(
+        lcs_new, C3::CostMatrices(Q_vec, R_vec, G_vec, U_vec), x_desired,
+        c3_opts);
+    c3->SetAdmmWarmStartAcrossSolves(FLAGS_warm_start_admm);
+
+    // Force reference — update_force_tracking() self-gates (no-op unless
+    // --w_lambda>0), same unconditional-call pattern as the existing
+    // do_relin block further down, so this orthogonal, pre-existing feature
+    // keeps working correctly across a release-triggered rebuild now that
+    // its normal_groups indexing is remapped through active_fingers.
+    update_force_tracking();
+
+    // Box constraints on the torque — belong to the C3 instance, must be
+    // re-applied on every fresh construction.
+    {
+      const double u_bound = FLAGS_tau_max / s_u;
+      for (int i = 0; i < n_u; ++i) {
+        Eigen::RowVectorXd Ai = Eigen::RowVectorXd::Zero(n_u);
+        Ai(i) = 1.0;
+        c3->AddLinearConstraint(Ai, -u_bound, u_bound,
+                                c3::ConstraintVariable::INPUT);
+      }
+    }
+
+    // OSQP options (same tuning as allegro_grasp_c3.cc) — also per-instance.
+    SolverOptions osqp_opts;
+    const auto oid = OsqpSolver::id();
+    osqp_opts.SetOption(oid, "max_iter",            4000);
+    osqp_opts.SetOption(oid, "verbose",             0);
+    osqp_opts.SetOption(oid, "warm_starting",       1);
+    osqp_opts.SetOption(oid, "polishing",           1);
+    osqp_opts.SetOption(oid, "polish_refine_iter",  3);
+    osqp_opts.SetOption(oid, "scaled_termination",  1);
+    osqp_opts.SetOption(oid, "check_termination",   25);
+    osqp_opts.SetOption(oid, "scaling",             15);
+    osqp_opts.SetOption(oid, "adaptive_rho",        1);
+    osqp_opts.SetOption(oid, "rho",                 1e-4);
+    osqp_opts.SetOption(oid, "sigma",               1e-6);
+    osqp_opts.SetOption(oid, "alpha",               1.6);
+    osqp_opts.SetOption(oid, "eps_abs",             FLAGS_osqp_eps);
+    osqp_opts.SetOption(oid, "eps_rel",             FLAGS_osqp_eps);
+    c3->SetSolverOptions(osqp_opts);
+  };
 
   // Profiling + C3-cadence bookkeeping (kC3 phase only). c3_iter counts control
   // steps spent in kC3 and drives the decimation; the *_ms_* accumulators are
@@ -1060,9 +1503,13 @@ int DoMain(int argc, char* argv[]) {
       [&](const RigidTransform<double>& X_WC) -> VectorXd {
     const double h = cube_size / 2.0;
     VectorXd targets(9);
-    targets << X_WC * Vector3d(a, -(h - FLAGS_penetration_index_middle), 0),
-        X_WC * Vector3d(b, -(h - FLAGS_penetration_index_middle), 0),
+    targets << X_WC * Vector3d(index_x, -(h - FLAGS_penetration_index_middle), index_z),
+        X_WC * Vector3d(middle_x, -(h - FLAGS_penetration_index_middle), middle_z),
         X_WC * Vector3d(c_off, h - FLAGS_penetration_thumb, 0);
+    // NOTE: still 3-point (SolveGraspIK below, not SolveGraspIKWithRing) —
+    // ring is not re-solved here regardless of --release_middle. This path
+    // (--track_cube_contact) was already a documented gap for
+    // --release_middle before the triangle topology; unchanged by it.
     sim_plant.SetPositions(ik_ctx.get(), sim_allegro, q_contact_live);
     const VectorXd q_full =
         SolveGraspIK(sim_plant, ik_ctx.get(), targets, tip_surface_pt);
@@ -1272,11 +1719,11 @@ int DoMain(int argc, char* argv[]) {
     const auto& contacts =
         sim_plant.get_contact_results_output_port()
             .Eval<ContactResults<double>>(plant_ctx);
-    std::array<bool, 3> touching{false, false, false};
+    std::array<bool, 4> touching{false, false, false, false};
     for (int k = 0; k < contacts.num_point_pair_contacts(); ++k) {
       const auto& info = contacts.point_pair_contact_info(k);
       if (info.contact_force().norm() < FLAGS_contact_force_thresh) continue;
-      for (int i = 0; i < 3; ++i) {
+      for (int i = 0; i < n_grasp_fingers; ++i) {
         if ((info.bodyA_index() == tip_bodies[i] &&
              info.bodyB_index() == cube_body) ||
             (info.bodyB_index() == tip_bodies[i] &&
@@ -1313,7 +1760,9 @@ int DoMain(int argc, char* argv[]) {
       const VectorXd q_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
 
       // Latch any finger that just made contact (after the guard time).
-      for (int i = 0; i < 3; ++i) {
+      // n_grasp_fingers is 4 (includes ring) whenever --release_middle, 3
+      // otherwise — ring's slot is simply never touched in the 3 case.
+      for (int i = 0; i < n_grasp_fingers; ++i) {
         if (!arrived[i] && touching[i] && t > FLAGS_contact_enable_t) {
           arrived[i] = true;
           arrived_time[i] = t;
@@ -1324,7 +1773,7 @@ int DoMain(int argc, char* argv[]) {
       const double tl = std::clamp(t, 0.0, traj.end_time());
       VectorXd q_tgt   = traj.value(tl).col(0);
       VectorXd qd_tgt  = traj_dot.value(tl).col(0);
-      for (int i = 0; i < 3; ++i) {
+      for (int i = 0; i < n_grasp_fingers; ++i) {
         if (arrived[i]) {
           // Hold the grasping finger at q_contact (3 mm inside the face) so the
           // position error keeps a real inward preload, not just a light touch.
@@ -1349,9 +1798,12 @@ int DoMain(int argc, char* argv[]) {
       // instantaneous contact-force detector proved too noisy at the 1ms
       // scale (see handoff_settle_time flag). The PD hold has already brought
       // the fingertips to a static equilibrium well within this window.
-      const double last_arrival_t =
-          std::max({arrived_time[0], arrived_time[1], arrived_time[2]});
+      // arrived_time[3] (ring) stays -1.0 and never wins this max() unless
+      // n_grasp_fingers==4 actually latched it — harmless to always include.
+      const double last_arrival_t = std::max(
+          {arrived_time[0], arrived_time[1], arrived_time[2], arrived_time[3]});
       if (arrived[0] && arrived[1] && arrived[2] &&
+          (!FLAGS_release_middle || arrived[3]) &&
           t >= last_arrival_t + FLAGS_handoff_settle_time) {
         std::cout << "[t=" << t
                   << "] all fingers settled → C3 handoff\n";
@@ -1360,27 +1812,49 @@ int DoMain(int argc, char* argv[]) {
         const VectorXd x_contact =
             sim_plant.GetPositionsAndVelocities(plant_ctx);
 
-        // Sync the lcs plant context and build the LCS linearized here.
-        lcs_plant.SetPositionsAndVelocities(&lcs_ctx, x_contact);
+        // Desired state: q_contact for the three grasping fingers, cube at
+        // the world-frame reference q_cube0. Computed once, here, and held
+        // fixed across a later release-triggered rebuild_c3 call.
+        VectorXd q_des_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
+        for (int i = 0; i < n_grasp_fingers; ++i)
+          q_des_hand.segment(finger_start[i], 4) =
+              q_contact.segment(finger_start[i], 4);
+        VectorXd x_des = VectorXd::Zero(n_x);
+        x_des.head(n_hand_q) = q_des_hand;
+        x_des.segment(n_hand_q, 7) = q_cube0;
+        // Hand and cube velocities desired = 0 (zero-initialized above).
+        x_des_base = x_des;
 
-        LCS lcs_init = LCSFactory::LinearizePlantToLCS(
-            lcs_plant, lcs_ctx, *lcs_plant_ad, *lcs_ctx_ad,
-            contact_pairs, lcs_opts, x_contact, VectorXd::Zero(n_u));
+        // Ring joins the LCS right here, at the same instant it starts
+        // physically touching (n_grasp_fingers==4 means it just reached
+        // and arrived alongside the other three) — not later at the
+        // --release_middle trigger, so there's no window where it's a
+        // real, unmodeled contact.
+        rebuild_c3(
+            FLAGS_release_middle ? std::vector<int>{0, 1, 2, 3}
+                                 : std::vector<int>{0, 1, 2},
+            x_contact);
 
-        // Contact-gap printout, informational only (not used to gate the
-        // handoff — see handoff_settle_time above for why).
-        const VectorXd eta0 =
-            lcs_init.E()[0] * x_contact + lcs_init.c()[0];
-        if (FLAGS_contact_model == "stewart_and_trinkle") {
-          // Normal gaps φ live in the λ_n block [n_contacts, 2·n_contacts).
-          const VectorXd phi_contact =
-              eta0.segment(n_contacts, n_contacts);
-          std::cout << "  contact gaps φ [index, middle, thumb] = "
-                    << phi_contact.transpose()
-                    << "  (<=0 means active, informational only)\n";
-        } else {
-          std::cout << "  (Anitescu: η is the cone-velocity constraint, not a "
-                        "per-finger signed distance; gaps not shown)\n";
+        // Diagnostic-only checks that the reach phase actually seated the
+        // fingers correctly (not used to gate the handoff — see
+        // handoff_settle_time above for why). Read off the just-constructed
+        // c3's own LCS, which — because C3Options::scale_lcs is true — is
+        // scaled by AnDn_ internally; phi_contact's magnitude won't match a
+        // pre-refactor log line-for-line, but its sign (<=0 = active) is
+        // unaffected by a positive scale factor.
+        {
+          const LCS& lcs0 = c3->GetLCS();
+          const VectorXd eta0 = lcs0.E()[0] * x_contact + lcs0.c()[0];
+          if (FLAGS_contact_model == "stewart_and_trinkle") {
+            const VectorXd phi_contact = eta0.segment(n_contacts, n_contacts);
+            std::cout << "  contact gaps φ [index, middle, thumb] = "
+                      << phi_contact.transpose()
+                      << "  (<=0 means active, informational only)\n";
+          } else {
+            std::cout << "  (Anitescu: η is the cone-velocity constraint, "
+                          "not a per-finger signed distance; gaps not "
+                          "shown)\n";
+          }
         }
 
         // True fingertip→cube distance via forward kinematics of the SIM
@@ -1408,116 +1882,6 @@ int DoMain(int argc, char* argv[]) {
           }
           std::cout << "\n";
         }
-
-        std::cout << "  LCS norms: |A|=" << lcs_init.A()[0].norm()
-                  << "  |B|=" << lcs_init.B()[0].norm()
-                  << "  |D|=" << lcs_init.D()[0].norm() << "\n";
-
-        // Input scaling: s_u shrinks B so |B_scaled| ≈ |A|. This is a
-        // change of variables on u only; λ is unchanged. R is scaled by
-        // s_u² so the penalty on the real torque is preserved.
-        s_u = FLAGS_input_scale > 0.0
-                  ? FLAGS_input_scale
-                  : lcs_init.A()[0].norm() / lcs_init.B()[0].norm();
-        {
-          std::vector<MatrixXd> B_sc = lcs_init.B();
-          for (auto& Bk : B_sc) Bk *= s_u;
-          lcs_init.set_B(B_sc);
-        }
-        std::cout << "  s_u=" << s_u
-                  << "  |B| now=" << lcs_init.B()[0].norm() << "\n";
-
-        // Desired state: q_contact for the three grasping fingers, current
-        // ring-finger q, cube at the world-frame reference q_cube0.
-        VectorXd q_des_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
-        for (int i = 0; i < 3; ++i)
-          q_des_hand.segment(finger_start[i], 4) =
-              q_contact.segment(finger_start[i], 4);
-
-        VectorXd x_des = VectorXd::Zero(n_x);
-        x_des.head(n_hand_q) = q_des_hand;
-        x_des.segment(n_hand_q, 7) = q_cube0;
-        // Hand and cube velocities desired = 0 (zero-initialized above).
-
-        x_des_base = x_des;  // captured for the moving-reference update below
-        const std::vector<VectorXd> x_desired(FLAGS_N + 1, x_des);
-
-        // Cost matrices.
-        const std::vector<MatrixXd> Q_vec(FLAGS_N + 1, Q_knot);
-        const std::vector<MatrixXd> R_vec(
-            FLAGS_N,
-            (s_u * s_u) * FLAGS_w_R * MatrixXd::Identity(n_u, n_u));
-        const std::vector<MatrixXd> G_vec(
-            FLAGS_N, FLAGS_w_G * MatrixXd::Identity(n_z, n_z));
-        const std::vector<MatrixXd> U_vec(
-            FLAGS_N, FLAGS_w_U * MatrixXd::Identity(n_z, n_z));
-
-        // ADMM options (tuned to match the working allegro_grasp_c3.cc).
-        C3Options c3_opts;
-        c3_opts.admm_iter  = FLAGS_admm_iter;
-        c3_opts.rho_scale  = FLAGS_rho_scale;
-        c3_opts.warm_start = FLAGS_warm_start;
-        c3_opts.scale_lcs  = true;
-        c3_opts.gamma      = 1.0;
-
-        c3 = std::make_unique<C3Plus>(
-            lcs_init, C3::CostMatrices(Q_vec, R_vec, G_vec, U_vec),
-            x_desired, c3_opts);
-        // Carry ADMM state across solves (see --warm_start_admm). The object
-        // outlives relinearizations (UpdateLCS below), so the warm start
-        // persists; the first solve after this fresh construction cold-starts.
-        c3->SetAdmmWarmStartAcrossSolves(FLAGS_warm_start_admm);
-
-        // Force reference on each contact's NORMAL force — seeds a real grip
-        // and regularises the squeeze nullspace. A contact's normal force is
-        // the sum over normal_groups[i] (a single λ_n entry for Stewart-
-        // Trinkle, the whole cone block for Anitescu), so the per-contact cost
-        // w_lambda·(Σ_{j∈g} λ_j − αᵢ)² is built from the rank-1 block 1·1ᵀ over
-        // the group with λ_des spreading αᵢ evenly across it. For Stewart-
-        // Trinkle (singleton group) this collapses to the old diagonal cost on
-        // λ_n. Targets: index=middle=alpha_m, thumb=2·alpha_m (force closure).
-        //
-        // C3 scales lambda internally: lambda_physical = AnDn_ * lambda_int.
-        // update_force_tracking() keeps alpha_m in user-facing physical
-        // Newton units by converting both the target and its quadratic weight
-        // into the current internal coordinates.
-        if (FLAGS_w_lambda > 0.0) {
-          update_force_tracking();
-        }
-
-        // Box constraints on the torque, one INPUT bound per hand joint.
-        // C3 optimises a scaled input ũ with τ = s_u·ũ (B was scaled by s_u),
-        // so a physical bound |τ_i| ≤ tau_max becomes |ũ_i| ≤ tau_max / s_u.
-        // Boxing the input makes the QP's feasible set bounded, which removes
-        // the DualInfeasible (unbounded-primal) failure at pin release.
-        {
-          const double u_bound = FLAGS_tau_max / s_u;
-          for (int i = 0; i < n_u; ++i) {
-            Eigen::RowVectorXd Ai = Eigen::RowVectorXd::Zero(n_u);
-            Ai(i) = 1.0;
-            c3->AddLinearConstraint(Ai, -u_bound, u_bound,
-                                    c3::ConstraintVariable::INPUT);
-          }
-        }
-
-        // OSQP options (same tuning as allegro_grasp_c3.cc).
-        SolverOptions osqp_opts;
-        const auto oid = OsqpSolver::id();
-        osqp_opts.SetOption(oid, "max_iter",            4000);
-        osqp_opts.SetOption(oid, "verbose",             0);
-        osqp_opts.SetOption(oid, "warm_starting",       1);
-        osqp_opts.SetOption(oid, "polishing",           1);
-        osqp_opts.SetOption(oid, "polish_refine_iter",  3);
-        osqp_opts.SetOption(oid, "scaled_termination",  1);
-        osqp_opts.SetOption(oid, "check_termination",   25);
-        osqp_opts.SetOption(oid, "scaling",             15);
-        osqp_opts.SetOption(oid, "adaptive_rho",        1);
-        osqp_opts.SetOption(oid, "rho",                 1e-4);
-        osqp_opts.SetOption(oid, "sigma",               1e-6);
-        osqp_opts.SetOption(oid, "alpha",               1.6);
-        osqp_opts.SetOption(oid, "eps_abs",             FLAGS_osqp_eps);
-        osqp_opts.SetOption(oid, "eps_rel",             FLAGS_osqp_eps);
-        c3->SetSolverOptions(osqp_opts);
 
         phase = kC3;
         handoff_t = t;  // cube released after 0.5 s warm-up (see pin block)
@@ -1582,6 +1946,23 @@ int DoMain(int argc, char* argv[]) {
       // reference, and (one horizon ahead) the plan's hand-q reference.
       const double t_ref_now = std::max(0.0, t - (handoff_t + 0.5));
       const double t_ref_end = t_ref_now + FLAGS_N * FLAGS_c3_dt;
+
+      // --release_middle: one-shot, at --release_middle_t seconds after the
+      // cube unpins (t_ref_now is already exactly that time base). Ring has
+      // already been in the LCS since the original handoff (it reached and
+      // arrived alongside index/middle/thumb — see n_grasp_fingers), so the
+      // only thing that changes here is middle dropping out: it retracts
+      // off the face via q_release_middle (picked up in the osc executor
+      // below); index has already been at its triangle base-left position
+      // (index_x/index_z) since the reach phase, so it doesn't move here.
+      if (FLAGS_release_middle && !middle_released &&
+          t_ref_now >= FLAGS_release_middle_t) {
+        rebuild_c3({0, 2, 3}, x_current);
+        middle_released = true;
+        std::cout << "[t=" << t << "] release_middle: middle finger "
+                     "retracted, C3 now solving 3 contacts "
+                     "(index, thumb, ring)\n";
+      }
 
       // Ghost cube: raw (unclamped) commanded target, same call the IK lead
       // and the C3 cube-pose cost use at k=0 — so it always matches what's
@@ -1687,10 +2068,23 @@ int DoMain(int argc, char* argv[]) {
         solve_ms_max = std::max(solve_ms_max, ms);
         ++solve_calls;
 
+        // Both diagnostics below assume the ORIGINAL {index,middle,thumb}
+        // composition specifically (hardcoded "idx"/"mid"/"thu" labels and,
+        // for print_cube_lambda_map, literal column indices like Dzn(2) for
+        // "thumb") — checking n_contacts==3 alone isn't enough once
+        // --release_middle can produce a DIFFERENT 3-contact set
+        // ({index,thumb,ring}), so compare the actual composition.
+        const bool is_original_3fingers =
+            (active_fingers == std::vector<int>{0, 1, 2});
+
         // Print the map for every completed solve, including after each
         // relinearization, so changes in contact geometry are visible.
         // Gated behind --lambda_map_debug (off by default) — see flag doc.
-        if (FLAGS_lambda_map_debug) {
+        // Also requires is_original_3fingers: print_cube_lambda_map
+        // hardcodes index/middle/thumb indexing (e.g. Dzn(2) for the
+        // "thumb" column) — an out-of-bounds access for 2 contacts, a
+        // mislabel for {index,thumb,ring}.
+        if (FLAGS_lambda_map_debug && is_original_3fingers) {
           print_cube_lambda_map(c3->GetLCS(), t);
         }
 
@@ -1701,6 +2095,19 @@ int DoMain(int argc, char* argv[]) {
         if (FLAGS_contact_force_log) {
           // --contact_force_log suppresses both the C3 PLAN table and the
           // --plan_debug SOLVER DIAG output — see xplan_prev caching below.
+        } else if (!is_original_3fingers) {
+          // Non-default contact set (--release_middle, either the
+          // 2-contact window or the 3-contact {index,thumb,ring} one): the
+          // PLAN table below (and --plan_debug's SOLVER DIAG) are built
+          // around fixed labels ("idx","mid","thu") — not worth adapting.
+          // Simple status line instead; doesn't affect what C3 actually
+          // solves or what torque gets applied, only this diagnostic
+          // printout.
+          std::cout << "\n=== C3 PLAN @ t=" << t << " s  (active fingers=[";
+          for (size_t k = 0; k < active_fingers.size(); ++k)
+            std::cout << active_fingers[k]
+                      << (k + 1 < active_fingers.size() ? "," : "");
+          std::cout << "] — table suppressed) ===\n";
         } else if (!FLAGS_plan_debug) {
           // ── Plan printout ───────────────────────────────────────────────
           // The ONLY thing printed per solve: for each of the 3 contacts, the
@@ -2082,6 +2489,17 @@ int DoMain(int argc, char* argv[]) {
           q_des = xplan_now[1].head(n_hand_q);
         }
 
+        // --release_middle: once triggered, middle's 4 joints are pinned to
+        // the precomputed retracted target instead of whatever q_des picked
+        // above — unconditional, so it wins regardless of
+        // --track_cube_contact. finger_start[1] = middle. Index needs no
+        // override here — it's been at its triangle position since the
+        // reach phase, so nothing changes for it at trigger time.
+        if (middle_released) {
+          q_des.segment(finger_start[1], 4) =
+              q_release_middle.segment(finger_start[1], 4);
+        }
+
         // Gravity compensation: tau = -tau_gravity holds the hand static.
         const VectorXd tau_grav = sim_plant.GetVelocitiesFromArray(
             sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
@@ -2101,19 +2519,32 @@ int DoMain(int argc, char* argv[]) {
         const RotationMatrix<double> R_WC =
             CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube))
                 .rotation();
-        const std::array<Vector3d, 3> press_C{
-            Vector3d(0, 1, 0), Vector3d(0, 1, 0), Vector3d(0, -1, 0)};
+        // 4th entry (ring) is --release_middle only: ring now touches the
+        // -Y face (the triangle's base-right point, same face as
+        // index/middle), so its inward push direction is +Y — same as
+        // index/middle, not the old +X-face -X direction.
+        const std::array<Vector3d, 4> press_C{
+            Vector3d(0, 1, 0), Vector3d(0, 1, 0), Vector3d(0, -1, 0),
+            Vector3d(0, 1, 0)};
+        // Iterates active_fingers (physical finger indices currently in the
+        // LCS) rather than 0..3 — this is what excludes middle from the
+        // force feedforward once released (structural: it simply isn't in
+        // active_fingers). af indexes normal_groups/lam0 (LCS/λ-ordered,
+        // position in active_fingers); finger is the physical index for
+        // tip_bodies/press_C.
         VectorXd tau_force = VectorXd::Zero(n_hand_v);
-        for (int i = 0; i < 3; ++i) {
+        for (size_t af = 0; af < active_fingers.size(); ++af) {
+          const int finger = active_fingers[af];
           double fn = 0.0;
-          for (int idx : normal_groups[i]) fn += lam0(idx);
+          for (int idx : normal_groups[af]) fn += lam0(idx);
           Eigen::MatrixXd J(3, sim_plant.num_velocities());
           sim_plant.CalcJacobianTranslationalVelocity(
               plant_ctx, drake::multibody::JacobianWrtVariable::kV,
-              sim_plant.get_body(tip_bodies[i]).body_frame(), Vector3d::Zero(),
-              sim_plant.world_frame(), sim_plant.world_frame(), &J);
-          tau_force +=
-              J.leftCols(n_hand_v).transpose() * (fn * (R_WC * press_C[i]));
+              sim_plant.get_body(tip_bodies[finger]).body_frame(),
+              Vector3d::Zero(), sim_plant.world_frame(),
+              sim_plant.world_frame(), &J);
+          tau_force += J.leftCols(n_hand_v).transpose() *
+                      (fn * (R_WC * press_C[finger]));
         }
 
         tau_hand = tau_grav + tau_pd + tau_force;
@@ -2128,7 +2559,7 @@ int DoMain(int argc, char* argv[]) {
         const VectorXd tau_g = sim_plant.GetVelocitiesFromArray(
             sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
         VectorXd q_tgt_c3 = q_hand;
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < n_grasp_fingers; ++i)
           q_tgt_c3.segment(finger_start[i], 4) =
               q_contact.segment(finger_start[i], 4);
         tau_hand = FLAGS_kp * (q_tgt_c3 - q_hand) +

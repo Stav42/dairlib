@@ -134,4 +134,54 @@ inline Eigen::VectorXd SolveGraspIK(
   return result.GetSolution(ik.q());
 }
 
+// Same as SolveGraspIK, plus a 4th constraint on the ring fingertip
+// (link_11_tip — see the table above; unused by the normal 3-finger grasp).
+// index/middle/thumb are explicitly pinned to grasp_positions here (not
+// just left at the initial guess) so they are guaranteed to stay put, not
+// merely likely to — the IK problem has no cost function, so an
+// unconstrained body is free to move anywhere a feasible solution permits.
+// ring_frame_offset is SEPARATE from tip_frame_offset (not shared with
+// index/middle/thumb) because ring's own frame-origin-to-true-surface
+// offset was found, empirically, to differ from theirs — see
+// --ring_tip_surface_offset_{y,z} in allegro_grasp_c3_squeeze.cc.
+inline Eigen::VectorXd SolveGraspIKWithRing(
+    const drake::multibody::MultibodyPlant<double>& plant,
+    drake::systems::Context<double>* plant_context,
+    const Eigen::VectorXd& grasp_positions,
+    const Eigen::Vector3d& ring_position,
+    const Eigen::Vector3d& tip_frame_offset = Eigen::Vector3d::Zero(),
+    const Eigen::Vector3d& ring_frame_offset = Eigen::Vector3d::Zero()) {
+  const Eigen::Vector3d p_index  = grasp_positions.segment<3>(0);
+  const Eigen::Vector3d p_middle = grasp_positions.segment<3>(3);
+  const Eigen::Vector3d p_thumb  = grasp_positions.segment<3>(6);
+  const Eigen::Vector3d tol = Eigen::Vector3d::Constant(0.001);
+
+  drake::multibody::InverseKinematics ik(plant, plant_context);
+
+  ik.AddPositionConstraint(
+      plant.GetFrameByName("link_3_tip"), tip_frame_offset,
+      plant.world_frame(), p_index - tol, p_index + tol);
+
+  ik.AddPositionConstraint(
+      plant.GetFrameByName("link_7_tip"), tip_frame_offset,
+      plant.world_frame(), p_middle - tol, p_middle + tol);
+
+  ik.AddPositionConstraint(
+      plant.GetFrameByName("link_15_tip"), tip_frame_offset,
+      plant.world_frame(), p_thumb - tol, p_thumb + tol);
+
+  ik.AddPositionConstraint(
+      plant.GetFrameByName("link_11_tip"), ring_frame_offset,
+      plant.world_frame(), ring_position - tol, ring_position + tol);
+
+  ik.get_mutable_prog()->SetInitialGuess(ik.q(), plant.GetPositions(*plant_context));
+
+  auto result = drake::solvers::Solve(ik.prog());
+  if (!result.is_success()) {
+    std::cerr << "IK failed!" << std::endl;
+  }
+
+  return result.GetSolution(ik.q());
+}
+
 }  // namespace dairlib
