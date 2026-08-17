@@ -394,6 +394,19 @@ DEFINE_int32(relin_period_steps, 40,
              "Re-linearize the LCS once every this many control steps when "
              "--relinearize is set. Best kept equal to (or a multiple of) "
              "c3_period_steps so each fresh LCS feeds a solve.");
+DEFINE_int32(track_ik_period_steps, 40,
+             "Re-solve the live --track_cube_contact IK (q_contact_live/"
+             "q_contact_live_end, via resolve_contact_ik) once every this "
+             "many control steps — independent of --relin_period_steps. "
+             "The two used to share relin's cadence for no real reason "
+             "other than convenience: resolve_contact_ik is a plain "
+             "kinematic IK solve (SolveGraspIK, no dynamics, no AutoDiff), "
+             "nothing like relin's LCSFactory::LinearizePlantToLCS (which "
+             "differentiates through the full contact dynamics and is much "
+             "more expensive). Drop this on its own for smoother fine-"
+             "manipulation tracking (see --relin_period_steps's docs on "
+             "why a coarse update looks like a staircase during continuous "
+             "cube motion) without paying to relinearize that often too.");
 DEFINE_double(osqp_eps, 1e-3,
               "OSQP convergence tolerance (eps_abs = eps_rel).");
 DEFINE_int32(admm_iter, 20,
@@ -2100,15 +2113,22 @@ int DoMain(int argc, char* argv[]) {
       const VectorXd x_current =
           sim_plant.GetPositionsAndVelocities(plant_ctx);
 
-      // Decimate the two expensive calls off the 1 kHz control loop. c3_iter
-      // starts at 0, so the very first kC3 step always relinearizes and solves;
-      // thereafter each fires on its own period. Between solves the cached input
-      // solution (c3->GetInputSolution) is reused unchanged.
+      // Decimate the expensive calls off the 1 kHz control loop. c3_iter
+      // starts at 0, so the very first kC3 step always relinearizes, solves,
+      // and re-tracks; thereafter each fires on its own period. Between
+      // solves the cached input solution (c3->GetInputSolution) is reused
+      // unchanged. do_track_ik is independent of do_relin — the live
+      // --track_cube_contact IK re-solve (resolve_contact_ik) has nothing
+      // to do with the LCS relinearization, they just used to share a gate
+      // for convenience; --track_ik_period_steps lets it run on its own,
+      // cheaper clock instead of paying full relin cost for fresh tracking.
       const bool do_relin =
           FLAGS_relinearize &&
           (c3_iter % std::max(1, FLAGS_relin_period_steps) == 0);
       const bool do_solve =
           (c3_iter % std::max(1, FLAGS_c3_period_steps) == 0);
+      const bool do_track_ik =
+          (c3_iter % std::max(1, FLAGS_track_ik_period_steps) == 0);
       ++c3_iter;
 
       if (do_relin) {
@@ -2415,9 +2435,12 @@ int DoMain(int argc, char* argv[]) {
       // independently, so the two references fought). Two solves per relin —
       // now (k=0) and one horizon ahead (k=N) — so the per-knot hand-q
       // reference below can interpolate instead of freezing the whole
-      // horizon at a single instant. Done at relin cadence (an IK solve per
-      // control tick would be wasteful). Pinned → cube frozen, skip.
-      if (FLAGS_track_cube_contact && !cube_pinned && do_relin) {
+      // horizon at a single instant. Done at --track_ik_period_steps
+      // cadence (an IK solve per control tick would be wasteful; this is
+      // deliberately its own, independent, cheaper clock from
+      // --relin_period_steps — see that flag's docs). Pinned → cube
+      // frozen, skip.
+      if (FLAGS_track_cube_contact && !cube_pinned && do_track_ik) {
         const auto ik_t0 = std::chrono::steady_clock::now();
         const RigidTransform<double> X_WC_meas = CubePoseFromPositions(
             sim_plant.GetPositions(plant_ctx, sim_cube));
