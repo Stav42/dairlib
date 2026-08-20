@@ -100,11 +100,18 @@ inline Eigen::Vector4d GetGraspMagnitudes(
 // the origin), so callers that want the SURFACE at a given world point
 // should pass tip_frame_offset = Vector3d(0, 0, 0.0115), not the default
 // origin. Returns the full plant position vector q (Allegro + cube DOF).
+// `success`, when non-null, receives whether the solve actually converged.
+// The return value is the solver's last iterate either way, which for a FAILED
+// solve is an arbitrary infeasible configuration — callers that feed this into
+// a position controller must check, or they will command garbage. Passing
+// `success` also suppresses the "IK failed!" console print, on the assumption
+// that a caller which asked is going to report the failure more usefully.
 inline Eigen::VectorXd SolveGraspIK(
     const drake::multibody::MultibodyPlant<double>& plant,
     drake::systems::Context<double>* plant_context,
     const Eigen::VectorXd& grasp_positions,
-    const Eigen::Vector3d& tip_frame_offset = Eigen::Vector3d::Zero()) {
+    const Eigen::Vector3d& tip_frame_offset = Eigen::Vector3d::Zero(),
+    bool* success = nullptr) {
   const Eigen::Vector3d p_index  = grasp_positions.segment<3>(0);
   const Eigen::Vector3d p_middle = grasp_positions.segment<3>(3);
   const Eigen::Vector3d p_thumb  = grasp_positions.segment<3>(6);
@@ -127,7 +134,9 @@ inline Eigen::VectorXd SolveGraspIK(
   ik.get_mutable_prog()->SetInitialGuess(ik.q(), plant.GetPositions(*plant_context));
 
   auto result = drake::solvers::Solve(ik.prog());
-  if (!result.is_success()) {
+  if (success != nullptr) {
+    *success = result.is_success();
+  } else if (!result.is_success()) {
     std::cerr << "IK failed!" << std::endl;
   }
 
@@ -150,7 +159,8 @@ inline Eigen::VectorXd SolveGraspIKWithRing(
     const Eigen::VectorXd& grasp_positions,
     const Eigen::Vector3d& ring_position,
     const Eigen::Vector3d& tip_frame_offset = Eigen::Vector3d::Zero(),
-    const Eigen::Vector3d& ring_frame_offset = Eigen::Vector3d::Zero()) {
+    const Eigen::Vector3d& ring_frame_offset = Eigen::Vector3d::Zero(),
+    bool* success = nullptr) {
   const Eigen::Vector3d p_index  = grasp_positions.segment<3>(0);
   const Eigen::Vector3d p_middle = grasp_positions.segment<3>(3);
   const Eigen::Vector3d p_thumb  = grasp_positions.segment<3>(6);
@@ -177,7 +187,9 @@ inline Eigen::VectorXd SolveGraspIKWithRing(
   ik.get_mutable_prog()->SetInitialGuess(ik.q(), plant.GetPositions(*plant_context));
 
   auto result = drake::solvers::Solve(ik.prog());
-  if (!result.is_success()) {
+  if (success != nullptr) {
+    *success = result.is_success();
+  } else if (!result.is_success()) {
     std::cerr << "IK failed!" << std::endl;
   }
 

@@ -259,12 +259,21 @@ DEFINE_double(cube_move_duration, 0.5,
 DEFINE_double(cube_ik_lead_pos_max, 0.05,
               "Safety clamp (m): the moving-contact IK target pose is capped "
               "to this far from the CURRENTLY MEASURED cube pose, so if the "
-              "cube lags the reference the fingers don't chase an "
-              "unreachable target. Generous default — only binds if the cube "
+              "cube lags the reference the fingers don't chase a target it "
+              "has not reached. Generous default — only binds if the cube "
               "falls far behind a fast/large commanded motion.");
 DEFINE_double(cube_ik_lead_rot_max, 0.3,
               "Safety clamp (rad): same as --cube_ik_lead_pos_max for the "
-              "rotational part of the IK lead.");
+              "rotational part of the IK lead.\n"
+              "NOTE 0.3 rad is 17.2 deg — SMALLER than one --gait cycle's "
+              "rotation, so a gait will bind against it, and bind SILENTLY: "
+              "C3's cube-pose target, the Meshcat ghost and --rot_log's cmd "
+              "all read the RAW schedule, not the clamped pose the fingers "
+              "actually receive. A clamped run therefore looks identical in "
+              "the logs while tracking worse than the numbers imply. Raise "
+              "it (1.0-1.5, or 3.2 to disable — the angle between two "
+              "orientations never exceeds pi) for any run whose commanded "
+              "rotation exceeds ~17 deg.");
 DEFINE_bool(show_cube_target, true,
             "Draw a translucent CYAN 'ghost' cube in Meshcat at the raw "
             "(pre-clamp) --cube_motion_mode target pose, updated every "
@@ -277,6 +286,20 @@ DEFINE_bool(show_cube_start, true,
             "offset is measured from. Static (set once, never updated), "
             "unlike --show_cube_target's live ghost, so it stays put as a "
             "constant visual anchor for how far the cube has moved.");
+DEFINE_bool(rot_log, false,
+            "Log cube ORIENTATION tracking every --rot_log_period seconds "
+            "post-handoff. Everything else in this file logs cube z only "
+            "(--cube_bob_amp's heritage), which says nothing about how far "
+            "the cube actually TURNED. Prints, all relative to X_WC0: the "
+            "commanded and measured rotation angles, the residual "
+            "orientation error, how far the measured rotation axis has "
+            "drifted off the commanded one (the slip signature — a grasp "
+            "losing the cube rotates about the wrong axis, not just by the "
+            "wrong amount), and the position drift. Use it to find how "
+            "large a single-grasp rotation the fingers can actually "
+            "deliver.");
+DEFINE_double(rot_log_period, 0.25,
+              "Seconds between --rot_log lines.");
 // ── Low-level realization layer ──────────────────────────────────────────────
 // C3 PLANS (low rate); a task-space PD + Jacobian-transpose grip EXECUTES (high
 // rate, every control tick): τ = τ_g + Σ Jᵢᵀ[Kp(p_des−p) − Kd·ṗ + fₙ·n̂], with
@@ -509,7 +532,187 @@ DEFINE_double(release_middle_tri_apex_z, 0.02,
               "— the triangle's apex, above center by default. Face "
               "half-width is 0.03, so this leaves ~1cm margin to the edge.");
 
+// ── Gait: reorient the cube by repeated rotate-then-regrasp cycles ───────────
+// Rotates the cube about the GRASP AXIS (the cube's own Y, the thumb-to-
+// fingers pinch direction) by --gait_delta, then walks index/middle/ring back
+// to their starting configurations one at a time, then rotates again. Each
+// regrasp restores the finger travel budget the rotation consumed, so N cycles
+// accumulate N*--gait_delta of cube rotation with no finger ever having to
+// reach further than one cycle's worth.
+//
+// Why the cycle is exactly repeatable: faces 3/4 have normals +/-cube-Y, and
+// rotation about cube-Y leaves those normals fixed. The contact faces
+// therefore occupy the SAME world plane at every angle — only the material
+// points on them rotate. So each fingertip ends every rotate phase at the same
+// world point and returns to the same world point after every regrasp, which
+// makes the regrasp destination just that finger's t=0 configuration
+// (q_contact's own segment) on every cycle, with no per-cycle IK.
+//
+// The thumb never moves: it sits at the center of the +Y face (c_off = 0), so
+// the rotation axis passes through its contact and it only spins in place.
+// That matters beyond convenience — the thumb is the sole opposing contact,
+// and releasing it while all three others are on one face would drop the cube.
+DEFINE_bool(gait, false,
+            "Run the rotate-then-regrasp gait. Implies the 4-finger triangle "
+            "topology (as --release_middle builds it) and suppresses the "
+            "one-shot --release_finger chain, which this replaces with a "
+            "repeatable cycle. Requires --exec_mode=osc and "
+            "--track_cube_contact.");
+DEFINE_double(gait_delta, 0.7854,
+              "Cube rotation per gait cycle (rad, about the grasp axis). "
+              "Default 45 deg: measured single-grasp tracking delivers 44.1 "
+              "of a commanded 45.3 deg with 5.7 deg of off-axis tilt and "
+              "4.6 mm drift, so two cycles make a 90 deg quarter turn. The "
+              "shortfall is a near-constant ~1.2 deg regardless of angle "
+              "(a friction/stiffness deadband, not a range limit), and it "
+              "does not accumulate: each cycle re-derives its target from "
+              "the absolute commanded angle, not from where the cube got to.");
+DEFINE_int32(gait_cycles, 2,
+             "How many rotate+regrasp cycles to run. 2 x --gait_delta=45deg "
+             "= a 90 deg quarter turn, which brings a side face to the top.");
+DEFINE_double(gait_rotate_duration, 4.0,
+              "Min-jerk ramp time (s) for one cycle's rotation. Same angular "
+              "rate as the validated 45 deg step test at the default 45 deg "
+              "--gait_delta.");
+DEFINE_string(gait_scheme, "triangle",
+              "Which gait to run:\n"
+              "  triangle - all FOUR fingers grip throughout (index/middle/"
+              "ring on -Y, thumb on +Y). Rotation happens on four contacts "
+              "and each cycle regrasps ring, middle, index in turn.\n"
+              "  relay    - rotation happens on THREE (index/middle/thumb, "
+              "the layout measured at 97% tracking); ring is off the cube "
+              "and comes down only to hold while index and middle step "
+              "round, then lifts again. No finger ever crosses the face's "
+              "centre line, which is what put ring out of reach in the "
+              "triangle scheme.");
+DEFINE_double(relay_ring_hold_z, 0.0,
+              "relay: where on the -Y face ring holds, as a height (m) above "
+              "the face centre. Negative is below.\n"
+              "0.0 puts it dead centre, directly opposite the thumb, which is "
+              "the tidiest two-point pinch and the only point that is "
+              "rotation-invariant. It is also the WORST place to resist the "
+              "cube unwinding: a contact on the rotation axis has no lever "
+              "arm about that axis. With ring and thumb both centred, a leg "
+              "leaves just one off-axis finger holding, and the rotation "
+              "wound in against friction lets go — measured as 31 deg of "
+              "backspin in 70 ms during index's leg.\n"
+              "Offsetting ring gives a second off-axis contact, opposite the "
+              "remaining one, so the pair forms a couple that resists twist. "
+              "The cost is that ring's footprint is no longer the same point "
+              "every cycle, which nothing depends on: its leg IK solves "
+              "against the measured cube pose anyway.");
+DEFINE_double(relay_ring_press, 0.001,
+              "relay: how far past the -Y face (m) ring's holding target sits, "
+              "so touching down produces real contact force rather than a "
+              "graze. index/middle inherit their seating from the reach "
+              "phase, where full-hand collision pushes them into place; ring "
+              "arrives cold and has only this to press it home. Too small and "
+              "the contact force never crosses "
+              "--contact_force_thresh, so the ENGAGE leg times out with the "
+              "fingertip resting on the cube. Too LARGE and ring drives into "
+              "the cube and knocks it: this was briefly 3 mm while a "
+              "contact-detection bug was misread as weak contact, and the "
+              "touchdown visibly jerked the cube.");
+DEFINE_double(relay_ring_retract, 0.03,
+              "relay: how far outside the -Y face (m) ring parks while it is "
+              "not holding. Far enough to be clear of the rotating cube, "
+              "near enough that its approach is short.");
+DEFINE_bool(gait_realign, true,
+            "After the cycles finish, walk index/middle/ring back to their "
+            "ORIGINAL cube-frame footprints, each finger to its own vertex, "
+            "so the contact triangle's base is parallel to the cube's base "
+            "edge again. The gait leaves them rotated: every cycle walks a "
+            "footprint backwards by --gait_delta, so a 90 deg turn leaves the "
+            "triangle turned 90 deg within the face. Cube is held still "
+            "throughout; this moves fingers only. Ring's leg is the demanding "
+            "one (it must cross the face), so watch the setup probe's "
+            "residuals before trusting it.");
+DEFINE_bool(gait_log, true,
+            "One consolidated status line every --gait_log_period seconds "
+            "while --gait runs, replacing the scattered per-relin and "
+            "per-solve chatter. Reports, in one place: which cycle and gait "
+            "state, which finger is moving and what kind of leg it is, how "
+            "far that fingertip still is from its target and whether it is "
+            "touching yet, the commanded vs achieved cube rotation, the "
+            "off-axis tilt, the per-axis drift, and which fingers C3 is "
+            "currently modelling as gripping.");
+DEFINE_double(gait_log_period, 0.25,
+              "Seconds between --gait_log lines.");
+DEFINE_bool(legacy_log, false,
+            "Restore the old high-rate diagnostics: the per-relinearization "
+            "'[t=..] relin |A|=..' line, the '[track IK] N ms' timing, and "
+            "the per-solve 'C3 PLAN' header. At --relin_period_steps=5 and "
+            "--track_ik_period_steps=5 the first two print at 200 Hz each, "
+            "which buries everything the gait says. Off by default; the "
+            "gait's own state prints and --gait_log carry what matters.");
+DEFINE_int32(gait_seek_period_steps, 5,
+             "Re-solve a regrasp leg's destination against the cube's MEASURED "
+             "pose once every this many control steps (control_dt=1ms), for "
+             "the part of the leg after its arc spline has played out.\n"
+             "The spline is aimed at the pose measured when the leg STARTED, "
+             "and the cube keeps moving during the leg — fastest of all right "
+             "then, since lifting a finger drops the grasp one contact "
+             "lighter. Without re-aiming, the fingertip arrives beside a "
+             "surface that has moved out from under it, never contacts, and "
+             "the leg waits until --gait_leg_timeout.\n"
+             "Cost is a full 4-point IK per update (3-6 ms measured), so this "
+             "is the most expensive thing the gait does per unit time. "
+             "Matches --track_ik_period_steps by default; raise it if solve "
+             "time becomes the constraint. Measured cube drift is under "
+             "1 mm/s, so even 100 (10 Hz) stays well inside "
+             "--regrasp_touch_tol.");
+DEFINE_double(gait_leg_gap, 0.3,
+              "Seconds to hold still between one leg finishing and the next "
+              "starting, with every contact of the moment gripping.\n"
+              "Without it the two run back to back: a leg ends by rebuilding "
+              "C3 with its finger added, and the next begins on the very next "
+              "tick by rebuilding again with a different finger removed — two "
+              "full reconstructions 1 ms apart, both cold-started, both "
+              "linearizing the dynamics while the cube is still ringing from "
+              "the touchdown. Measured |A| went from 122 at rest to 657 and "
+              "359 across such a pair, i.e. C3 was handed a badly conditioned "
+              "model and 15 ADMM iterations to solve it, and the grip force it "
+              "returned kicked the cube further. This gap lets the impact die "
+              "and gives C3 several clean solves at each contact set before "
+              "the next change.");
+DEFINE_double(gait_leg_timeout, 3.0,
+              "Seconds a regrasp leg may keep seeking after its arc has "
+              "played out before the gait gives up and stops. Without it a "
+              "finger that cannot land waits forever and the run hangs with "
+              "no indication of why. On timeout the leg reports how far the "
+              "tip ended up from its target and whether it was touching "
+              "anything, then C3 is rebuilt at four contacts so the grasp is "
+              "left intact.");
+DEFINE_double(gait_hold_time, 0.5,
+              "Seconds to hold after a rotation completes before starting "
+              "that cycle's regrasps — lets the cube settle so the first "
+              "release doesn't happen while it is still moving.");
+
+// ── Cube start pose ──────────────────────────────────────────────────────────
+// X_WC0 — the nominal cube pose every grasp target, --cube_move_* offset and
+// --gait rotation is measured from. Was hardcoded at (0, 0, 0.58).
+//
+// Height matters for how much rotation a grasp can deliver. Rotating about the
+// grasp axis sweeps each footprint around its face, and ring's carries it
+// DOWNWARD: from (x=+15, z=-8) mm it descends 8.3 mm over 45 deg, which is
+// what puts ring out of reach (measured: the tracking IK starts failing at
+// ~37 deg with ring 1.7-2.9 mm outside its 1 mm tolerance box, while
+// index/middle/thumb stay comfortable). Raising the cube shifts that whole arc
+// up in the hand's workspace. It moves ALL four contacts though, so it trades
+// against whatever headroom the other three have upward.
+DEFINE_double(cube_start_x, 0.0, "Cube nominal start position, world x (m).");
+DEFINE_double(cube_start_y, 0.0, "Cube nominal start position, world y (m).");
+DEFINE_double(cube_start_z, 0.58,
+              "Cube nominal start position, world z (m). See the note above "
+              "on how this interacts with ring's reach during --gait.");
+
 // ── General ──────────────────────────────────────────────────────────────────
+DEFINE_bool(preview, true,
+            "Pause on the two static Meshcat previews (q_pregrasp, q_contact) "
+            "and wait for Enter before starting the sim. Set false for "
+            "unattended runs and for any command that pipes stdout: the "
+            "prompt goes to stdout, so a pipe hides it and the run looks "
+            "hung when it is really blocked on std::cin.get().");
 DEFINE_double(sim_time, std::numeric_limits<double>::infinity(),
               "Total simulation time (s).");
 
@@ -559,6 +762,33 @@ int DoMain(int argc, char* argv[]) {
 
   if (FLAGS_release_finger != "middle" && FLAGS_release_finger != "ring") {
     throw std::runtime_error("--release_finger must be 'middle' or 'ring'.");
+  }
+
+  // --gait reuses --release_middle's 4-finger triangle topology wholesale
+  // (grasp targets, reach-phase finger count, 4-point IK selection), so turn
+  // it on rather than duplicating every one of those branches behind a second
+  // flag. The one-shot --release_finger chain is separately suppressed
+  // wherever it is gated, since --gait replaces it with a repeatable cycle.
+  if (FLAGS_gait && FLAGS_gait_scheme != "triangle" &&
+      FLAGS_gait_scheme != "relay") {
+    throw std::runtime_error("--gait_scheme must be 'triangle' or 'relay'.");
+  }
+  if (FLAGS_gait) {
+    // Only the triangle scheme wants --release_middle's 4-finger topology.
+    // relay grips with index/middle/thumb, which IS the default layout
+    // (index/middle at x=-+20mm, z=0, symmetric about the rotation axis) —
+    // exactly the 3-finger set measured at 97% single-rotation tracking.
+    // Ring stays out of the reach phase there and only ever touches down as
+    // a temporary holder.
+    FLAGS_release_middle = (FLAGS_gait_scheme == "triangle");
+    if (!FLAGS_track_cube_contact) {
+      // Without it the fingers never re-solve against the rotating cube, so
+      // nothing drives the rotation the gait is built to produce.
+      throw std::runtime_error("--gait requires --track_cube_contact.");
+    }
+    if (FLAGS_gait_cycles < 1) {
+      throw std::runtime_error("--gait_cycles must be >= 1.");
+    }
   }
 
   if (FLAGS_release_middle && FLAGS_exec_mode != "osc") {
@@ -739,6 +969,18 @@ int DoMain(int argc, char* argv[]) {
   // themselves show the real triangle target, making them redundant.)
   if (FLAGS_release_middle) {
     meshcat->SetObject("/grasp/ring", drake::geometry::Sphere(0.006), kRed);
+  }
+  // Where ring is currently supposed to touch, under --gait_scheme=relay.
+  // A separate marker from /grasp/ring above (that one's the STATIC
+  // triangle target under --release_middle; this one tracks a single,
+  // moving point — relay_ring_hold_C mapped through the cube's CURRENT
+  // pose — so it visibly rides around with the cube as it turns). Cyan to
+  // stay distinct from the red grasp dots and the yellow tip-frame probes.
+  // Created once here; update_markers below moves it and toggles
+  // visibility every tick.
+  if (FLAGS_gait && FLAGS_gait_scheme == "relay") {
+    meshcat->SetObject("/gait/ring_touch_target", drake::geometry::Sphere(0.006),
+                       drake::geometry::Rgba(0.0, 1.0, 1.0, 1.0));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -978,8 +1220,9 @@ int DoMain(int argc, char* argv[]) {
   // with no physical reach behind it. Referenced throughout the reach/
   // handoff logic below in place of a hardcoded 3.
   const int n_grasp_fingers = FLAGS_release_middle ? 4 : 3;
-  const RigidTransform<double> X_WC0(RotationMatrix<double>(),
-                                     Vector3d(0.0, 0.0, 0.58));
+  const RigidTransform<double> X_WC0(
+      RotationMatrix<double>(),
+      Vector3d(FLAGS_cube_start_x, FLAGS_cube_start_y, FLAGS_cube_start_z));
   VectorXd q_cube0(7);
   q_cube0 << 1, 0, 0, 0, X_WC0.translation();
 
@@ -1082,6 +1325,48 @@ int DoMain(int argc, char* argv[]) {
   const Vector3d ring_target = X_WC0 * Vector3d(
       FLAGS_release_middle_tri_spread,
       -(h_cube - FLAGS_penetration_index_middle), FLAGS_release_middle_tri_base_z);
+
+  // ── Contact footprints, in the CUBE's own frame ──────────────────────────
+  // Indexed like finger_start/tip_bodies: 0=index, 1=middle, 2=thumb, 3=ring.
+  // Single source of truth for "where on the cube is each finger touching":
+  // resolve_contact_ik maps these through the current cube pose to get world
+  // IK targets, and both the --release_finger chain and the --gait cycle
+  // update an entry when that finger re-establishes contact somewhere new.
+  // Previously this lived as scattered index_x/index_z/middle_z/c_off reads
+  // plus the index_z_live/middle_z_live patch inside resolve_contact_ik,
+  // which could only express the two specific moves the release chain made.
+  //
+  // Rotation about the grasp axis (cube Y) leaves every one of these on its
+  // own face: face 3/4's normals are +/-cube-Y, which R_y fixes, so only the
+  // in-face (x,z) part ever changes. That is what lets --gait update a
+  // footprint with a plain R_y and know the finger is still on its face.
+  std::array<Vector3d, 4> footprint_C{
+      Vector3d(index_x, -(h_cube - FLAGS_penetration_index_middle), index_z),
+      Vector3d(middle_x, -(h_cube - FLAGS_penetration_index_middle), middle_z),
+      Vector3d(c_off, h_cube - FLAGS_penetration_thumb, 0.0),
+      Vector3d(FLAGS_release_middle_tri_spread,
+               -(h_cube - FLAGS_penetration_index_middle),
+               FLAGS_release_middle_tri_base_z)};
+  // The t=0 footprints, kept unmodified. --gait's regrasp returns each
+  // fingertip to the WORLD point it started at, whose hand configuration is
+  // exactly q_contact's own segment for that finger — see the gait state
+  // machine. Retained separately so that stays true after footprint_C has
+  // been rotated by a cycle.
+  const std::array<Vector3d, 4> footprint_C0 = footprint_C;
+
+  // Ring's holding footprint under relay: the centre of the -Y face. That
+  // point lies ON the rotation axis, so it is the same point in world and in
+  // cube frame at every angle — ring lands on the identical spot every cycle
+  // and never needs repositioning. It also sits directly opposite the thumb,
+  // making the cleanest two-point pinch available while index and middle are
+  // both away. Its one weakness is that two holders on the axis have no
+  // lever arm about it, so they resist the cube spinning by friction alone.
+  const Vector3d relay_ring_hold_C(
+      0.0, -(h_cube - FLAGS_relay_ring_press), FLAGS_relay_ring_hold_z);
+  // Park directly out from the hold point, so ring approaches and leaves
+  // along the face normal instead of sweeping across the face.
+  const Vector3d relay_ring_park_C(
+      0.0, -(h_cube + FLAGS_relay_ring_retract), FLAGS_relay_ring_hold_z);
   // 1cm outside, same convention as the other 3 fingers' pregrasp.
   const Vector3d ring_pregrasp_target = X_WC0 * Vector3d(
       FLAGS_release_middle_tri_spread, -(h_cube + 0.01),
@@ -1241,6 +1526,65 @@ int DoMain(int argc, char* argv[]) {
         "regrasp_index", index_regrasp_targets9, ring_regrasp_target);
   }
 
+  // ── --gait realignment reachability check ───────────────────────────────
+  // Advisory only — nothing computed here reaches the controller. Every
+  // regrasp destination is now solved live against the MEASURED cube pose at
+  // the moment its leg starts (see solve_leg_ik), because the cube does not
+  // track its commanded rotation closely enough for a t=0-anchored target to
+  // still lie on its surface several cycles in.
+  //
+  // What this still answers, in one IK solve rather than a minute of sim, is
+  // whether the END of the gait is reachable at all: --gait_realign sends
+  // every finger to its OWN original cube-frame vertex, and after a 90 deg
+  // turn ring's vertex sits diagonally across the face from where the gait
+  // leaves it. If any finger is out of reach it is ring, and the residual
+  // printed here says so before the run starts.
+  if (FLAGS_gait && FLAGS_gait_realign) {
+    const double total = FLAGS_gait_cycles * FLAGS_gait_delta;
+    const RotationMatrix<double> R_total(
+        drake::math::RollPitchYaw<double>(0.0, total, 0.0));
+    VectorXd targets9(9);
+    for (int i = 0; i < 3; ++i)
+      targets9.segment<3>(3 * i) = X_WC0 * (R_total * footprint_C0[i]);
+    // Under relay ring is a holder, not a gripping vertex: it sits at the
+    // face centre, which is on the rotation axis and therefore the same
+    // point at any angle. Checking it against a triangle vertex it never
+    // occupies would report a failure that cannot happen.
+    const Vector3d ring_pt =
+        (FLAGS_gait_scheme == "relay")
+            ? Vector3d(X_WC0 * relay_ring_hold_C)
+            : Vector3d(X_WC0 * (R_total * footprint_C0[3]));
+
+    SetThumbSeed(sim_plant, sim_allegro, &plant_ctx);
+    sim_plant.SetPositions(&plant_ctx, sim_cube, q_cube0);
+    bool ok = false;
+    const VectorXd q_re =
+        SolveGraspIKWithRing(sim_plant, &plant_ctx, targets9, ring_pt,
+                             tip_surface_pt, ring_surface_offset, &ok);
+    sim_plant.SetPositions(&plant_ctx, q_re);
+    const char* names[4] = {"index", "middle", "thumb", "ring"};
+    std::cout << "IK gait_realign (total " << total * 180.0 / M_PI << " deg) "
+              << (ok ? "OK" : "INFEASIBLE") << ":";
+    for (int i = 0; i < 4; ++i) {
+      const Vector3d want =
+          (i == 3) ? ring_pt : Vector3d(targets9.segment<3>(3 * i));
+      const double e =
+          (sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                         sim_plant.get_body(tip_bodies[i])) *
+               (i == 3 ? ring_surface_offset : tip_surface_pt) -
+           want)
+              .norm();
+      std::cout << "  " << names[i] << "=" << e * 1e3 << "mm";
+    }
+    std::cout << "\n";
+    if (!ok) {
+      std::cout << "  NOTE: the realign legs still run, but a finger that "
+                   "cannot reach its vertex never contacts and its leg waits "
+                   "forever. Raise --cube_start_z, shrink "
+                   "--release_middle_tri_spread, or set --gait_realign=false.\n";
+    }
+  }
+
   // Publish q_contact once on GRASP_Q_CONTACT (see the LCM wiring above) —
   // it's a static IK target, doesn't change after this point. Only the
   // hand_q* entries are meaningful; the rest of the n_x_full-sized vector
@@ -1317,6 +1661,90 @@ int DoMain(int argc, char* argv[]) {
   // empty here; real content assigned once, at the trigger.
   PiecewisePolynomial<double> ring_regrasp_traj;
   double ring_regrasp_start_t = 0.0;
+
+  // ── --gait state ────────────────────────────────────────────────────────
+  // One cycle is kGaitRotate -> (kGaitMove, kGaitWait) x 3 fingers ->
+  // next cycle, ending in kGaitDone. Declared here (ahead of
+  // cube_target_pose) because the pose generator reads gait_theta_* to
+  // produce the piecewise rotation reference the gait commands.
+  enum GaitState { kGaitRotate, kGaitMove, kGaitDone };
+  GaitState gait_state = kGaitRotate;
+  // Undoes one cycle's rotation, applied to a footprint when its finger
+  // re-establishes contact: the fingertip goes back to the world point it
+  // started at, so in the cube's frame its footprint has walked backwards by
+  // --gait_delta. Rotation preserves the footprint's radius from the face
+  // center (17-20 mm here, on a 30 mm half-face), so footprints never walk
+  // off the face no matter how many cycles run.
+  const RotationMatrix<double> R_gait_back(
+      drake::math::RollPitchYaw<double>(0.0, -FLAGS_gait_delta, 0.0));
+  int gait_cycle = 0;   // which rotate+regrasp cycle we are in
+  int gait_leg = 0;     // index into leg_plan for the current cycle
+  // True once the cycles are done and the --gait_realign legs are running.
+  // Those legs reuse kGaitMove wholesale — release, arc, touch, rejoin are
+  // identical — and differ only in destination: a gait leg sends its finger
+  // BACK to the world point it started the cycle at, a realign leg sends it
+  // FORWARD to its own original cube-frame vertex at the final cube pose.
+  bool gait_in_realign = false;
+  // Destination for the leg in progress, solved live at leg entry against the
+  // measured cube pose (see solve_leg_ik).
+  VectorXd gait_leg_q_dest;
+  Vector3d gait_leg_target_pt = Vector3d::Zero();
+  Vector3d gait_leg_target_C = Vector3d::Zero();
+  // Regrasp order. Thumb (2) is absent by design: it is the pivot and the
+  // sole opposing contact, so releasing it would drop the cube. Every
+  // intermediate state is thus thumb + 2 face-4 fingers — still an opposed
+  // grasp, and the same 3-contact set the --release_finger chain already
+  // holds with.
+  // What each cycle does after its rotation, as (finger, leg kind) pairs.
+  //
+  //   triangle: regrasp ring, middle, index in turn. Four contacts hold
+  //             throughout; each leg drops to three while its finger moves.
+  //   relay:    ring comes DOWN to hold, index and middle step round one at
+  //             a time, then ring lifts OFF again so the next rotation runs
+  //             on index/middle/thumb alone.
+  //
+  // Thumb (2) never appears: it sits at the face centre, on the rotation
+  // axis, so it only spins in place — and it is the sole opposing contact,
+  // so releasing it drops the cube.
+  enum LegKind { kLegRegrasp, kLegEngage, kLegDisengage };
+  std::vector<std::pair<int, LegKind>> leg_plan;
+  if (FLAGS_gait_scheme == "relay") {
+    leg_plan = {{3, kLegEngage},    // ring down to the face centre
+                {0, kLegRegrasp},   // index steps round
+                {1, kLegRegrasp},   // middle steps round
+                {3, kLegDisengage}};  // ring back off the cube
+  } else {
+    leg_plan = {{3, kLegRegrasp}, {1, kLegRegrasp}, {0, kLegRegrasp}};
+  }
+  // Which contacts C3 solves for during a rotation. relay rotates on three;
+  // triangle rotates on all four.
+  const std::vector<int> rotate_fingers =
+      (FLAGS_gait_scheme == "relay") ? std::vector<int>{0, 1, 2}
+                                     : std::vector<int>{0, 1, 2, 3};
+  VectorXd q_ring_parked;  // solved on the first disengage, then held
+  // Is ring currently one of the gripping contacts? Fixed for the triangle
+  // scheme (always yes) but a live fact under relay, where ring is off the
+  // cube during every rotation and only touches down to hold. The tracking
+  // IK must solve 4-point exactly when it is engaged and 3-point when it is
+  // not — solving for a finger that is in free space would drag the other
+  // three toward a configuration built around a contact that does not exist.
+  // Declared here (ahead of update_markers) rather than down by
+  // resolve_contact_ik, which is its other reader, so the ring-touch-point
+  // marker can read it too.
+  bool ring_engaged = (n_grasp_fingers == 4);
+  double gait_theta_start = 0.0;   // rad, rotation at the ramp's start
+  double gait_theta_target = 0.0;  // rad, rotation at the ramp's end
+  double gait_rotate_t0 = 0.0;     // t_ref at which the current ramp began
+  bool gait_entered = false;       // has the current state run its entry code
+  PiecewisePolynomial<double> gait_traj;  // moving finger's joint path
+  double gait_traj_t0 = 0.0;
+  bool gait_left_surface = false;
+  bool gait_touch_latched = false;
+  // When the previous leg completed. The next leg waits --gait_leg_gap past
+  // this before touching anything, so the touchdown transient decays and C3
+  // gets clean solves at the current contact set before it is rebuilt again.
+  double gait_leg_done_t = -1e9;
+  double gait_touch_time = -1.0;
   // Middle's regrasp bookkeeping, chained after ring's — mirrors every
   // ring_* variable above exactly, just triggered by finger_rejoined
   // (ring's own rejoin) instead of the --release_middle_t timer. See the
@@ -1400,13 +1828,37 @@ int DoMain(int argc, char* argv[]) {
           sim_plant.EvalBodyPoseInWorld(
               plant_ctx, sim_plant.get_body(tip_bodies[i])) *
               X_offset);
+
+    // /gait/ring_touch_target: where ring is either currently pressing or
+    // about to. Visible from the moment its ENGAGE leg starts flying toward
+    // the face (leg_plan[gait_leg] == {3, kLegEngage}) through the whole
+    // hold (ring_engaged, which stays true across index/middle's own legs
+    // in between) — and gone the instant DISENGAGE completes and
+    // ring_engaged drops back to false. Position tracks the CURRENT cube
+    // pose (X_WC, this function's argument), so the dot visibly rides
+    // around with the cube as it turns rather than sitting fixed in world
+    // space.
+    if (FLAGS_gait && FLAGS_gait_scheme == "relay") {
+      const bool ring_leg_flying =
+          gait_state == kGaitMove && !leg_plan.empty() &&
+          leg_plan[gait_leg].first == 3 &&
+          leg_plan[gait_leg].second == kLegEngage;
+      const bool ring_target_visible = ring_engaged || ring_leg_flying;
+      meshcat->SetProperty("/gait/ring_touch_target", "visible",
+                           ring_target_visible);
+      if (ring_target_visible)
+        meshcat->SetTransform(
+            "/gait/ring_touch_target",
+            RigidTransform<double>(X_WC * relay_ring_hold_C));
+    }
   };
 
   auto preview = [&](const char* label) {
     update_markers(X_WC0);
     sim_diagram->ForcedPublish(sim_ctx);
-    std::cout << "\n=== STATIC PREVIEW: " << label << " ===\n"
-              << "Press Enter to continue...\n";
+    std::cout << "\n=== STATIC PREVIEW: " << label << " ===\n";
+    if (!FLAGS_preview) return;
+    std::cout << "Press Enter to continue...\n";
     std::cin.get();
   };
 
@@ -1496,6 +1948,8 @@ int DoMain(int argc, char* argv[]) {
   Phase phase = kReach;
   bool cube_pinned = true;
   const double control_dt = 0.001;
+  double next_rot_log_t = 0.0;  // --rot_log cadence, see the loop's tail
+  double next_gait_log_t = 0.0;  // --gait_log cadence, same place
 
   // 4th entry (ring) only ever latches when n_grasp_fingers==4
   // (--release_middle); the loops below are bounded by n_grasp_fingers, not
@@ -1709,31 +2163,104 @@ int DoMain(int argc, char* argv[]) {
   // cube faces (same per-finger penetration + tip-surface offset as the t=0
   // q_contact). Warm-started from the last solution for speed and to keep the
   // hand config from jumping between IK branches. Returns hand-only joints.
+  // --track_cube_contact IK health. A failed solve used to be fed straight to
+  // the executor and to C3 (the helpers print "IK failed!" but return the
+  // failed iterate anyway), which at --track_ik_period_steps=5 meant a run of
+  // failures became a stream of garbage position targets that osc_kp drove the
+  // hand to — measured as the cube being kicked 15 deg in 60 ms, ~23x the
+  // commanded rate, followed by ~0.8 s of thrashing. Self-reinforcing, too:
+  // each kick moves the cube further from where the IK expects it.
+  long ik_fail_count = 0;
+  double last_ik_fail_print_t = -1e9;
   auto resolve_contact_ik =
-      [&](const RigidTransform<double>& X_WC) -> VectorXd {
-    const double h = cube_size / 2.0;
-    // index_z/middle_z are --release_middle's ORIGINAL (base/apex)
-    // targets. Once a finger has rejoined C3 at its new point
-    // (middle_rejoined/index_rejoined), track THAT instead — this
-    // re-solve runs every relin under --track_cube_contact, so leaving
-    // either on its original value would silently overwrite
-    // q_contact_live's segment back to the old position within one relin
-    // cycle, undoing the rejoin fix in the main loop above (ring is
-    // exempt from this function entirely, so it never had this problem).
-    const double index_z_live = index_rejoined ? middle_z : index_z;
-    const double middle_z_live =
-        middle_rejoined ? FLAGS_release_middle_tri_base_z : middle_z;
+      [&](const RigidTransform<double>& X_WC, double t_now) -> VectorXd {
+    // Footprints come from footprint_C, so a finger that has re-established
+    // contact somewhere new is tracked at its NEW point automatically. This
+    // replaced an index_z_live/middle_z_live patch that hardcoded the two
+    // specific moves the --release_finger chain makes; footprint_C covers
+    // those and --gait's repeated rotations with the same mechanism.
     VectorXd targets(9);
-    targets << X_WC * Vector3d(index_x, -(h - FLAGS_penetration_index_middle), index_z_live),
-        X_WC * Vector3d(middle_x, -(h - FLAGS_penetration_index_middle), middle_z_live),
-        X_WC * Vector3d(c_off, h - FLAGS_penetration_thumb, 0);
-    // NOTE: still 3-point (SolveGraspIK below, not SolveGraspIKWithRing) —
-    // ring is not re-solved here regardless of --release_middle. This path
-    // (--track_cube_contact) was already a documented gap for
-    // --release_middle before the triangle topology; unchanged by it.
+    targets << X_WC * footprint_C[0], X_WC * footprint_C[1],
+        X_WC * footprint_C[2];
     sim_plant.SetPositions(ik_ctx.get(), sim_allegro, q_contact_live);
+    // Ring must be solved too whenever it is actually gripping, i.e. under
+    // the 4-finger triangle. It used to be omitted here unconditionally
+    // (3-point SolveGraspIK), which meant that with --track_cube_contact and
+    // a MOVING cube, ring alone was never told the cube had moved: it held
+    // its t=0 world pose and anchored the cube while the other three tried
+    // to turn it. Measured effect was a commanded +9.7deg rotation coming
+    // out as -10.6deg — the cube driven BACKWARDS by the stale finger. Any
+    // 4-contact grasp whose cube moves needs the 4-point solve.
+    bool ik_ok = false;
     const VectorXd q_full =
-        SolveGraspIK(sim_plant, ik_ctx.get(), targets, tip_surface_pt);
+        ring_engaged
+            ? SolveGraspIKWithRing(sim_plant, ik_ctx.get(), targets,
+                                   X_WC * footprint_C[3], tip_surface_pt,
+                                   ring_surface_offset, &ik_ok)
+            : SolveGraspIK(sim_plant, ik_ctx.get(), targets, tip_surface_pt,
+                           &ik_ok);
+    if (!ik_ok) {
+      // Hold the last good target rather than command the failed iterate.
+      // The cube then simply lags a reference the hand cannot reach, which
+      // is recoverable, instead of being thrown by a configuration jump.
+      ++ik_fail_count;
+      if (t_now >= last_ik_fail_print_t + 0.25) {
+        last_ik_fail_print_t = t_now;
+        // Per-finger residual of the FAILED iterate: the constraint left
+        // furthest from its target is the one that could not be reached,
+        // which is what says whether a given --gait_delta is past a
+        // particular finger's workspace rather than merely hard to solve.
+        sim_plant.SetPositions(ik_ctx.get(), q_full);
+        const char* names[4] = {"index", "middle", "thumb", "ring"};
+        int worst = 0;
+        double worst_err = -1.0;
+        for (int i = 0; i < n_grasp_fingers; ++i) {
+          const Vector3d want =
+              (i == 3) ? Vector3d(X_WC * footprint_C[3])
+                       : Vector3d(targets.segment<3>(3 * i));
+          const double e =
+              (sim_plant.EvalBodyPoseInWorld(*ik_ctx,
+                                             sim_plant.get_body(tip_bodies[i])) *
+                   (i == 3 ? ring_surface_offset : tip_surface_pt) -
+               want)
+                  .norm();
+          if (e > worst_err) {
+            worst_err = e;
+            worst = i;
+          }
+        }
+        std::cout << "  [track IK] FAILED at t=" << t_now << " (" << ik_fail_count
+                  << " so far) — holding last target; worst finger: "
+                  << names[worst] << " off by " << worst_err * 1e3 << " mm\n";
+      }
+      return q_contact_live;
+    }
+    sim_plant.SetPositions(ik_ctx.get(), q_full);
+    return sim_plant.GetPositions(*ik_ctx, sim_allegro);
+  };
+
+  // Hand configuration putting finger f's tip on target_C (a point in the
+  // CUBE's frame) while the other three stay on their current footprints,
+  // everything mapped through the cube pose passed in.
+  //
+  // --gait's regrasp legs use this against the MEASURED cube pose rather than
+  // a world point precomputed at t=0. The t=0 anchoring only holds while the
+  // cube tracks its commanded rotation; it does not. The cube lags ~17 deg
+  // and drifts ~13 mm, and by the third cycle a t=0-anchored destination is
+  // no longer on the cube's surface at all — the finger flies to it, touches
+  // nothing, and the leg waits for a contact that can never happen. Solving
+  // against where the cube actually IS makes every leg land on the real
+  // surface no matter how far the rotation has fallen behind.
+  auto solve_leg_ik = [&](const RigidTransform<double>& X_WC, int f,
+                          const Vector3d& target_C, bool* ok) -> VectorXd {
+    VectorXd targets(9);
+    for (int i = 0; i < 3; ++i)
+      targets.segment<3>(3 * i) = X_WC * (i == f ? target_C : footprint_C[i]);
+    const Vector3d ring_pt = X_WC * (f == 3 ? target_C : footprint_C[3]);
+    sim_plant.SetPositions(ik_ctx.get(), sim_allegro, q_contact_live);
+    const VectorXd q_full = SolveGraspIKWithRing(
+        sim_plant, ik_ctx.get(), targets, ring_pt, tip_surface_pt,
+        ring_surface_offset, ok);
     sim_plant.SetPositions(ik_ctx.get(), q_full);
     return sim_plant.GetPositions(*ik_ctx, sim_allegro);
   };
@@ -1780,6 +2307,29 @@ int DoMain(int argc, char* argv[]) {
   // weight, and it costs nothing extra to add later if it matters.
   auto cube_target_pose =
       [&](double t_ref) -> std::pair<RigidTransform<double>, Vector3d> {
+    // --gait overrides the --cube_motion_mode profiles entirely: instead of
+    // one ramp to a fixed offset, the reference is PIECEWISE — ramp by
+    // --gait_delta during a rotate phase, then hold at that angle for the
+    // whole regrasp sequence, then ramp again. The state machine owns
+    // gait_theta_start/target/rotate_t0; this just evaluates the min-jerk
+    // ramp between them, which makes the function still a pure function of
+    // t_ref and so safe for the horizon look-aheads that call it at
+    // t_ref_end and per-knot tk.
+    //
+    // Rotation only, about the cube's own y (the grasp axis), and zero
+    // velocity feedforward — the same convention the rotational part of the
+    // --cube_move_* path already uses.
+    if (FLAGS_gait) {
+      const double T = std::max(1e-6, FLAGS_gait_rotate_duration);
+      const double s = std::clamp((t_ref - gait_rotate_t0) / T, 0.0, 1.0);
+      const double ramp =
+          10.0 * s * s * s - 15.0 * s * s * s * s + 6.0 * s * s * s * s * s;
+      const double theta =
+          gait_theta_start + ramp * (gait_theta_target - gait_theta_start);
+      return {X_WC0 * RigidTransform<double>(RotationMatrix<double>(
+                          drake::math::RollPitchYaw<double>(0.0, theta, 0.0))),
+              Vector3d::Zero()};
+    }
     const std::pair<double, double> ad = motion_alpha(t_ref);
     const double alpha = ad.first, dalpha = ad.second;
     const Vector3d delta_p(FLAGS_cube_move_dx, FLAGS_cube_move_dy,
@@ -1944,7 +2494,16 @@ int DoMain(int argc, char* argv[]) {
     for (int k = 0; k < contacts.num_point_pair_contacts(); ++k) {
       const auto& info = contacts.point_pair_contact_info(k);
       if (info.contact_force().norm() < FLAGS_contact_force_thresh) continue;
-      for (int i = 0; i < n_grasp_fingers; ++i) {
+      // All four tips, NOT n_grasp_fingers. n_grasp_fingers counts the
+      // fingers that take part in the REACH phase, which is 3 under
+      // --gait_scheme=relay because ring joins later — but ring still
+      // physically touches the cube every time it comes down to hold. Bounding
+      // this loop by n_grasp_fingers made touching[3] impossible to set, so
+      // relay's ENGAGE leg could never see the contact it was waiting for and
+      // timed out with the fingertip 2.4 mm from target and visibly resting on
+      // the cube. Detection must cover every tip that CAN touch, which is all
+      // four; who is currently a planned contact is active_fingers' job.
+      for (int i = 0; i < 4; ++i) {
         if ((info.bodyA_index() == tip_bodies[i] &&
              info.bodyB_index() == cube_body) ||
             (info.bodyB_index() == tip_bodies[i] &&
@@ -2143,7 +2702,7 @@ int DoMain(int argc, char* argv[]) {
         // cube_pinned, the cube's part of x_current is bit-for-bit frozen
         // and the hand is under a converged PD hold — so |A|/|B|/|D| should
         // barely move between prints if the linearization is well-behaved).
-        if (!FLAGS_contact_force_log) {
+        if (!FLAGS_contact_force_log && FLAGS_legacy_log) {
           std::cout << "[t=" << t << "] relin  cube_pinned=" << cube_pinned
                     << "  |A|=" << lcs_new.A()[0].norm()
                     << "  |B|=" << lcs_new.B()[0].norm()
@@ -2184,7 +2743,11 @@ int DoMain(int argc, char* argv[]) {
       // up in the osc executor below); the other three have already been
       // at their triangle positions since the reach phase, so nothing
       // moves for them at trigger time.
-      if (FLAGS_release_middle && !finger_released &&
+      // !FLAGS_gait: --gait turns --release_middle on for its topology but
+      // replaces this one-shot chain with its own repeatable cycle. Gating
+      // the trigger alone disables the whole chain, since every later block
+      // (and the executor's overrides) keys off finger_released/_rejoined.
+      if (FLAGS_release_middle && !FLAGS_gait && !finger_released &&
           t_ref_now >= FLAGS_release_middle_t) {
         if (FLAGS_release_finger == "middle") {
           rebuild_c3({0, 2, 3}, x_current);
@@ -2267,12 +2830,16 @@ int DoMain(int argc, char* argv[]) {
           // Ring's OLD position is baked into x_des_base (C3's own cost
           // target, set once at the original handoff and otherwise left
           // alone across rebuilds) and into q_contact_live/_end (the
-          // --track_cube_contact executor target — resolve_contact_ik
-          // never touches ring's segment, still 3-point-only). Left
-          // unrefreshed, both pull ring straight back to its old point
-          // the instant the osc executor's override below stops
-          // overriding it (once finger_rejoined) — update all three to
-          // the new point FIRST, before rebuild_c3 reads x_des_base.
+          // --track_cube_contact executor target). Left unrefreshed, both
+          // pull ring straight back to its old point the instant the osc
+          // executor's override below stops overriding it (once
+          // finger_rejoined) — update all three to the new point FIRST,
+          // before rebuild_c3 reads x_des_base. footprint_C[3] is the
+          // fourth: resolve_contact_ik now DOES track ring, so without it
+          // the next track-IK solve would overwrite the other three.
+          footprint_C[3] = Vector3d(FLAGS_release_middle_tri_spread,
+                                    -(h_cube - FLAGS_penetration_index_middle),
+                                    middle_z);
           x_des_base.segment(finger_start[3], 4) =
               q_regrasp_ring.segment(finger_start[3], 4);
           q_contact_live.segment(finger_start[3], 4) =
@@ -2339,6 +2906,10 @@ int DoMain(int argc, char* argv[]) {
         }
         if (middle_touch_latched &&
             t >= middle_touch_time + FLAGS_regrasp_settle_time) {
+          // Replaces the old middle_z_live patch inside resolve_contact_ik.
+          footprint_C[1] = Vector3d(middle_x,
+                                    -(h_cube - FLAGS_penetration_index_middle),
+                                    FLAGS_release_middle_tri_base_z);
           x_des_base.segment(finger_start[1], 4) =
               q_regrasp_middle.segment(finger_start[1], 4);
           q_contact_live.segment(finger_start[1], 4) =
@@ -2403,6 +2974,9 @@ int DoMain(int argc, char* argv[]) {
         }
         if (index_touch_latched &&
             t >= index_touch_time + FLAGS_regrasp_settle_time) {
+          // Replaces the old index_z_live patch inside resolve_contact_ik.
+          footprint_C[0] = Vector3d(
+              index_x, -(h_cube - FLAGS_penetration_index_middle), middle_z);
           x_des_base.segment(finger_start[0], 4) =
               q_regrasp_index.segment(finger_start[0], 4);
           q_contact_live.segment(finger_start[0], 4) =
@@ -2414,6 +2988,318 @@ int DoMain(int argc, char* argv[]) {
           std::cout << "[t=" << t << "] release_middle: index rejoined "
                        "C3, solving 4 contacts (index, middle, thumb, "
                        "ring)\n";
+        }
+      }
+
+      // ── --gait: rotate, walk the three -Y fingers back, repeat ──────────
+      // One cycle = rotate the cube by --gait_delta with all 4 contacts
+      // holding, then regrasp ring, middle and index in turn (thumb is the
+      // pivot and never releases). Each regrasp returns its fingertip to the
+      // world point it occupied before the rotation, which resets the travel
+      // the rotation consumed and leaves the hand in exactly the
+      // configuration the next cycle starts from — so the cycle repeats
+      // unchanged and the cube's angle is the only thing that accumulates.
+      if (FLAGS_gait && !cube_pinned && gait_state != kGaitDone) {
+        // relay only: ring takes no part in the reach phase, so on the first
+        // gait tick it is still wherever the 3-point grasp IK happened to
+        // leave it. Solve its parked pose once, up front, so it is held
+        // clear of the cube from the very first rotation rather than
+        // floating unconstrained until the first disengage sets it.
+        if (FLAGS_gait_scheme == "relay" && q_ring_parked.size() != n_hand_q) {
+          bool park_ok = false;
+          q_ring_parked = solve_leg_ik(
+              CubePoseFromPositions(sim_plant.GetPositions(plant_ctx, sim_cube)),
+              3, relay_ring_park_C, &park_ok);
+          std::cout << "[t=" << t << "] relay: ring parked "
+                    << FLAGS_relay_ring_retract * 1e3 << " mm off the face"
+                    << (park_ok ? "" : " (IK INFEASIBLE)") << "\n";
+        }
+        const int f = leg_plan[gait_leg].first;
+        const LegKind leg_kind = leg_plan[gait_leg].second;
+
+        if (gait_state == kGaitRotate) {
+          // Wait out the pin-release transient before the first rotation.
+          // Releasing the pin injects ~2 deg of off-axis wobble that decays
+          // over about a second; starting to turn into it would fold that
+          // disturbance into cycle 1. Later cycles don't need the guard —
+          // --gait_hold_time already ran after the previous rotation.
+          const bool gait_ready =
+              gait_cycle > 0 || t_ref_now >= FLAGS_gait_hold_time;
+          if (!gait_entered && gait_ready) {
+            // Absolute angles, not deltas applied to wherever the cube got
+            // to — so the ~1.2deg per-cycle tracking shortfall stays a fixed
+            // lag instead of compounding into the next cycle's target.
+            gait_theta_start = gait_cycle * FLAGS_gait_delta;
+            gait_theta_target = (gait_cycle + 1) * FLAGS_gait_delta;
+            gait_rotate_t0 = t_ref_now;
+            gait_entered = true;
+            // Rotation runs on rotate_fingers — four for triangle, three for
+            // relay. Normally the previous leg already left C3 there, so
+            // this is a no-op; it matters on the very first cycle and as a
+            // guard that a scheme never rotates against the wrong model.
+            if (active_fingers != rotate_fingers)
+              rebuild_c3(rotate_fingers, x_current);
+            std::cout << "[t=" << t << "] gait cycle " << (gait_cycle + 1)
+                      << "/" << FLAGS_gait_cycles << ": rotating "
+                      << gait_theta_start * 180.0 / M_PI << " -> "
+                      << gait_theta_target * 180.0 / M_PI << " deg\n";
+          }
+          // gait_entered, not just the clock: while the guard above is still
+          // waiting, gait_rotate_t0 holds the PREVIOUS cycle's start (or 0),
+          // so an unguarded test here could satisfy itself and skip straight
+          // to the regrasps without ever having commanded a rotation.
+          if (gait_entered &&
+              t_ref_now >= gait_rotate_t0 + FLAGS_gait_rotate_duration +
+                               FLAGS_gait_hold_time) {
+            gait_state = kGaitMove;
+            gait_leg = 0;
+            gait_entered = false;
+          }
+        } else if (gait_state == kGaitMove) {
+          // Settle between legs. A leg ends by rebuilding C3 with its finger
+          // added back; starting the next one immediately would rebuild again
+          // a millisecond later with a different finger removed, both times
+          // linearizing a cube still ringing from the landing. Wait it out
+          // with the current grasp intact — nothing needs to move.
+          if (!gait_entered && t < gait_leg_done_t + FLAGS_gait_leg_gap) {
+            // holding
+          } else if (!gait_entered) {
+            // A leg that starts from contact must leave the LCS first: the
+            // grasp really is one contact lighter while the finger is in the
+            // air, so C3 has to solve that problem instead of planning with
+            // a contact that no longer exists. An ENGAGE leg is the
+            // exception — its finger is already off the cube and absent from
+            // the LCS, so there is nothing to remove.
+            if (leg_kind != kLegEngage) {
+              std::vector<int> remaining;
+              for (int i : active_fingers)
+                if (i != f) remaining.push_back(i);
+              rebuild_c3(remaining, x_current);
+            }
+            // Where this leg is headed, in the CUBE's frame.
+            //   REGRASP   — the footprint walks back one --gait_delta, so
+            //               the fingertip returns to the world point it
+            //               occupied before the rotation (or, in realign, to
+            //               the finger's own original vertex).
+            //   ENGAGE    — ring's holding point, the face centre.
+            //   DISENGAGE — ring's parking point, clear of the face.
+            const RigidTransform<double> X_WC_leg = CubePoseFromPositions(
+                sim_plant.GetPositions(plant_ctx, sim_cube));
+            if (leg_kind == kLegEngage) {
+              gait_leg_target_C = relay_ring_hold_C;
+            } else if (leg_kind == kLegDisengage) {
+              gait_leg_target_C = relay_ring_park_C;
+            } else {
+              gait_leg_target_C =
+                  gait_in_realign ? footprint_C0[f]
+                                  : Vector3d(R_gait_back * footprint_C[f]);
+            }
+            gait_leg_target_pt = X_WC_leg * gait_leg_target_C;
+            bool dest_ok = false, mid_ok = false;
+            gait_leg_q_dest =
+                solve_leg_ik(X_WC_leg, f, gait_leg_target_C, &dest_ok);
+            // Waypoint. A REGRASP arcs: halfway between the old and new
+            // footprints, pushed out past the -Y face so the tip travels
+            // around the face rather than dragging across it. ENGAGE and
+            // DISENGAGE instead go straight out to the parking depth above
+            // the holding point, so ring approaches and leaves along the
+            // face normal rather than sweeping across the face.
+            Vector3d mid_C;
+            if (leg_kind == kLegRegrasp) {
+              mid_C = 0.5 * (footprint_C[f] + gait_leg_target_C);
+              mid_C.y() = -(h_cube + FLAGS_regrasp_arc_clearance);
+            } else {
+              mid_C = relay_ring_park_C;
+            }
+            const VectorXd q_leg_mid =
+                solve_leg_ik(X_WC_leg, f, mid_C, &mid_ok);
+            if (!dest_ok || !mid_ok) {
+              // Say so loudly: an unreachable destination means the finger
+              // flies as close as it can, never contacts, and the leg hangs.
+              std::cout << "  [gait] WARNING finger " << f << " leg IK "
+                        << (dest_ok ? "" : "destination ")
+                        << (mid_ok ? "" : "waypoint ")
+                        << "INFEASIBLE — this leg will not latch\n";
+            }
+            std::vector<MatrixXd> pts{x_current.head(n_hand_q), q_leg_mid,
+                                      gait_leg_q_dest};
+            gait_traj = PiecewisePolynomial<double>::CubicShapePreserving(
+                {0.0, 0.5 * FLAGS_regrasp_duration, FLAGS_regrasp_duration},
+                pts, true);
+            gait_traj_t0 = t;
+            gait_left_surface = false;
+            gait_touch_latched = false;
+            gait_entered = true;
+            const char* kind_word = leg_kind == kLegEngage    ? "engaging"
+                                    : leg_kind == kLegDisengage ? "parking"
+                                                                : "releasing";
+            std::cout << "[t=" << t << "] gait"
+                      << (gait_in_realign ? " realign" : "") << ": "
+                      << kind_word << " finger " << f << ", C3 now solving "
+                      << active_fingers.size() << " contacts\n";
+          }
+          // ── Seek: re-aim at the cube where it actually is now ───────────
+          // The arc spline is open-loop, aimed at the pose measured when the
+          // leg started. That is fine for clearing the face but not for
+          // touching down, because the cube keeps moving during the leg —
+          // and moves FASTEST here, since lifting a finger drops the grasp
+          // to three contacts. Measured drift reaches ~18 mm and climbs, so
+          // a finger flown to a stale point arrives beside the surface, never
+          // contacts, and the leg waits forever.
+          //
+          // Once the arc has played out, re-solve the destination against the
+          // live cube pose so the fingertip closes on the real surface. Also
+          // refreshes the touch check's target, which is otherwise comparing
+          // against a point the cube has left. Rate is
+          // --gait_seek_period_steps; a full 4-point IK per update makes it
+          // the gait's dominant per-tick cost.
+          if (gait_entered && t - gait_traj_t0 > FLAGS_regrasp_duration &&
+              c3_iter % std::max(1, FLAGS_gait_seek_period_steps) == 0) {
+            const RigidTransform<double> X_WC_seek = CubePoseFromPositions(
+                sim_plant.GetPositions(plant_ctx, sim_cube));
+            bool seek_ok = false;
+            const VectorXd q_seek =
+                solve_leg_ik(X_WC_seek, f, gait_leg_target_C, &seek_ok);
+            if (seek_ok) {
+              gait_leg_q_dest = q_seek;
+              gait_leg_target_pt = X_WC_seek * gait_leg_target_C;
+            }
+          }
+
+          // A DISENGAGE leg ends by NOT touching, so there is nothing to
+          // detect — it is done once the finger has flown clear and settled.
+          // Latching it here lets the shared completion block below run
+          // unchanged; the branch there skips the parts that assume contact.
+          if (gait_entered && leg_kind == kLegDisengage && !gait_touch_latched &&
+              t - gait_traj_t0 >= FLAGS_regrasp_duration) {
+            gait_touch_latched = true;
+            gait_touch_time = t;
+          }
+
+          // Re-contact detection, same two guards the --release_finger
+          // chain needs: gait_left_surface debounces the just-broken OLD
+          // contact still reading true for a tick or two, and the
+          // position check requires f to be AT its return point rather
+          // than merely touching the cube somewhere en route.
+          if (!gait_left_surface && !touching[f]) gait_left_surface = true;
+          const Vector3d tip_pos =
+              sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                            sim_plant.get_body(tip_bodies[f])) *
+              (f == 3 ? ring_surface_offset : tip_surface_pt);
+          const bool near_target =
+              (tip_pos - gait_leg_target_pt).norm() < FLAGS_regrasp_touch_tol;
+          // A leg that cannot land must not hang the run silently. Report
+          // what it was doing and how close it got, then stop the gait —
+          // the grasp is left intact at four contacts.
+          if (gait_entered && leg_kind != kLegDisengage && !gait_touch_latched &&
+              t - gait_traj_t0 > FLAGS_regrasp_duration + FLAGS_gait_leg_timeout) {
+            std::cout << "[t=" << t << "] gait: finger " << f
+                      << " FAILED to re-contact within "
+                      << FLAGS_gait_leg_timeout << " s of arriving — tip is "
+                      << (tip_pos - gait_leg_target_pt).norm() * 1e3
+                      << " mm from target, touching=" << touching[f]
+                      << ". Stopping the gait.\n";
+            // active_fingers is left exactly as it is. The finger really is
+            // off the cube, so the reduced contact set is the honest model —
+            // adding it back would have C3 planning against a contact that
+            // failed to form, which is the mistake this whole gait avoids.
+            gait_state = kGaitDone;
+          }
+          // gait_entered: during the --gait_leg_gap hold this leg has not
+          // started, so gait_traj_t0 and gait_leg_target_pt still belong to
+          // the PREVIOUS leg. Latching off those would complete a leg that
+          // never ran, on stale targets.
+          if (gait_entered && gait_left_surface && !gait_touch_latched &&
+              touching[f] && near_target) {
+            gait_touch_latched = true;
+            gait_touch_time = t;
+            std::cout << "[t=" << t << "] gait: finger " << f
+                      << " re-contacted, settling "
+                      << FLAGS_regrasp_settle_time << " s\n";
+          }
+          // gait_entered: without it, a leg that has finished leaves
+          // gait_touch_latched set (it is only cleared in a leg's ENTRY), so
+          // during the --gait_leg_gap hold — when entry has not run yet —
+          // this fires again on the previous leg's latch and completes the
+          // NEXT leg instantly. That cascaded through every remaining leg at
+          // one per tick, finishing a whole cycle's regrasps in 4 ms without
+          // a finger moving.
+          if (gait_entered && gait_touch_latched &&
+              t >= gait_touch_time + FLAGS_regrasp_settle_time) {
+            // The fingertip is back at its original WORLD point, so in the
+            // cube's frame its footprint has rotated backwards by one
+            // --gait_delta. Everything that describes where f should be —
+            // the tracking IK's footprint, C3's cost target, and the
+            // executor's live reference — has to move together, or the
+            // next track-IK solve drags f straight back off its new point.
+            // A gait leg's footprint walks backwards by one --gait_delta
+            // (the fingertip returned to the world point it started at); a
+            // realign leg lands on the finger's ORIGINAL cube-frame vertex
+            // outright. Either way the tracking IK's footprint, C3's cost
+            // target and the executor's live reference must move together,
+            // or the next track-IK solve drags f off its new point.
+            const VectorXd& q_dest = gait_leg_q_dest;
+            footprint_C[f] = gait_leg_target_C;
+            x_des_base.segment(finger_start[f], 4) =
+                q_dest.segment(finger_start[f], 4);
+            q_contact_live.segment(finger_start[f], 4) =
+                q_dest.segment(finger_start[f], 4);
+            q_contact_live_end.segment(finger_start[f], 4) =
+                q_dest.segment(finger_start[f], 4);
+            if (leg_kind == kLegDisengage) {
+              // Ring is off the cube now. C3 was already rebuilt without it
+              // at leg entry, so nothing to add back — but the tracking IK
+              // has to stop solving for it, and the executor needs somewhere
+              // to hold it while it waits out the next rotation.
+              ring_engaged = false;
+              q_ring_parked = q_dest;
+            } else {
+              std::vector<int> joined = active_fingers;
+              if (std::find(joined.begin(), joined.end(), f) == joined.end())
+                joined.push_back(f);
+              std::sort(joined.begin(), joined.end());
+              rebuild_c3(joined, x_current);
+              if (leg_kind == kLegEngage) ring_engaged = true;
+            }
+            std::cout << "[t=" << t << "] gait"
+                      << (gait_in_realign ? " realign" : "") << ": finger "
+                      << f
+                      << (leg_kind == kLegDisengage ? " parked, C3 solving "
+                                                    : " joined C3, solving ")
+                      << active_fingers.size() << " contacts\n";
+            gait_entered = false;
+            gait_touch_latched = false;   // cleared here as well as at entry
+            gait_left_surface = false;
+            gait_leg_done_t = t;
+            ++gait_leg;
+            if (gait_leg >= static_cast<int>(leg_plan.size())) {
+              gait_leg = 0;
+              if (gait_in_realign) {
+                // Realignment is the last thing the gait does.
+                gait_state = kGaitDone;
+                std::cout << "[t=" << t
+                          << "] gait: DONE — triangle realigned, base parallel "
+                             "to the cube's base edge\n";
+              } else if (++gait_cycle >= FLAGS_gait_cycles) {
+                std::cout << "[t=" << t << "] gait: " << gait_cycle
+                          << " cycles complete, commanded total "
+                          << gait_cycle * FLAGS_gait_delta * 180.0 / M_PI
+                          << " deg\n";
+                if (FLAGS_gait_realign) {
+                  // Straight into the realign legs: same kGaitMove state, no
+                  // rotation in between, cube held at its final angle.
+                  gait_in_realign = true;
+                  std::cout << "[t=" << t
+                            << "] gait: realigning fingers to their original "
+                               "cube-frame vertices\n";
+                } else {
+                  gait_state = kGaitDone;
+                }
+              } else {
+                gait_state = kGaitRotate;
+              }
+            }
+          }
         }
       }
 
@@ -2449,20 +3335,22 @@ int DoMain(int argc, char* argv[]) {
         const std::pair<RigidTransform<double>, Vector3d> pose_end =
             cube_target_pose(t_ref_end);
         q_contact_live =
-            resolve_contact_ik(clamp_ik_lead(pose_now.first, X_WC_meas));
+            resolve_contact_ik(clamp_ik_lead(pose_now.first, X_WC_meas), t);
         q_contact_live_end =
-            resolve_contact_ik(clamp_ik_lead(pose_end.first, X_WC_meas));
+            resolve_contact_ik(clamp_ik_lead(pose_end.first, X_WC_meas), t);
         const double ik_ms = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - ik_t0)
                                  .count();
         // Save/restore stream format — a bare setprecision here leaks into
         // every later print (the "dt=0.0" / "|A|=70.3" corruption).
-        const auto cout_flags = std::cout.flags();
-        const auto cout_prec = std::cout.precision();
-        std::cout << "  [track IK] " << std::fixed << std::setprecision(1)
-                  << ik_ms << " ms\n";
-        std::cout.flags(cout_flags);
-        std::cout.precision(cout_prec);
+        if (FLAGS_legacy_log) {
+          const auto cout_flags = std::cout.flags();
+          const auto cout_prec = std::cout.precision();
+          std::cout << "  [track IK] " << std::fixed << std::setprecision(1)
+                    << ik_ms << " ms\n";
+          std::cout.flags(cout_flags);
+          std::cout.precision(cout_prec);
+        }
       }
 
       // Update C3's desired-state trajectory. Two overrides on top of
@@ -2479,7 +3367,12 @@ int DoMain(int argc, char* argv[]) {
       //           n_pos+n_hand_v+3..+5. Horizon k=0..N filled with the
       //           look-ahead so C3 tracks ahead, not a lagged step.
       const bool track = (FLAGS_track_cube_contact && !cube_pinned);
-      const bool motion = (FLAGS_cube_motion_mode != "none" && !cube_pinned);
+      // --gait counts as motion regardless of --cube_motion_mode: it drives
+      // its own rotation reference through cube_target_pose, and without
+      // this C3's cube-pose cost would sit at the static x_des_base while
+      // only the fingers knew the cube was supposed to turn.
+      const bool motion =
+          ((FLAGS_cube_motion_mode != "none" || FLAGS_gait) && !cube_pinned);
       if (track || motion) {
         std::vector<VectorXd> x_des_traj(FLAGS_N + 1, x_des_base);
         if (track) {
@@ -2488,7 +3381,12 @@ int DoMain(int argc, char* argv[]) {
                 FLAGS_N > 0 ? static_cast<double>(k) / FLAGS_N : 0.0;
             const VectorXd q_k =
                 (1.0 - frac) * q_contact_live + frac * q_contact_live_end;
-            for (int i = 0; i < 3; ++i)
+            // n_grasp_fingers, not a hardcoded 3: with the 4-finger triangle
+            // ring is a real gripping contact and needs a per-knot reference
+            // like everyone else. Leaving it out left ring's segment frozen
+            // at x_des_base while the other three tracked a moving cube —
+            // the same stale-ring failure resolve_contact_ik had.
+            for (int i = 0; i < n_grasp_fingers; ++i)
               x_des_traj[k].segment(finger_start[i], 4) =
                   q_k.segment(finger_start[i], 4);
           }
@@ -2548,7 +3446,14 @@ int DoMain(int argc, char* argv[]) {
         const std::vector<VectorXd> lam_plan  = c3->GetForceSolution();
         const std::vector<VectorXd> u_plan    = c3->GetInputSolution();
 
-        if (FLAGS_contact_force_log) {
+        if (!FLAGS_legacy_log) {
+          // Default: none of the per-solve diagnostics below print at all.
+          // They are a wall of tables per C3 solve, and under --gait_scheme=
+          // relay the rotate phase's contact set is {index,middle,thumb} —
+          // the very set the full-table branch was written for — so relay
+          // triggers the most verbose path of all. --gait_log carries what
+          // the gait needs; --legacy_log brings these back.
+        } else if (FLAGS_contact_force_log) {
           // --contact_force_log suppresses both the C3 PLAN table and the
           // --plan_debug SOLVER DIAG output — see xplan_prev caching below.
         } else if (!is_original_3fingers) {
@@ -2998,6 +3903,44 @@ int DoMain(int argc, char* argv[]) {
           q_des.segment(finger_start[0], 4) =
               q_index_spline.segment(finger_start[0], 4);
         }
+        // --gait: whichever finger is currently walking back to its old
+        // world point is PD-driven along gait_traj rather than following C3
+        // or the tracking IK — same mechanism as the three blocks above,
+        // just re-armed once per finger per cycle instead of firing once.
+        // gait_entered gates it: on the tick a leg completes, gait_leg has
+        // already advanced but the next leg's trajectory has not been built
+        // yet, and without this guard the previous finger's path would be
+        // applied to the next finger for one tick.
+        // relay: ring spends every rotation off the cube. Nothing else
+        // commands it there — q_contact_live only carries the fingers the
+        // tracking IK solves for — so hold it at the parked configuration
+        // the disengage leg ended on, or it drifts back into the cube.
+        if (FLAGS_gait && !ring_engaged && q_ring_parked.size() == n_hand_q &&
+            !(gait_state == kGaitMove && gait_entered &&
+              leg_plan[gait_leg].first == 3)) {
+          q_des.segment(finger_start[3], 4) =
+              q_ring_parked.segment(finger_start[3], 4);
+        }
+        if (FLAGS_gait && gait_state == kGaitMove && gait_entered) {
+          const int gf = leg_plan[gait_leg].first;
+          const double tl = t - gait_traj_t0;
+          // Arc, then seek. While the spline is running the finger follows
+          // it, which is what lifts the tip clear of the face. Past its end
+          // the spline would just hold its final knot — the destination as
+          // it was aimed when the leg began — so switch to gait_leg_q_dest,
+          // which the seek block re-solves against the cube's live pose.
+          // Holding the stale knot instead is what left a finger parked
+          // beside a cube that had drifted out from under it.
+          if (tl >= gait_traj.end_time()) {
+            q_des.segment(finger_start[gf], 4) =
+                gait_leg_q_dest.segment(finger_start[gf], 4);
+          } else {
+            const VectorXd q_gait_spline =
+                gait_traj.value(std::max(tl, 0.0)).col(0);
+            q_des.segment(finger_start[gf], 4) =
+                q_gait_spline.segment(finger_start[gf], 4);
+          }
+        }
 
         // Gravity compensation: tau = -tau_gravity holds the hand static.
         const VectorXd tau_grav = sim_plant.GetVelocitiesFromArray(
@@ -3068,7 +4011,7 @@ int DoMain(int argc, char* argv[]) {
         // ±tau_max before the clamp below? If so, kp/kd values stop
         // mattering — the delivered torque is just the bound, every tick,
         // which looks exactly like a gain-independent limit cycle.
-        if (do_relin && !FLAGS_contact_force_log) {
+        if (do_relin && !FLAGS_contact_force_log && FLAGS_legacy_log) {
           const int n_sat = (tau_hand.array().abs() >= FLAGS_tau_max - 1e-6)
                                  .count();
           std::cout << "[t=" << t << "] tau(unclamped)  |tau|=" << tau_hand.norm()
@@ -3205,6 +4148,139 @@ int DoMain(int argc, char* argv[]) {
     const RigidTransform<double> X_WC_now = CubePoseFromPositions(
         sim_plant.GetPositions(plant_ctx, sim_cube));
     update_markers(X_WC_now);
+
+    // ── --gait_log: one line that says what the gait is doing ───────────
+    // Everything the legacy per-relin and per-solve prints buried. Reads the
+    // same measured cube pose the rotation diagnostic below uses, so the
+    // rotation numbers here need no second computation: cmd is what the
+    // schedule asked for, got is what the cube actually did about that axis,
+    // off is how far it tilted away from it.
+    if (FLAGS_gait && FLAGS_gait_log && phase == kC3 && t >= next_gait_log_t) {
+      next_gait_log_t = t + std::max(1e-3, FLAGS_gait_log_period);
+      const double t_ref_log = std::max(0.0, t - (handoff_t + 0.5));
+      const RigidTransform<double> X_cmd = cube_target_pose(t_ref_log).first;
+      const Eigen::AngleAxis<double> aa_cmd =
+          (X_WC0.rotation().inverse() * X_cmd.rotation()).ToAngleAxis();
+      const Eigen::AngleAxis<double> aa_meas =
+          (X_WC0.rotation().inverse() * X_WC_now.rotation()).ToAngleAxis();
+      const Vector3d axis_ref =
+          aa_cmd.angle() > 1e-6 ? aa_cmd.axis() : Vector3d::UnitY();
+      const Vector3d r_meas = aa_meas.angle() * aa_meas.axis();
+      const double deg = 180.0 / M_PI;
+      const double got_deg = r_meas.dot(axis_ref) * deg;
+      const double off_deg =
+          (r_meas - r_meas.dot(axis_ref) * axis_ref).norm() * deg;
+      const Vector3d drift_mm =
+          (X_WC_now.translation() - X_cmd.translation()) * 1e3;
+
+      const char* fname[4] = {"index", "middle", "thumb", "ring"};
+      const char* kname[3] = {"REGRASP", "ENGAGE", "DISENGAGE"};
+
+      const auto gl_flags = std::cout.flags();
+      const auto gl_prec = std::cout.precision();
+      std::cout << std::fixed << std::setprecision(2) << "[gait t=" << t
+                << "] ";
+      // Where we are in the plan.
+      if (gait_in_realign) {
+        std::cout << "REALIGN     ";
+      } else {
+        std::cout << "cyc " << (gait_cycle + 1) << "/" << FLAGS_gait_cycles
+                  << "  ";
+      }
+      // What the current state is doing. During a leg, name the finger, the
+      // kind of move, how far its tip still has to go, and whether it has
+      // found the surface yet — the three things that decide whether the leg
+      // latches or times out.
+      if (gait_state == kGaitRotate) {
+        std::cout << "ROTATE                          ";
+      } else if (gait_state == kGaitMove) {
+        const int lf = leg_plan[gait_leg].first;
+        const Vector3d tip =
+            sim_plant.EvalBodyPoseInWorld(plant_ctx,
+                                          sim_plant.get_body(tip_bodies[lf])) *
+            (lf == 3 ? ring_surface_offset : tip_surface_pt);
+        std::cout << "MOVE " << fname[lf] << " "
+                  << kname[static_cast<int>(leg_plan[gait_leg].second)]
+                  << "  d=" << std::setprecision(1)
+                  << (tip - gait_leg_target_pt).norm() * 1e3 << "mm"
+                  << " touch=" << (touching[lf] ? "yes" : "no ") << " ";
+      } else {
+        std::cout << "DONE                            ";
+      }
+      std::cout << std::setprecision(1) << " cmd=" << aa_cmd.angle() * deg
+                << " got=" << got_deg << " off=" << off_deg
+                << " drift=(" << drift_mm.x() << "," << drift_mm.y() << ","
+                << drift_mm.z() << ")mm  grip=[";
+      for (size_t k = 0; k < active_fingers.size(); ++k)
+        std::cout << fname[active_fingers[k]]
+                  << (k + 1 < active_fingers.size() ? "," : "");
+      std::cout << "]\n";
+      std::cout.flags(gl_flags);
+      std::cout.precision(gl_prec);
+    }
+
+    // ── --rot_log: cube orientation tracking ────────────────────────────
+    // Everything measured against X_WC0, the pose --cube_move_* offsets are
+    // defined from. Both rotations are reduced to angle-axis: for a pure
+    // --cube_move_pitch command the axis is the grasp axis (world/cube Y),
+    // so "meas" is signed by whether the measured axis points along +Y or
+    // -Y. off_axis is the angle between the measured and commanded axes —
+    // it separates "the cube turned less than asked" (a tracking/stiffness
+    // problem) from "the cube turned somewhere else" (contacts slipping),
+    // which a scalar angle error alone cannot distinguish.
+    if (FLAGS_rot_log && phase == kC3 && t >= next_rot_log_t) {
+      next_rot_log_t = t + std::max(1e-3, FLAGS_rot_log_period);
+      const double t_ref_log = std::max(0.0, t - (handoff_t + 0.5));
+      const RigidTransform<double> X_cmd = cube_target_pose(t_ref_log).first;
+
+      const Eigen::AngleAxis<double> aa_cmd =
+          (X_WC0.rotation().inverse() * X_cmd.rotation()).ToAngleAxis();
+      const Eigen::AngleAxis<double> aa_meas =
+          (X_WC0.rotation().inverse() * X_WC_now.rotation()).ToAngleAxis();
+      // Residual orientation error, commanded → measured. Independent of
+      // the axis bookkeeping above: this is the number that has to be
+      // small at the end of a maneuver.
+      const double err_deg =
+          (X_cmd.rotation().inverse() * X_WC_now.rotation())
+              .ToAngleAxis().angle() * 180.0 / M_PI;
+
+      // Decompose the measured rotation into its component ALONG the
+      // commanded axis (par — the rotation we asked for) and everything
+      // perpendicular to it (perp — parasitic tilt). Done on the rotation
+      // VECTOR (angle*axis), not by comparing axis directions: the axis of
+      // a near-zero rotation is numerically arbitrary, so an axis-vs-axis
+      // angle reads ~90deg off pure disturbance whenever the commanded
+      // rotation is small — which is every run's first second, and is not
+      // slip. par/perp stay interpretable at any magnitude (a 2deg wobble
+      // reads as perp=2deg, not as a 90deg "off axis" alarm). Rotation
+      // vectors don't compose linearly, so this is exact only for small
+      // perp; that is the regime where it matters.
+      const Vector3d axis_ref =
+          aa_cmd.angle() > 1e-6 ? aa_cmd.axis() : Vector3d::UnitY();
+      const Vector3d r_meas = aa_meas.angle() * aa_meas.axis();
+      const double par_deg = r_meas.dot(axis_ref) * 180.0 / M_PI;
+      const double perp_deg =
+          (r_meas - r_meas.dot(axis_ref) * axis_ref).norm() * 180.0 / M_PI;
+      const double cmd_deg = aa_cmd.angle() * 180.0 / M_PI;
+      // Per-axis, not a norm: the direction is the diagnosis. dz below zero
+      // is the cube SAGGING — friction losing to gravity, so the fix is grip
+      // force. dy is motion along the grasp axis, i.e. the cube squeezed out
+      // from between thumb and fingers by unbalanced normal forces, which is
+      // a force-distribution problem instead. A single magnitude cannot tell
+      // those apart, and they pull in opposite directions.
+      const Vector3d drift_mm =
+          (X_WC_now.translation() - X_cmd.translation()) * 1e3;
+
+      const auto rot_flags = std::cout.flags();
+      const auto rot_prec = std::cout.precision();
+      std::cout << "  [rot t=" << std::fixed << std::setprecision(2) << t
+                << "] cmd=" << std::setprecision(1) << cmd_deg
+                << "deg par=" << par_deg << "deg perp=" << perp_deg
+                << "deg err=" << err_deg << "deg drift=[" << drift_mm.x()
+                << "," << drift_mm.y() << "," << drift_mm.z() << "]mm\n";
+      std::cout.flags(rot_flags);
+      std::cout.precision(rot_prec);
+    }
   }
   return 0;
 }
