@@ -323,7 +323,12 @@ DEFINE_bool(plan_debug, false,
             "didn't actually satisfy its own equality constraint). "
             "(3) COMPLEMENTARITY RESIDUAL — per knot, feasibility of "
             "λ≥0 / η≥0 and the gap max|λ⊙η| (should be ~0 for a clean LCP "
-            "solution; large values mean a poorly-resolved contact mode).");
+              "solution; large values mean a poorly-resolved contact mode).");
+DEFINE_bool(c3_joint_plan_log, false,
+            "Print C3's complete planned hand-joint trajectory q[0..N] "
+            "after every solve, together with measured q and per-finger "
+            "q1-minus-measured norms. Intended to diagnose whether "
+            "--osc_target_source=c3 is producing sensible PD targets.");
 DEFINE_double(task_kp, 70.0, "Task-space position gain (fingertips).");
 DEFINE_double(task_kd, 0.0, "Task-space damping gain (fingertips).");
 DEFINE_string(exec_mode, "task_space",
@@ -346,20 +351,49 @@ DEFINE_string(exec_mode, "task_space",
               "is q_contact_live (live grasp-IK against the desired cube "
               "pose, Mods 2-4) if --track_cube_contact, else C3's own "
               "knot-1 hand config (x1).");
+DEFINE_string(osc_target_source, "auto",
+              "Joint-position target used by --exec_mode=osc: "
+              "'auto' preserves the legacy rule (live IK when "
+              "--track_cube_contact, otherwise C3 knot 1); 'ik' always uses "
+              "q_contact_live; 'c3' always uses C3's planned knot-1 hand "
+              "configuration. This is independent of --track_cube_contact, "
+              "so a gait can keep updating C3's moving grasp/cube reference "
+              "while the executor PD tracks C3 q1 instead of IK.");
 DEFINE_double(osc_kp, 300.0,
               "OSC joint-space position gain (Nm/rad), applied directly in "
               "torque space as kp*(q_des-q) — NOT an inverse-dynamics "
               "acceleration gain despite the units its name suggests; the "
               "current exec_mode=osc law never calls CalcInverseDynamics.");
 DEFINE_double(osc_kd, 15.0,
-              "OSC joint-space damping gain (Nm*s/rad), applied directly in "
-              "torque space as -kd*qdot (implicit qd_des=0 — pure damping, "
-              "same convention as the reach-phase --kd). Previously defined "
-              "but unused: exec_mode=osc was simplified to a bare P law after "
-              "an earlier inverse-dynamics/kd variant injected energy at pin "
-              "release and kicked the cube loose. This direct-torque form "
-              "skips M(q) entirely so it's architecturally gentler than that "
-              "one, but is still untested — A/B against --osc_kd=0.");
+              "OSC joint-space damping gain (Nm*s/rad), applied as "
+              "-kd*(qdot - qdot_des) — see --osc_qd_filter_tau for how "
+              "qdot_des is estimated.\n"
+              "CORRECTION to this flag's earlier doc: it used to be applied "
+              "as -kd*qdot with qdot_des IMPLICITLY zero, described as 'same "
+              "convention as the reach-phase --kd' — that was wrong, the "
+              "reach phase's PD already used a real qd_tgt from its spline "
+              "(FLAGS_kd * (qd_tgt - v_hand)), never implicit-zero. The "
+              "implicit-zero form here meant ANY --osc_kd > 0 fought the "
+              "fingers' own legitimate tracking motion during an active "
+              "gait rotation — it cannot tell 'moving because tracking "
+              "correctly' from 'moving because of an unwanted kick', and "
+              "opposed both equally. Measured: even --osc_kd=0.1 was enough "
+              "to weaken grip below what active rotation needs. Fixed by "
+              "giving this a real qdot_des instead of assuming zero.");
+DEFINE_double(osc_qd_filter_tau, 0.05,
+              "Time constant (s) for a low-pass filter on the finite-"
+              "differenced velocity of q_des (--osc_kd's qdot_des). A RAW "
+              "finite difference would inherit every discontinuity in "
+              "q_des directly — including --track_ik_period_steps' ~5ms "
+              "position-target jumps, so the 'velocity' estimate would "
+              "spike exactly on those, and --osc_kd would then read that "
+              "spike as 'not moving fast enough' and add torque right at "
+              "the jump — the opposite of gentle. This filter turns each "
+              "step into a smooth ramp over roughly this time constant "
+              "instead of an instant jump, so the derived qdot_des tracks "
+              "real, sustained motion (a rotating grasp, a gait leg's "
+              "spline) without inheriting the sampling artifacts of "
+              "whichever source is currently driving q_des.");
 DEFINE_bool(exec_grav_comp, false,
             "Post-release C3 executor: add explicit gravity compensation "
             "(tau_g) on top of s_u*u0. Default false: gravity is already "
@@ -373,6 +407,10 @@ DEFINE_double(force_floor, 0.0,
               "C3's force as-is (which collapses to 0 at release). Set "
               "≈alpha_m to keep the grip alive across the contact-gate hover "
               "band — the force-floor idea.");
+DEFINE_double(lambda_torque_scale, 1.0,
+              "Scale applied to the Jacobian-transpose torque generated from "
+              "C3's planned lambda forces. 1 = normal behavior; 0 disables "
+              "lambda-force feedforward while leaving position PD active.");
 DEFINE_bool(fk_target, false,
             "Fingertip POSITION target source. DEFAULT false = fixed grasp "
             "points on the upright reference cube X_WC0 (the geometric hold — "
@@ -429,7 +467,13 @@ DEFINE_int32(track_ik_period_steps, 40,
              "more expensive). Drop this on its own for smoother fine-"
              "manipulation tracking (see --relin_period_steps's docs on "
              "why a coarse update looks like a staircase during continuous "
-             "cube motion) without paying to relinearize that often too.");
+             "cube motion) without paying to relinearize that often too. "
+             "The OSC executor's q_des no longer reads that staircase raw: "
+             "it ramps linearly from one solve to the next over this same "
+             "period (q_contact_live_ramp_from/track_ik_ramp_t0), so this "
+             "flag also sets the ramp's duration — the actual fix for the "
+             "continuous, rotation-only jerk --jerk_log traced to this "
+             "cadence meeting a --osc_kd=0 (no velocity term) PD law.");
 DEFINE_double(osqp_eps, 1e-3,
               "OSQP convergence tolerance (eps_abs = eps_rel).");
 DEFINE_int32(admm_iter, 20,
@@ -635,7 +679,10 @@ DEFINE_bool(gait_log, true,
             "far that fingertip still is from its target and whether it is "
             "touching yet, the commanded vs achieved cube rotation, the "
             "off-axis tilt, the per-axis drift, and which fingers C3 is "
-            "currently modelling as gripping.");
+              "currently modelling as gripping.");
+DEFINE_bool(gait_handoff_debug, false,
+            "Print OSC position error, torque-component norms and per-finger "
+            "C3 normal forces every 5 ms around a relay ring handoff.");
 DEFINE_double(gait_log_period, 0.02,
               "Seconds between --gait_log lines. Was 0.25 — too coarse to "
               "see a fast transient (a jerk plays out in tens of ms), only "
@@ -765,6 +812,12 @@ DEFINE_double(gait_force_ramp_time, 0.2,
               "position. Spreads the same total force change over more "
               "time, which directly caps peak acceleration regardless of "
               "why the target changed.");
+DEFINE_double(gait_torque_ramp_time, 0.2,
+              "Seconds to cross-fade the full applied OSC PD torque vector "
+              "from its pre-handoff value to the live post-handoff value "
+              "when relay adds ring to C3. The four-point IK can change the "
+              "surviving fingers' joint targets too, especially index, so "
+              "smoothing ring alone is insufficient.");
 DEFINE_double(gait_leg_timeout, 3.0,
               "Seconds a regrasp leg may keep seeking after its arc has "
               "played out before the gait gives up and stops. Without it a "
@@ -852,6 +905,12 @@ int DoMain(int argc, char* argv[]) {
 
   if (FLAGS_release_finger != "middle" && FLAGS_release_finger != "ring") {
     throw std::runtime_error("--release_finger must be 'middle' or 'ring'.");
+  }
+  if (FLAGS_osc_target_source != "auto" &&
+      FLAGS_osc_target_source != "ik" &&
+      FLAGS_osc_target_source != "c3") {
+    throw std::runtime_error(
+        "--osc_target_source must be 'auto', 'ik', or 'c3'.");
   }
 
   // --gait reuses --release_middle's 4-finger triangle topology wholesale
@@ -1737,6 +1796,7 @@ int DoMain(int argc, char* argv[]) {
   // finger present from the very first rebuild reads as "joined forever
   // ago" (fraction 1) rather than triggering a ramp for no reason.
   std::array<double, 4> finger_joined_t{-1e9, -1e9, -1e9, -1e9};
+  std::array<double, 4> force_crossfade_from{0.0, 0.0, 0.0, 0.0};
   bool finger_released = false;  // one-shot latch for --release_middle
   // --release_finger=ring regrasp bookkeeping (see q_regrasp_ring above).
   // ring_left_surface debounces: touching[3] can still read true for a
@@ -1830,6 +1890,9 @@ int DoMain(int argc, char* argv[]) {
   // resolve_contact_ik, which is its other reader, so the ring-touch-point
   // marker can read it too.
   bool ring_engaged = (n_grasp_fingers == 4);
+  bool hand_tau_crossfade_active = false;
+  VectorXd hand_tau_crossfade_from = VectorXd::Zero(n_hand);
+  VectorXd last_tau_pd = VectorXd::Zero(n_hand);
   double gait_theta_start = 0.0;   // rad, rotation at the ramp's start
   double gait_theta_target = 0.0;  // rad, rotation at the ramp's end
   double gait_rotate_t0 = 0.0;     // t_ref at which the current ramp began
@@ -2062,6 +2125,15 @@ int DoMain(int argc, char* argv[]) {
   // 25Hz/200Hz solve cadence" from "this is something else entirely."
   double last_relin_t = -1e9;
   double last_solve_t = -1e9;
+  // --osc_kd's velocity feedforward: q_des from the PREVIOUS tick (to
+  // finite-difference), the filtered qdot_des estimate itself, and whether
+  // a previous sample exists yet. See --osc_qd_filter_tau's doc for why
+  // this is filtered rather than a raw finite difference.
+  VectorXd q_des_prev = VectorXd::Zero(n_hand);
+  VectorXd qd_des_filt = VectorXd::Zero(n_hand);
+  bool qd_des_filt_valid = false;
+  VectorXd tau_hand_prev_debug = VectorXd::Zero(n_hand);
+  bool tau_hand_prev_debug_valid = false;
 
   // 4th entry (ring) only ever latches when n_grasp_fingers==4
   // (--release_middle); the loops below are bounded by n_grasp_fingers, not
@@ -2140,16 +2212,35 @@ int DoMain(int argc, char* argv[]) {
   // are read via closure, unchanged by which fingers are active.
   auto rebuild_c3 = [&](const std::vector<int>& fingers,
                         const VectorXd& x_now, double t_now) {
-    // Stamp EVERY finger in the new set, not just the one that's new to it.
-    // First cut only ramped the newly-joined finger and left the others at
-    // ramp=1 (their finger_joined_t was ancient) — measured effect: ring's
-    // own step got smaller, but index/middle/thumb still snapped straight
-    // to whatever the fresh contact-count solve gave them, every ~40ms
-    // (--c3_period_steps) until it settled, which is the repeated smaller
-    // jerks that kept showing up through the same ~150ms window. The
-    // contact count changing shifts C3's WHOLE optimal grip distribution,
-    // not just the new arrival's share — so the whole grasp ramps together
-    // to the new allocation, survivors included.
+    // Snapshot the physical normal force actually applied by the old
+    // contact set. Surviving fingers cross-fade from this value; a newly
+    // added finger is absent here and therefore starts from zero.
+    std::array<double, 4> applied_before{0.0, 0.0, 0.0, 0.0};
+    if (c3) {
+      const std::vector<VectorXd> old_lam_plan = c3->GetForceSolution();
+      if (!old_lam_plan.empty()) {
+        const VectorXd old_lam0 =
+            old_lam_plan[0] / c3->GetLambdaScaling();
+        for (size_t af = 0; af < active_fingers.size(); ++af) {
+          const int finger = active_fingers[af];
+          double old_target = 0.0;
+          for (int idx : normal_groups[af]) old_target += old_lam0(idx);
+          const double old_ramp =
+              FLAGS_gait_force_ramp_time <= 0.0
+                  ? 1.0
+                  : std::clamp((t_now - finger_joined_t[finger]) /
+                                   FLAGS_gait_force_ramp_time,
+                               0.0, 1.0);
+          applied_before[finger] =
+              (1.0 - old_ramp) * force_crossfade_from[finger] +
+              old_ramp * old_target;
+        }
+      }
+    }
+    force_crossfade_from = applied_before;
+
+    // Stamp every finger in the new set: the whole optimum changes with the
+    // contact count, so survivors and the new arrival all ramp together.
     for (int f : fingers) finger_joined_t[f] = t_now;
     active_fingers = fingers;
     lcs_opts.num_contacts = static_cast<int>(fingers.size());
@@ -2306,6 +2397,20 @@ int DoMain(int argc, char* argv[]) {
   // the plan's per-knot hand-q reference between q_contact_live (k=0) and
   // this (k=N) instead of freezing the whole horizon at a single instant.
   VectorXd q_contact_live_end = q_contact;
+  // q_contact_live is a zero-order-hold staircase in TIME: it sits frozen
+  // for --track_ik_period_steps ticks, then jumps straight to the next IK
+  // solve in a single 1 ms tick. With a pure-kp OSC law (--osc_kd=0, no
+  // velocity term to absorb it) that jump lands on q_des whole, producing a
+  // position-error — hence torque — spike every update period, silent only
+  // once the commanded rotation plateaus and successive IK solves converge
+  // to the same point. This is the continuous, rotation-only jerk traced
+  // via --jerk_log. Fix: ramp q_des linearly from the last solve to the new
+  // one over the same period, instead of snapping — see its use at the
+  // --osc_kp/--osc_kd law below. ramp_from is the value the ramp departs
+  // from; ramp_t0 is when that departure started (both set only when a
+  // fresh solve actually lands, in the --track_cube_contact block below).
+  VectorXd q_contact_live_ramp_from = q_contact_live;
+  double track_ik_ramp_t0 = 0.0;
 
   // Dedicated scratch context for the moving-contact IK. Standalone so the
   // solve never disturbs the live sim context (plant_ctx) or the LCS context.
@@ -3448,7 +3553,11 @@ int DoMain(int argc, char* argv[]) {
                 joined.push_back(f);
               std::sort(joined.begin(), joined.end());
               rebuild_c3(joined, x_current, t);
-              if (leg_kind == kLegEngage) ring_engaged = true;
+              if (leg_kind == kLegEngage) {
+                ring_engaged = true;
+                hand_tau_crossfade_from = last_tau_pd;
+                hand_tau_crossfade_active = true;
+              }
             }
             std::cout << "[t=" << t << "] gait"
                       << (gait_in_realign ? " realign" : "") << ": finger "
@@ -3523,6 +3632,10 @@ int DoMain(int argc, char* argv[]) {
             cube_target_pose(t_ref_now);
         const std::pair<RigidTransform<double>, Vector3d> pose_end =
             cube_target_pose(t_ref_end);
+        // Capture the about-to-be-stale value as the ramp's departure point
+        // BEFORE overwriting it below — see q_contact_live_ramp_from's doc.
+        q_contact_live_ramp_from = q_contact_live;
+        track_ik_ramp_t0 = t;
         q_contact_live =
             resolve_contact_ik(clamp_ik_lead(pose_now.first, X_WC_meas), t);
         q_contact_live_end =
@@ -3635,6 +3748,27 @@ int DoMain(int argc, char* argv[]) {
         const std::vector<VectorXd> xplan     = c3->GetStateSolution();
         const std::vector<VectorXd> lam_plan  = c3->GetForceSolution();
         const std::vector<VectorXd> u_plan    = c3->GetInputSolution();
+
+        if (FLAGS_c3_joint_plan_log) {
+          const VectorXd q_meas = x_current.head(n_hand_q);
+          std::cout << "[C3 QPLAN t=" << t << "] q_meas=["
+                    << q_meas.transpose() << "]\n";
+          for (size_t k = 0; k < xplan.size(); ++k) {
+            const VectorXd qk = xplan[k].head(n_hand_q);
+            const VectorXd dq = qk - q_meas;
+            std::cout << "  q[" << k << "]=[" << qk.transpose()
+                      << "]  |qk-qmeas|=" << dq.norm()
+                      << " max=" << dq.cwiseAbs().maxCoeff();
+            if (k == 1) {
+              std::cout << "  q1err_by=[idx "
+                        << dq.segment(finger_start[0], 4).norm() << ", mid "
+                        << dq.segment(finger_start[1], 4).norm() << ", thu "
+                        << dq.segment(finger_start[2], 4).norm() << ", ring "
+                        << dq.segment(finger_start[3], 4).norm() << "]";
+            }
+            std::cout << "\n";
+          }
+        }
 
         if (!FLAGS_legacy_log) {
           // Default: none of the per-solve diagnostics below print at all.
@@ -4034,8 +4168,24 @@ int DoMain(int argc, char* argv[]) {
         const VectorXd q_hand = sim_plant.GetPositions(plant_ctx, sim_allegro);
         const std::vector<VectorXd> xplan_now = c3->GetStateSolution();
         VectorXd q_des = q_hand;
-        if (FLAGS_track_cube_contact) {
-          q_des = q_contact_live;
+        const bool use_ik_target =
+            FLAGS_osc_target_source == "ik" ||
+            (FLAGS_osc_target_source == "auto" &&
+             FLAGS_track_cube_contact);
+        if (use_ik_target) {
+          // Ramp, not snap — q_contact_live itself only ever steps (see its
+          // doc); reading it raw here is what fed a --track_ik_period_steps
+          // staircase straight into a pure-kp PD law. frac reaches 1 right
+          // as the NEXT do_track_ik fires (fixed period), at which point
+          // ramp_from/ramp_t0 are refreshed and the ramp restarts from
+          // wherever this one ended — continuous by construction, no
+          // residual jump at the handoff.
+          const double track_ik_period =
+              std::max(1, FLAGS_track_ik_period_steps) * control_dt;
+          const double ramp_frac = std::clamp(
+              (t - track_ik_ramp_t0) / track_ik_period, 0.0, 1.0);
+          q_des = (1.0 - ramp_frac) * q_contact_live_ramp_from +
+                  ramp_frac * q_contact_live;
         } else if (xplan_now.size() > 1) {
           q_des = xplan_now[1].head(n_hand_q);
         }
@@ -4136,13 +4286,46 @@ int DoMain(int argc, char* argv[]) {
         const VectorXd tau_grav = sim_plant.GetVelocitiesFromArray(
             sim_allegro, -sim_plant.CalcGravityGeneralizedForces(plant_ctx));
 
-        // Pure joint-space PD, implicit qd_des=0 (same "hold still" damping
-        // convention as the reach-phase PD) — NOT via CalcInverseDynamics/
-        // M(q), which was the earlier, heavier architecture that injected
-        // energy at pin release and kicked the cube loose. See --osc_kd's
-        // doc: this direct-torque damping is gentler than that but untested.
-        const VectorXd tau_pd =
-            FLAGS_osc_kp * (q_des - q_hand) - FLAGS_osc_kd * v_hand;
+        // qdot_des for --osc_kd: q_des is now FULLY finalized (every
+        // override above has run), so this is the one place per tick that
+        // sees its real, final value. Raw finite difference, then
+        // low-pass filtered — see --osc_qd_filter_tau's doc for why the
+        // raw version is unsafe (it would spike on every discrete q_des
+        // update, e.g. --track_ik_period_steps' ~5ms jumps, exactly
+        // reintroducing the kind of kick this is meant to remove).
+        VectorXd qd_des = VectorXd::Zero(n_hand);
+        if (qd_des_filt_valid) {
+          const VectorXd qd_des_raw = (q_des - q_des_prev) / control_dt;
+          const double alpha =
+              std::clamp(control_dt / std::max(1e-6, FLAGS_osc_qd_filter_tau),
+                        0.0, 1.0);
+          qd_des_filt += alpha * (qd_des_raw - qd_des_filt);
+          qd_des = qd_des_filt;
+        }
+        q_des_prev = q_des;
+        qd_des_filt_valid = true;
+
+        // Joint-space PD against a REAL velocity target — NOT via
+        // CalcInverseDynamics/M(q), which was the earlier, heavier
+        // architecture that injected energy at pin release and kicked the
+        // cube loose. See --osc_kd's doc: qdot_des used to be implicitly
+        // zero here, which fought the fingers' own legitimate tracking
+        // motion during any active rotation; qd_des above fixes that.
+        VectorXd tau_pd = FLAGS_osc_kp * (q_des - q_hand);
+        if (FLAGS_osc_kd != 0.0) {
+          tau_pd -= FLAGS_osc_kd * (v_hand - qd_des);
+        }
+        if (hand_tau_crossfade_active) {
+          const double blend =
+              FLAGS_gait_torque_ramp_time <= 0.0
+                  ? 1.0
+                  : std::clamp((t - finger_joined_t[3]) /
+                                   FLAGS_gait_torque_ramp_time,
+                               0.0, 1.0);
+          tau_pd = (1.0 - blend) * hand_tau_crossfade_from + blend * tau_pd;
+          if (blend >= 1.0) hand_tau_crossfade_active = false;
+        }
+        last_tau_pd = tau_pd;
 
         // Feedforward contact normal force from C3's own planned lambda_n
         // (physical units: GetForceSolution() / GetLambdaScaling()).
@@ -4165,10 +4348,13 @@ int DoMain(int argc, char* argv[]) {
         // position in active_fingers); finger is the physical index for
         // tip_bodies/press_C.
         VectorXd tau_force = VectorXd::Zero(n_hand_v);
+        std::array<double, 4> fn_target{0.0, 0.0, 0.0, 0.0};
+        std::array<double, 4> fn_applied{0.0, 0.0, 0.0, 0.0};
         for (size_t af = 0; af < active_fingers.size(); ++af) {
           const int finger = active_fingers[af];
           double fn = 0.0;
           for (int idx : normal_groups[af]) fn += lam0(idx);
+          fn_target[finger] = fn;
           // Ramp a newly-joined finger's grip in over --gait_force_ramp_time
           // instead of handing it C3's full, freshly-computed value the
           // instant it joins — see the flag doc for why (measured: the step
@@ -4176,10 +4362,15 @@ int DoMain(int argc, char* argv[]) {
           // not solver noise, so nothing removes it except spreading it out
           // in time). finger_joined_t defaults to -1e9, so a finger that has
           // been in since the very first rebuild reads ramp=1 always.
-          const double ramp = std::clamp(
-              (t - finger_joined_t[finger]) / FLAGS_gait_force_ramp_time, 0.0,
-              1.0);
-          fn *= ramp;
+          const double ramp =
+              FLAGS_gait_force_ramp_time <= 0.0
+                  ? 1.0
+                  : std::clamp((t - finger_joined_t[finger]) /
+                                   FLAGS_gait_force_ramp_time,
+                               0.0, 1.0);
+          fn = (1.0 - ramp) * force_crossfade_from[finger] + ramp * fn;
+          fn *= FLAGS_lambda_torque_scale;
+          fn_applied[finger] = fn;
           Eigen::MatrixXd J(3, sim_plant.num_velocities());
           sim_plant.CalcJacobianTranslationalVelocity(
               plant_ctx, drake::multibody::JacobianWrtVariable::kV,
@@ -4191,6 +4382,46 @@ int DoMain(int argc, char* argv[]) {
         }
 
         tau_hand = tau_grav + tau_pd + tau_force;
+        const bool handoff_debug_window =
+            FLAGS_gait && FLAGS_gait_scheme == "relay" &&
+            (gait_touch_latched ||
+             (ring_engaged && t <= finger_joined_t[3] + 0.25));
+        const bool first_handoff_ticks =
+            ring_engaged && t <= finger_joined_t[3] + 0.015;
+        if (FLAGS_gait_handoff_debug && handoff_debug_window &&
+            (first_handoff_ticks || c3_iter % 5 == 0)) {
+          const double ring_qerr =
+              (q_des.segment(finger_start[3], 4) -
+               q_hand.segment(finger_start[3], 4))
+                  .norm();
+          const double ring_tau_pd =
+              tau_pd.segment(finger_start[3], 4).norm();
+          VectorXd delta_tau = VectorXd::Zero(n_hand);
+          if (tau_hand_prev_debug_valid)
+            delta_tau = tau_hand - tau_hand_prev_debug;
+          std::cout << "[HANDOFF t=" << t << "] ring_qerr=" << ring_qerr
+                    << " ring_tau_pd=" << ring_tau_pd
+                    << " |tau_pd|=" << tau_pd.norm()
+                    << " |tau_force|=" << tau_force.norm()
+                    << " |dtau|=" << delta_tau.norm() << " pd_by=["
+                    << tau_pd.segment(finger_start[0], 4).norm() << ","
+                    << tau_pd.segment(finger_start[1], 4).norm() << ","
+                    << tau_pd.segment(finger_start[2], 4).norm() << ","
+                    << tau_pd.segment(finger_start[3], 4).norm()
+                    << "] dtau_by=["
+                    << delta_tau.segment(finger_start[0], 4).norm() << ","
+                    << delta_tau.segment(finger_start[1], 4).norm() << ","
+                    << delta_tau.segment(finger_start[2], 4).norm() << ","
+                    << delta_tau.segment(finger_start[3], 4).norm()
+                    << "] fn_target=["
+                    << fn_target[0] << "," << fn_target[1] << ","
+                    << fn_target[2] << "," << fn_target[3]
+                    << "] fn_applied=[" << fn_applied[0] << ","
+                    << fn_applied[1] << "," << fn_applied[2] << ","
+                    << fn_applied[3] << "]\n";
+        }
+        tau_hand_prev_debug = tau_hand;
+        tau_hand_prev_debug_valid = true;
       } else if (cube_pinned) {
         // Warm-up period: cube is still pinned, so C3's cost gradient on the
         // cube is near zero and it finds near-zero torques as "optimal". This
