@@ -636,8 +636,35 @@ DEFINE_bool(gait_log, true,
             "touching yet, the commanded vs achieved cube rotation, the "
             "off-axis tilt, the per-axis drift, and which fingers C3 is "
             "currently modelling as gripping.");
-DEFINE_double(gait_log_period, 0.25,
-              "Seconds between --gait_log lines.");
+DEFINE_double(gait_log_period, 0.02,
+              "Seconds between --gait_log lines. Was 0.25 — too coarse to "
+              "see a fast transient (a jerk plays out in tens of ms), only "
+              "enough for a slow trend. --jerk_log catches the exact tick "
+              "regardless of this; this just controls how much of the "
+              "surrounding context comes along for free without re-running "
+              "at an even tighter period by hand.");
+DEFINE_bool(jerk_log, true,
+            "Flag a sudden jump in the cube's linear acceleration, checked "
+            "every control tick — independent of --gait_log_period, so it "
+            "catches the exact tick something abrupt happens rather than "
+            "the nearest sampled one. Acceleration (one finite difference "
+            "of the cube's own SIMULATED velocity, a clean, directly "
+            "tracked signal), not literal jerk (which would need a second "
+            "difference of that, or three of position — amplifying "
+            "whatever numerical noise the contact solver already has). A "
+            "real step in commanded force or torque shows up as a step in "
+            "acceleration just as plainly. Prints once per rising edge "
+            "(armed again once it drops back below threshold), with full "
+            "context — gait state/leg, cmd/got/off/drift, current grip — "
+            "so the line reads standalone.");
+DEFINE_double(jerk_accel_thresh, 3.0,
+              "Cube linear-acceleration threshold (m/s^2) --jerk_log flags "
+              "on. Meant to sit above ordinary simulation/contact noise and "
+              "below what a real single-finger push can produce, so it "
+              "fires on a visible shake and stays quiet through normal "
+              "tracking. No run has characterized the actual noise floor "
+              "yet — tune from a run's own numbers if it fires on nothing "
+              "or never fires on a shake you can see.");
 DEFINE_bool(legacy_log, false,
             "Restore the old high-rate diagnostics: the per-relinearization "
             "'[t=..] relin |A|=..' line, the '[track IK] N ms' timing, and "
@@ -675,6 +702,69 @@ DEFINE_double(gait_leg_gap, 0.3,
               "returned kicked the cube further. This gap lets the impact die "
               "and gives C3 several clean solves at each contact set before "
               "the next change.");
+DEFINE_double(gait_touch_offset, 0.003,
+              "How far outside the true contact point (m) a leg's LAST "
+              "waypoint sits, for any leg that ends touching the cube "
+              "(ENGAGE, REGRASP — not DISENGAGE, which ends in free air). "
+              "This is the standoff the final, slow approach starts from: "
+              "the fast arc/transit gets the finger to within this distance "
+              "of the surface, then --gait_touch_duration governs a much "
+              "shorter, slower final leg from there into contact.");
+DEFINE_double(gait_touch_duration, 0.4,
+              "Seconds allotted to a contact-ending leg's FINAL segment — "
+              "from --gait_touch_offset outside the surface, to the true "
+              "contact point — added ON TOP of --regrasp_duration, which "
+              "still governs everything before that. Covering a few mm in "
+              "this many seconds is what makes touchdown gentle: the same "
+              "cubic spline mechanism as the rest of the leg, just given a "
+              "short distance and a deliberately generous slice of time, so "
+              "average speed over the last stretch is far below the "
+              "transit's. Was un-tunable before — touchdown speed was "
+              "whatever --osc_kp's PD delivered when it slammed into the "
+              "spline's frozen final knot.");
+DEFINE_int32(gait_rebuild_solve_passes, 3,
+             "Every rebuild_c3 call now solves the fresh object once before "
+             "anything reads it (closes the zero-force window a brand-new, "
+             "never-solved object would otherwise sit in). But that one "
+             "solve is still just --admm_iter iterations, COLD — the first "
+             "answer from a new object, replacing whatever a DIFFERENT, "
+             "well-settled object had been outputting for however long it "
+             "held the previous contact set. Measured: a real force step "
+             "at the handoff, ~10 m/s^2 cube acceleration, ringing for "
+             "~150ms before later solves settle it out.\n"
+             "This runs Solve() this many times in a row on the fresh "
+             "object BEFORE the executor ever sees it, with ADMM "
+             "warm-start-across-solves temporarily forced on so each pass "
+             "continues the previous one's consensus instead of resetting "
+             "to zero — --gait_rebuild_solve_passes x --admm_iter total "
+             "ADMM depth (45 at the defaults) landing on the FIRST value "
+             "anything reads, instead of --admm_iter alone. Warm-start is "
+             "restored to whatever --warm_start_admm says immediately "
+             "after, so nothing about this object's ONGOING, per-tick "
+             "behavior changes — only the one handoff instant gets more "
+             "solver depth, not the steady state.");
+DEFINE_double(gait_force_ramp_time, 0.2,
+              "Seconds over which a newly-joined finger's grip-force "
+              "feedforward ramps from 0 to full, instead of snapping to "
+              "C3's freshly-computed value the instant it joins "
+              "active_fingers.\n"
+              "Tried more ADMM depth on the rebuild first (see "
+              "--gait_rebuild_solve_passes) on the theory the step was an "
+              "under-converged solve. Measured: 45 iterations produced the "
+              "IDENTICAL downstream trajectory as 15 — same accel timing, "
+              "same settled state, tick for tick. That rules out solver "
+              "noise: the 15-iteration answer was already converged, so "
+              "the step is the CORRECT optimum changing, because 3 "
+              "contacts and 4 contacts genuinely have different optimal "
+              "grip distributions for the same state. No amount of solving "
+              "harder removes a step that isn't an error.\n"
+              "So: ramp the COMMANDED value instead, at the executor, the "
+              "same way --gait_touch_duration already stops the newly-"
+              "landed finger's PD target from slamming straight to contact "
+              "— this is the identical idea for force instead of "
+              "position. Spreads the same total force change over more "
+              "time, which directly caps peak acceleration regardless of "
+              "why the target changed.");
 DEFINE_double(gait_leg_timeout, 3.0,
               "Seconds a regrasp leg may keep seeking after its arc has "
               "played out before the gait gives up and stops. Without it a "
@@ -1641,6 +1731,12 @@ int DoMain(int argc, char* argv[]) {
   // names already in scope at the lambda's definition point, not ones
   // declared later in the function.
   std::vector<int> active_fingers{0, 1, 2};
+  // When each finger last JOINED active_fingers — stamped by rebuild_c3,
+  // read by the force-feedforward loop to ramp a newly-joined finger's grip
+  // in over --gait_force_ramp_time rather than snapping to it. -1e9 so a
+  // finger present from the very first rebuild reads as "joined forever
+  // ago" (fraction 1) rather than triggering a ramp for no reason.
+  std::array<double, 4> finger_joined_t{-1e9, -1e9, -1e9, -1e9};
   bool finger_released = false;  // one-shot latch for --release_middle
   // --release_finger=ring regrasp bookkeeping (see q_regrasp_ring above).
   // ring_left_surface debounces: touching[3] can still read true for a
@@ -1699,9 +1795,14 @@ int DoMain(int argc, char* argv[]) {
   //
   //   triangle: regrasp ring, middle, index in turn. Four contacts hold
   //             throughout; each leg drops to three while its finger moves.
-  //   relay:    ring comes DOWN to hold, index and middle step round one at
-  //             a time, then ring lifts OFF again so the next rotation runs
-  //             on index/middle/thumb alone.
+  //   relay:    ring comes DOWN to hold. Deliberately just the one leg for
+  //             now — index/middle stepping round and ring lifting back off
+  //             (kLegRegrasp / kLegDisengage) are cut from THIS plan while
+  //             the rotate + ring-touch-down slice is isolated and proven
+  //             graceful on its own; see git history (commit "Add relay
+  //             gait scheme") for the full four-leg cycle to restore once
+  //             this is solid. Run with --gait_cycles=1 --gait_realign=false
+  //             so nothing tries to chain past this single leg.
   //
   // Thumb (2) never appears: it sits at the face centre, on the rotation
   // axis, so it only spins in place — and it is the sole opposing contact,
@@ -1709,10 +1810,7 @@ int DoMain(int argc, char* argv[]) {
   enum LegKind { kLegRegrasp, kLegEngage, kLegDisengage };
   std::vector<std::pair<int, LegKind>> leg_plan;
   if (FLAGS_gait_scheme == "relay") {
-    leg_plan = {{3, kLegEngage},    // ring down to the face centre
-                {0, kLegRegrasp},   // index steps round
-                {1, kLegRegrasp},   // middle steps round
-                {3, kLegDisengage}};  // ring back off the cube
+    leg_plan = {{3, kLegEngage}};  // ring down to the face centre — only this
   } else {
     leg_plan = {{3, kLegRegrasp}, {1, kLegRegrasp}, {0, kLegRegrasp}};
   }
@@ -1950,6 +2048,20 @@ int DoMain(int argc, char* argv[]) {
   const double control_dt = 0.001;
   double next_rot_log_t = 0.0;  // --rot_log cadence, see the loop's tail
   double next_gait_log_t = 0.0;  // --gait_log cadence, same place
+  // --jerk_log: previous tick's cube linear velocity (to finite-difference
+  // into acceleration), whether that previous sample exists yet (skip the
+  // very first tick, no baseline to diff against), and whether the LAST
+  // check was already above threshold (so a sustained event prints once,
+  // on the rising edge, rather than every tick it stays high).
+  Vector3d v_cube_prev = Vector3d::Zero();
+  bool v_cube_prev_valid = false;
+  bool jerk_active = false;
+  // When the most recent REGULAR (not rebuild_c3's own) relin/solve landed —
+  // read by --jerk_log to show whether a jerk lines up with one of C3's
+  // normal per-tick updates or neither, discriminating "this is the ongoing
+  // 25Hz/200Hz solve cadence" from "this is something else entirely."
+  double last_relin_t = -1e9;
+  double last_solve_t = -1e9;
 
   // 4th entry (ring) only ever latches when n_grasp_fingers==4
   // (--release_middle); the loops below are bounded by n_grasp_fingers, not
@@ -2027,7 +2139,18 @@ int DoMain(int argc, char* argv[]) {
   // new object, not relinearizing the old one. x_des_base/Q_knot/c3_opts
   // are read via closure, unchanged by which fingers are active.
   auto rebuild_c3 = [&](const std::vector<int>& fingers,
-                        const VectorXd& x_now) {
+                        const VectorXd& x_now, double t_now) {
+    // Stamp EVERY finger in the new set, not just the one that's new to it.
+    // First cut only ramped the newly-joined finger and left the others at
+    // ramp=1 (their finger_joined_t was ancient) — measured effect: ring's
+    // own step got smaller, but index/middle/thumb still snapped straight
+    // to whatever the fresh contact-count solve gave them, every ~40ms
+    // (--c3_period_steps) until it settled, which is the repeated smaller
+    // jerks that kept showing up through the same ~150ms window. The
+    // contact count changing shifts C3's WHOLE optimal grip distribution,
+    // not just the new arrival's share — so the whole grasp ramps together
+    // to the new allocation, survivors included.
+    for (int f : fingers) finger_joined_t[f] = t_now;
     active_fingers = fingers;
     lcs_opts.num_contacts = static_cast<int>(fingers.size());
     n_lambda = LCSFactory::GetNumContactVariables(
@@ -2123,6 +2246,35 @@ int DoMain(int argc, char* argv[]) {
     osqp_opts.SetOption(oid, "eps_abs",             FLAGS_osqp_eps);
     osqp_opts.SetOption(oid, "eps_rel",             FLAGS_osqp_eps);
     c3->SetSolverOptions(osqp_opts);
+
+    // A fresh C3 object's force solution is zero-initialized in its own
+    // constructor (lambda_sol_ = Zero) and stays that way until Solve() is
+    // called on THIS object — which otherwise wouldn't happen until the
+    // next scheduled do_solve tick, up to --c3_period_steps (40 ticks,
+    // ~40ms) later. In between, every finger the executor reads grip force
+    // for gets zero (not "whatever it was," genuinely zero, since it's a
+    // different object with its own solution vector) — then snaps to a
+    // real value the instant the first real solve lands. Solving once,
+    // right here, closes that gap to ~0 ticks.
+    //
+    // But one solve is still just --admm_iter iterations, COLD — the fresh
+    // object's very first answer, handed off in place of whatever a
+    // DIFFERENT, well-settled object had been outputting. Measured: still
+    // a real force step at that handoff, ~10 m/s^2 of cube acceleration,
+    // ringing for ~150ms before later solves settle it. So: temporarily
+    // force warm-start-across-solves ON for just this object, and solve it
+    // --gait_rebuild_solve_passes times in a row — each pass, with that
+    // flag on, continues the PREVIOUS pass's ADMM consensus instead of
+    // resetting to zero (admm_state_valid_ only goes true once a solve has
+    // actually completed), so the LAST pass is landing on
+    // passes x admm_iter total depth, not admm_iter alone. Then restore
+    // whatever --warm_start_admm says for this object's ONGOING, per-tick
+    // solves — this is depth for the ONE handoff instant, not a standing
+    // change to how the object behaves afterward.
+    c3->SetAdmmWarmStartAcrossSolves(true);
+    for (int i = 0; i < std::max(1, FLAGS_gait_rebuild_solve_passes); ++i)
+      c3->Solve(x_now);
+    c3->SetAdmmWarmStartAcrossSolves(FLAGS_warm_start_admm);
   };
 
   // Profiling + C3-cadence bookkeeping (kC3 phase only). c3_iter counts control
@@ -2613,7 +2765,7 @@ int DoMain(int argc, char* argv[]) {
         rebuild_c3(
             FLAGS_release_middle ? std::vector<int>{0, 1, 2, 3}
                                  : std::vector<int>{0, 1, 2},
-            x_contact);
+            x_contact, t);
 
         // Diagnostic-only checks that the reach phase actually seated the
         // fingers correctly (not used to gate the handoff — see
@@ -2691,6 +2843,7 @@ int DoMain(int argc, char* argv[]) {
       ++c3_iter;
 
       if (do_relin) {
+        last_relin_t = t;
         const auto t0 = std::chrono::steady_clock::now();
         lcs_plant.SetPositionsAndVelocities(&lcs_ctx, x_current);
         LCS lcs_new = LCSFactory::LinearizePlantToLCS(
@@ -2750,12 +2903,12 @@ int DoMain(int argc, char* argv[]) {
       if (FLAGS_release_middle && !FLAGS_gait && !finger_released &&
           t_ref_now >= FLAGS_release_middle_t) {
         if (FLAGS_release_finger == "middle") {
-          rebuild_c3({0, 2, 3}, x_current);
+          rebuild_c3({0, 2, 3}, x_current, t);
           std::cout << "[t=" << t << "] release_middle: middle finger "
                        "retracted, C3 now solving 3 contacts "
                        "(index, thumb, ring)\n";
         } else {  // "ring"
-          rebuild_c3({0, 1, 2}, x_current);
+          rebuild_c3({0, 1, 2}, x_current, t);
           std::cout << "[t=" << t << "] release_middle: ring finger "
                        "retracted, C3 now solving 3 contacts "
                        "(index, middle, thumb)\n";
@@ -2846,7 +2999,7 @@ int DoMain(int argc, char* argv[]) {
               q_regrasp_ring.segment(finger_start[3], 4);
           q_contact_live_end.segment(finger_start[3], 4) =
               q_regrasp_ring.segment(finger_start[3], 4);
-          rebuild_c3({0, 1, 2, 3}, x_current);
+          rebuild_c3({0, 1, 2, 3}, x_current, t);
           finger_rejoined = true;
           std::cout << "[t=" << t << "] release_middle: ring rejoined C3, "
                        "solving 4 contacts (index, middle, thumb, ring)\n";
@@ -2859,7 +3012,7 @@ int DoMain(int argc, char* argv[]) {
       // triggered by finger_rejoined instead of --release_middle_t).
       if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
           finger_rejoined && !middle_loosened) {
-        rebuild_c3({0, 2, 3}, x_current);
+        rebuild_c3({0, 2, 3}, x_current, t);
         std::cout << "[t=" << t << "] release_middle: middle finger "
                      "loosened, C3 now solving 3 contacts "
                      "(index, thumb, ring)\n";
@@ -2916,7 +3069,7 @@ int DoMain(int argc, char* argv[]) {
               q_regrasp_middle.segment(finger_start[1], 4);
           q_contact_live_end.segment(finger_start[1], 4) =
               q_regrasp_middle.segment(finger_start[1], 4);
-          rebuild_c3({0, 1, 2, 3}, x_current);
+          rebuild_c3({0, 1, 2, 3}, x_current, t);
           middle_rejoined = true;
           std::cout << "[t=" << t << "] release_middle: middle rejoined "
                        "C3, solving 4 contacts (index, middle, thumb, "
@@ -2930,7 +3083,7 @@ int DoMain(int argc, char* argv[]) {
       // just triggered by middle_rejoined).
       if (FLAGS_release_middle && FLAGS_release_finger == "ring" &&
           middle_rejoined && !index_loosened) {
-        rebuild_c3({1, 2, 3}, x_current);
+        rebuild_c3({1, 2, 3}, x_current, t);
         std::cout << "[t=" << t << "] release_middle: index finger "
                      "loosened, C3 now solving 3 contacts "
                      "(middle, thumb, ring)\n";
@@ -2983,7 +3136,7 @@ int DoMain(int argc, char* argv[]) {
               q_regrasp_index.segment(finger_start[0], 4);
           q_contact_live_end.segment(finger_start[0], 4) =
               q_regrasp_index.segment(finger_start[0], 4);
-          rebuild_c3({0, 1, 2, 3}, x_current);
+          rebuild_c3({0, 1, 2, 3}, x_current, t);
           index_rejoined = true;
           std::cout << "[t=" << t << "] release_middle: index rejoined "
                        "C3, solving 4 contacts (index, middle, thumb, "
@@ -3038,7 +3191,7 @@ int DoMain(int argc, char* argv[]) {
             // this is a no-op; it matters on the very first cycle and as a
             // guard that a scheme never rotates against the wrong model.
             if (active_fingers != rotate_fingers)
-              rebuild_c3(rotate_fingers, x_current);
+              rebuild_c3(rotate_fingers, x_current, t);
             std::cout << "[t=" << t << "] gait cycle " << (gait_cycle + 1)
                       << "/" << FLAGS_gait_cycles << ": rotating "
                       << gait_theta_start * 180.0 / M_PI << " -> "
@@ -3074,7 +3227,7 @@ int DoMain(int argc, char* argv[]) {
               std::vector<int> remaining;
               for (int i : active_fingers)
                 if (i != f) remaining.push_back(i);
-              rebuild_c3(remaining, x_current);
+              rebuild_c3(remaining, x_current, t);
             }
             // Where this leg is headed, in the CUBE's frame.
             //   REGRASP   — the footprint walks back one --gait_delta, so
@@ -3121,11 +3274,35 @@ int DoMain(int argc, char* argv[]) {
                         << (mid_ok ? "" : "waypoint ")
                         << "INFEASIBLE — this leg will not latch\n";
             }
-            std::vector<MatrixXd> pts{x_current.head(n_hand_q), q_leg_mid,
-                                      gait_leg_q_dest};
+            // Gentle touchdown: for a leg that ends IN CONTACT (ENGAGE,
+            // REGRASP — not DISENGAGE, which ends in free air and has
+            // nothing to be gentle about), insert one more waypoint
+            // --gait_touch_offset outside the true target and give the
+            // short final hover-to-contact stretch its OWN time budget,
+            // --gait_touch_duration, on top of the arc/transit above. Same
+            // (x,z) as the target, y pulled outward by the offset — the
+            // same "add to h_cube to stand off, subtract to press in"
+            // convention mid_C and the park point already use. Distance is
+            // small (mm) and gets seconds, not a fraction of one, so the
+            // finger visibly slows for the last stretch rather than
+            // carrying its transit speed straight into the surface.
+            std::vector<double> knot_times{0.0, 0.5 * FLAGS_regrasp_duration,
+                                           FLAGS_regrasp_duration};
+            std::vector<MatrixXd> pts{x_current.head(n_hand_q), q_leg_mid};
+            if (leg_kind != kLegDisengage) {
+              Vector3d hover_C = gait_leg_target_C;
+              hover_C.y() = -(h_cube + FLAGS_gait_touch_offset);
+              bool hover_ok = false;
+              pts.push_back(solve_leg_ik(X_WC_leg, f, hover_C, &hover_ok));
+              if (!hover_ok)
+                std::cout << "  [gait] WARNING finger " << f
+                          << " touch-hover waypoint INFEASIBLE\n";
+              knot_times.push_back(FLAGS_regrasp_duration +
+                                   FLAGS_gait_touch_duration);
+            }
+            pts.push_back(gait_leg_q_dest);
             gait_traj = PiecewisePolynomial<double>::CubicShapePreserving(
-                {0.0, 0.5 * FLAGS_regrasp_duration, FLAGS_regrasp_duration},
-                pts, true);
+                knot_times, pts, true);
             gait_traj_t0 = t;
             gait_left_surface = false;
             gait_touch_latched = false;
@@ -3153,7 +3330,14 @@ int DoMain(int argc, char* argv[]) {
           // against a point the cube has left. Rate is
           // --gait_seek_period_steps; a full 4-point IK per update makes it
           // the gait's dominant per-tick cost.
-          if (gait_entered && t - gait_traj_t0 > FLAGS_regrasp_duration &&
+          // gait_traj.end_time(), not the bare --regrasp_duration: a
+          // contact-ending leg's spline now runs --gait_touch_duration
+          // PAST --regrasp_duration (the gentle final approach). Using the
+          // flag directly here would fire the seek mid-taper and again
+          // once the taper actually ends — end_time() is whichever is
+          // really the spline's last knot, DISENGAGE included (its spline
+          // is unchanged, so this is a no-op there).
+          if (gait_entered && t - gait_traj_t0 > gait_traj.end_time() &&
               c3_iter % std::max(1, FLAGS_gait_seek_period_steps) == 0) {
             const RigidTransform<double> X_WC_seek = CubePoseFromPositions(
                 sim_plant.GetPositions(plant_ctx, sim_cube));
@@ -3191,8 +3375,13 @@ int DoMain(int argc, char* argv[]) {
           // A leg that cannot land must not hang the run silently. Report
           // what it was doing and how close it got, then stop the gait —
           // the grasp is left intact at four contacts.
+          // gait_traj.end_time(), same reasoning as the seek trigger above:
+          // a contact-ending leg's spline now ends --gait_touch_duration
+          // later than --regrasp_duration alone. Without this the timeout
+          // clock would start ticking mid-taper and could fire on a
+          // touchdown that was simply going slowly on purpose.
           if (gait_entered && leg_kind != kLegDisengage && !gait_touch_latched &&
-              t - gait_traj_t0 > FLAGS_regrasp_duration + FLAGS_gait_leg_timeout) {
+              t - gait_traj_t0 > gait_traj.end_time() + FLAGS_gait_leg_timeout) {
             std::cout << "[t=" << t << "] gait: finger " << f
                       << " FAILED to re-contact within "
                       << FLAGS_gait_leg_timeout << " s of arriving — tip is "
@@ -3258,7 +3447,7 @@ int DoMain(int argc, char* argv[]) {
               if (std::find(joined.begin(), joined.end(), f) == joined.end())
                 joined.push_back(f);
               std::sort(joined.begin(), joined.end());
-              rebuild_c3(joined, x_current);
+              rebuild_c3(joined, x_current, t);
               if (leg_kind == kLegEngage) ring_engaged = true;
             }
             std::cout << "[t=" << t << "] gait"
@@ -3413,6 +3602,7 @@ int DoMain(int argc, char* argv[]) {
       }
 
       if (do_solve) {
+        last_solve_t = t;
         const auto t0 = std::chrono::steady_clock::now();
         c3->Solve(x_current);
         const double ms = std::chrono::duration<double, std::milli>(
@@ -3979,6 +4169,17 @@ int DoMain(int argc, char* argv[]) {
           const int finger = active_fingers[af];
           double fn = 0.0;
           for (int idx : normal_groups[af]) fn += lam0(idx);
+          // Ramp a newly-joined finger's grip in over --gait_force_ramp_time
+          // instead of handing it C3's full, freshly-computed value the
+          // instant it joins — see the flag doc for why (measured: the step
+          // is the correct optimum changing when the contact count changes,
+          // not solver noise, so nothing removes it except spreading it out
+          // in time). finger_joined_t defaults to -1e9, so a finger that has
+          // been in since the very first rebuild reads ramp=1 always.
+          const double ramp = std::clamp(
+              (t - finger_joined_t[finger]) / FLAGS_gait_force_ramp_time, 0.0,
+              1.0);
+          fn *= ramp;
           Eigen::MatrixXd J(3, sim_plant.num_velocities());
           sim_plant.CalcJacobianTranslationalVelocity(
               plant_ctx, drake::multibody::JacobianWrtVariable::kV,
@@ -4148,6 +4349,102 @@ int DoMain(int argc, char* argv[]) {
     const RigidTransform<double> X_WC_now = CubePoseFromPositions(
         sim_plant.GetPositions(plant_ctx, sim_cube));
     update_markers(X_WC_now);
+
+    // ── --jerk_log: flag a sudden cube-acceleration spike, every tick ────
+    // Deliberately every tick, not on --gait_log_period's cadence: the
+    // point is catching the EXACT tick something abrupt happens, not the
+    // nearest sampled one. See the flag doc for why this is acceleration
+    // (one finite difference of the cube's own simulated velocity) rather
+    // than literal jerk.
+    if (FLAGS_jerk_log && phase == kC3 && !cube_pinned) {
+      const Vector3d v_cube_now =
+          sim_plant.GetVelocities(plant_ctx, sim_cube).tail<3>();
+      if (v_cube_prev_valid) {
+        const Vector3d accel = (v_cube_now - v_cube_prev) / control_dt;
+        const double accel_norm = accel.norm();
+        if (accel_norm > FLAGS_jerk_accel_thresh) {
+          if (!jerk_active) {
+            jerk_active = true;
+            // Full context computed here, not borrowed from --gait_log
+            // (which runs on its own slower cadence and may not have fired
+            // this exact tick) — so this line means something read alone.
+            const double t_ref_log = std::max(0.0, t - (handoff_t + 0.5));
+            const RigidTransform<double> X_cmd =
+                cube_target_pose(t_ref_log).first;
+            const Eigen::AngleAxis<double> aa_cmd =
+                (X_WC0.rotation().inverse() * X_cmd.rotation()).ToAngleAxis();
+            const Eigen::AngleAxis<double> aa_meas =
+                (X_WC0.rotation().inverse() * X_WC_now.rotation())
+                    .ToAngleAxis();
+            const Vector3d axis_ref =
+                aa_cmd.angle() > 1e-6 ? aa_cmd.axis() : Vector3d::UnitY();
+            const Vector3d r_meas = aa_meas.angle() * aa_meas.axis();
+            const double deg = 180.0 / M_PI;
+            const double got_deg = r_meas.dot(axis_ref) * deg;
+            const double off_deg =
+                (r_meas - r_meas.dot(axis_ref) * axis_ref).norm() * deg;
+            const Vector3d drift_mm =
+                (X_WC_now.translation() - X_cmd.translation()) * 1e3;
+            const char* fname[4] = {"index", "middle", "thumb", "ring"};
+            const char* kname[3] = {"REGRASP", "ENGAGE", "DISENGAGE"};
+
+            const auto jl_flags = std::cout.flags();
+            const auto jl_prec = std::cout.precision();
+            std::cout << std::fixed << std::setprecision(2) << "[JERK t=" << t
+                      << "] accel=" << std::setprecision(2) << accel_norm
+                      << "m/s^2 (thresh=" << FLAGS_jerk_accel_thresh
+                      << ")  v=(" << v_cube_now.x() << "," << v_cube_now.y()
+                      << "," << v_cube_now.z() << ")m/s"
+                      // How long ago the currently-active LCS/lambda were
+                      // last refreshed, in ms — a small solve_age here means
+                      // this jerk landed right after a fresh do_solve; a
+                      // small relin_age means right after a relinearize.
+                      // Consistently small across every jerk line would
+                      // point at the ongoing 25Hz/200Hz update cadence
+                      // itself, not the contact-count transition — neither
+                      // small would point elsewhere entirely (contact
+                      // detection, the simulator's own integrator, etc).
+                      << "  solve_age=" << (t - last_solve_t) * 1e3
+                      << "ms relin_age=" << (t - last_relin_t) * 1e3
+                      << "ms  ";
+            if (FLAGS_gait) {
+              if (gait_in_realign) {
+                std::cout << "REALIGN  ";
+              } else {
+                std::cout << "cyc " << (gait_cycle + 1) << "/"
+                          << FLAGS_gait_cycles << "  ";
+              }
+              if (gait_state == kGaitRotate) {
+                std::cout << "ROTATE  ";
+              } else if (gait_state == kGaitMove) {
+                const int lf = leg_plan[gait_leg].first;
+                std::cout
+                    << "MOVE " << fname[lf] << " "
+                    << kname[static_cast<int>(leg_plan[gait_leg].second)]
+                    << "  ";
+              } else {
+                std::cout << "DONE  ";
+              }
+            }
+            std::cout << std::setprecision(1)
+                      << "cmd=" << aa_cmd.angle() * deg << " got=" << got_deg
+                      << " off=" << off_deg << " drift=(" << drift_mm.x()
+                      << "," << drift_mm.y() << "," << drift_mm.z()
+                      << ")mm  grip=[";
+            for (size_t k = 0; k < active_fingers.size(); ++k)
+              std::cout << fname[active_fingers[k]]
+                        << (k + 1 < active_fingers.size() ? "," : "");
+            std::cout << "]\n";
+            std::cout.flags(jl_flags);
+            std::cout.precision(jl_prec);
+          }
+        } else {
+          jerk_active = false;
+        }
+      }
+      v_cube_prev = v_cube_now;
+      v_cube_prev_valid = true;
+    }
 
     // ── --gait_log: one line that says what the gait is doing ───────────
     // Everything the legacy per-relin and per-solve prints buried. Reads the
