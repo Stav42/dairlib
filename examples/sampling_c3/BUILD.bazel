@@ -355,9 +355,102 @@ cc_binary(
     name = "allegro_grasp_c3_squeeze",
     srcs = [
         "allegro_grasp_c3_squeeze.cc",
-        "cube_kinematics.h",
-        "meshcat_utils.h",
+        "allegro_grasp_c3_squeeze_runtime.cc",
+        "allegro_grasp_c3_squeeze_app.h",
+        "allegro_grasp_c3_squeeze_flags.h",
+        "allegro_grasp_c3_squeeze_flags_reach.cc",
+        "allegro_grasp_c3_squeeze_flags_planner.cc",
+        "allegro_grasp_c3_squeeze_flags_maneuver.cc",
+        "allegro_grasp_c3_squeeze_flags_runtime.cc",
     ],
+    data = [
+        ":urdfs",
+        "@drake_models//:allegro_hand_description",
+    ],
+    deps = [
+        ":allegro_grasp_c3_squeeze_application",
+        ":allegro_grasp_c3_squeeze_config",
+        "@gflags",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_application",
+    srcs = ["allegro_grasp_c3_squeeze_application.cc"],
+    hdrs = [
+        "allegro_grasp_c3_squeeze_application.h",
+        "cube_kinematics.h",
+    ],
+    deps = [
+        ":allegro_grasp_c3_squeeze_config",
+        ":allegro_grasp_c3_squeeze_control",
+        ":allegro_grasp_c3_squeeze_diagnostics",
+        ":allegro_grasp_c3_squeeze_environment",
+        ":allegro_grasp_c3_squeeze_execution",
+        ":allegro_grasp_c3_squeeze_grasp",
+        ":allegro_grasp_c3_squeeze_horizon",
+        ":allegro_grasp_c3_squeeze_lcs_model",
+        ":allegro_grasp_c3_squeeze_maneuver_controller",
+        ":allegro_grasp_c3_squeeze_planner",
+        ":allegro_grasp_c3_squeeze_reference",
+        "@c3//:libc3",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_maneuver_controller",
+    srcs = [
+        "allegro_grasp_c3_squeeze_gait.cc",
+        "allegro_grasp_c3_squeeze_maneuver_controller.cc",
+        "allegro_grasp_c3_squeeze_release.cc",
+    ],
+    hdrs = ["allegro_grasp_c3_squeeze_maneuver_controller.h"],
+    deps = [
+        ":allegro_grasp_c3_squeeze_config",
+        ":allegro_grasp_c3_squeeze_grasp",
+        ":allegro_grasp_c3_squeeze_maneuver",
+        ":allegro_grasp_c3_squeeze_planner",
+        ":allegro_grasp_c3_squeeze_reference",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_contact",
+    srcs = ["allegro_grasp_c3_squeeze_contact.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_contact.h"],
+    deps = ["@drake//:drake_shared_library"],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_config",
+    srcs = ["allegro_grasp_c3_squeeze_config.cc"],
+    hdrs = [
+        "allegro_grasp_c3_squeeze_config.h",
+        "allegro_grasp_c3_squeeze_flags.h",
+    ],
+    deps = ["@gflags"],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_environment",
+    srcs = ["allegro_grasp_c3_squeeze_environment.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_environment.h"],
+    deps = [
+        ":allegro_grasp_c3_squeeze_config",
+        ":allegro_grasp_c3_squeeze_setup",
+        ":allegro_hand_utils",
+        "//common:find_resource",
+        "//systems/senders:c3_state_sender",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_lcs_model",
+    srcs = ["allegro_grasp_c3_squeeze_lcs_model.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_lcs_model.h"],
     data = [
         ":urdfs",
         "@drake_models//:allegro_hand_description",
@@ -365,12 +458,117 @@ cc_binary(
     deps = [
         ":allegro_hand_utils",
         "//common:find_resource",
-        "//lcmtypes:lcmt_robot",
-        "//systems/senders:c3_state_sender",
         "@c3//:libc3",
         "@drake//:drake_shared_library",
-        "@gflags",
     ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_planner",
+    srcs = ["allegro_grasp_c3_squeeze_planner.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_planner.h"],
+    deps = [
+        ":allegro_grasp_c3_squeeze_config",
+        ":allegro_grasp_c3_squeeze_contact",
+        ":allegro_grasp_c3_squeeze_lcs_model",
+        "@c3//:libc3",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_grasp",
+    srcs = ["allegro_grasp_c3_squeeze_grasp.cc"],
+    hdrs = [
+        "allegro_grasp_c3_squeeze_grasp.h",
+        "cube_kinematics.h",
+    ],
+    deps = [
+        ":allegro_grasp_c3_squeeze_config",
+        ":allegro_grasp_c3_squeeze_environment",
+        ":allegro_grasp_c3_squeeze_ik",
+        ":allegro_hand_utils",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_reference",
+    srcs = ["allegro_grasp_c3_squeeze_reference.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_reference.h"],
+    deps = ["@drake//:drake_shared_library"],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_horizon",
+    srcs = ["allegro_grasp_c3_squeeze_horizon.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_horizon.h"],
+    deps = [
+        ":allegro_grasp_c3_squeeze_reference",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_control",
+    srcs = ["allegro_grasp_c3_squeeze_control.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_control.h"],
+    deps = ["@drake//:drake_shared_library"],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_execution",
+    srcs = ["allegro_grasp_c3_squeeze_execution.cc"],
+    hdrs = [
+        "allegro_grasp_c3_squeeze_execution.h",
+        "cube_kinematics.h",
+    ],
+    deps = [
+        ":allegro_grasp_c3_squeeze_contact",
+        ":allegro_grasp_c3_squeeze_control",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_diagnostics",
+    srcs = ["allegro_grasp_c3_squeeze_diagnostics.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_diagnostics.h"],
+    deps = [
+        "@c3//:libc3",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_setup",
+    srcs = ["allegro_grasp_c3_squeeze_setup.cc"],
+    hdrs = [
+        "allegro_grasp_c3_squeeze_setup.h",
+        "meshcat_utils.h",
+    ],
+    deps = [
+        "//lcmtypes:lcmt_robot",
+        "//systems/senders:c3_state_sender",
+        "@drake//:drake_shared_library",
+    ],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_ik",
+    srcs = ["allegro_grasp_c3_squeeze_ik.cc"],
+    hdrs = [
+        "allegro_grasp_c3_squeeze_ik.h",
+        "cube_kinematics.h",
+    ],
+    deps = ["@drake//:drake_shared_library"],
+)
+
+cc_library(
+    name = "allegro_grasp_c3_squeeze_maneuver",
+    srcs = ["allegro_grasp_c3_squeeze_maneuver.cc"],
+    hdrs = ["allegro_grasp_c3_squeeze_maneuver.h"],
+    deps = ["@drake//:drake_shared_library"],
 )
 
 cc_binary(

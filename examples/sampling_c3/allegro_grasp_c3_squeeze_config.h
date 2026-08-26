@@ -1,0 +1,123 @@
+#pragma once
+
+#include <string>
+
+namespace dairlib::allegro_grasp_c3 {
+
+// Immutable snapshot of all command-line options. Runtime components receive
+// this object explicitly and never reach into gflags global state.
+struct SqueezeConfig {
+  double kp;
+  double kd;
+  double tau_max;
+  double contact_force_thresh;
+  double penetration_index_middle;
+  double penetration_thumb;
+  double tip_surface_offset_z;
+  double ring_tip_surface_offset_z;
+  double ring_tip_surface_offset_y;
+  bool track_cube_contact;
+  bool contact_force_log;
+  double contact_force_log_hz;
+  bool lcm_publish;
+  double lcm_publish_hz;
+  bool isolate_cube;
+  double contact_enable_t;
+  double t_contact;
+  double handoff_settle_time;
+  double k_hold;
+  double w_cube;
+  double w_cube_vel;
+  double w_vel;
+  double w_R;
+  double w_G;
+  double w_U;
+  double w_lambda;
+  double alpha_m;
+  std::string cube_motion_mode;
+  double cube_move_dx;
+  double cube_move_dy;
+  double cube_move_dz;
+  double cube_move_roll;
+  double cube_move_pitch;
+  double cube_move_yaw;
+  double cube_move_period;
+  double cube_move_duration;
+  double cube_ik_lead_pos_max;
+  double cube_ik_lead_rot_max;
+  bool show_cube_target;
+  bool show_cube_start;
+  bool rot_log;
+  double rot_log_period;
+  bool lambda_map_debug;
+  bool plan_debug;
+  bool c3_joint_plan_log;
+  double task_kp;
+  double task_kd;
+  std::string exec_mode;
+  std::string osc_target_source;
+  double osc_kp;
+  double osc_kd;
+  double osc_qd_filter_tau;
+  bool exec_grav_comp;
+  double force_floor;
+  double lambda_torque_scale;
+  bool fk_target;
+  int N;
+  double c3_dt;
+  double mu;
+  int num_friction_directions;
+  std::string contact_model;
+  double input_scale;
+  bool relinearize;
+  bool warm_start_admm;
+  int c3_period_steps;
+  int relin_period_steps;
+  int track_ik_period_steps;
+  double osqp_eps;
+  int admm_iter;
+  double rho_scale;
+  bool warm_start;
+  bool release_middle;
+  std::string release_finger;
+  double release_middle_t;
+  double release_middle_offset;
+  double regrasp_settle_time;
+  double regrasp_duration;
+  double regrasp_touch_tol;
+  double regrasp_arc_clearance;
+  double release_middle_tri_spread;
+  double release_middle_tri_base_z;
+  double release_middle_tri_apex_z;
+  bool gait;
+  double gait_delta;
+  int gait_cycles;
+  double gait_rotate_duration;
+  std::string gait_scheme;
+  double relay_ring_hold_z;
+  double relay_ring_press;
+  double relay_ring_retract;
+  bool gait_realign;
+  bool gait_log;
+  bool gait_handoff_debug;
+  double gait_log_period;
+  bool legacy_log;
+  int gait_seek_period_steps;
+  double gait_leg_gap;
+  double gait_touch_offset;
+  double gait_touch_duration;
+  int gait_rebuild_solve_passes;
+  double gait_force_ramp_time;
+  double gait_torque_ramp_time;
+  double gait_leg_timeout;
+  double gait_hold_time;
+  double cube_start_x;
+  double cube_start_y;
+  double cube_start_z;
+  bool preview;
+  double sim_time;
+};
+
+SqueezeConfig LoadSqueezeConfig();
+
+}  // namespace dairlib::allegro_grasp_c3

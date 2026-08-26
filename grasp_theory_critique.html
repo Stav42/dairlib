@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Grasp Force Decomposition — Theory &amp; Critique</title>
+  <title>Allegro C3 Squeeze — Theory, Implementation &amp; Critique</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
 
   <script>
   MathJax = {
@@ -441,12 +441,12 @@
      HEADER
 ══════════════════════════════════════════════════════════ -->
 <header>
-  <div class="pill">Robotics &nbsp;·&nbsp; Grasp Theory</div>
-  <h1>Grasp Force Decomposition</h1>
+  <div class="pill">Robotics &nbsp;·&nbsp; Grasp Theory &amp; Implementation</div>
+  <h1>Allegro C3 Squeeze: Grasp Force Decomposition</h1>
   <p class="lead">
-    A critique of a proposed cube-grasping scheme, the corrected formulation
-    via the grasp matrix and internal forces, and a detailed treatment of
-    force closure with and without friction.
+    A theory-first account of grasp forces and contact-implicit control, followed
+    by the current Allegro-hand C3 squeeze implementation: simulation, planning,
+    execution, moving-cube tracking, contact-set changes, and finger gaiting.
   </p>
 </header>
 
@@ -462,14 +462,35 @@
     <li><a href="#s5"><span class="toc-slug">§5</span>Force Closure &amp; Friction</a></li>
     <li><a href="#s6"><span class="toc-slug">§6</span>Summary</a></li>
     <li><a href="#s7"><span class="toc-slug">§7</span>Where C3 and OSC Come Into the Picture</a></li>
-    <li><a href="#s8"><span class="toc-slug">§8</span>MuJoCo + Allegro Hand: Friction in Simulation</a></li>
+    <li><a href="#s8"><span class="toc-slug">§8</span>Drake SAP + Allegro Hand: Simulation and a MuJoCo Contrast</a></li>
     <li><a href="#s9"><span class="toc-slug">§9</span>The Complete Control Flow — Five Clarifications</a></li>
     <li><a href="#s10"><span class="toc-slug">§10</span>How Contact Force Is Implicit in Desired Position</a></li>
     <li><a href="#s11"><span class="toc-slug">§11</span>How Push Anything Encodes and Solves the Goal</a></li>
+    <li><a href="#s12"><span class="toc-slug">§12</span>Current Project at a Glance</a></li>
+    <li><a href="#s13"><span class="toc-slug">§13</span>Plants, State, Contact Geometry, and Grasp Setup</a></li>
+    <li><a href="#s14"><span class="toc-slug">§14</span>Reach, Contact Detection, and C3 Handoff</a></li>
+    <li><a href="#s15"><span class="toc-slug">§15</span>C3+ Problem, Scaling, and Replanning</a></li>
+    <li><a href="#s16"><span class="toc-slug">§16</span>Three Executable Controller Contracts</a></li>
+    <li><a href="#s17"><span class="toc-slug">§17</span>Moving Cube References and Live Contact IK</a></li>
+    <li><a href="#s18"><span class="toc-slug">§18</span>Changing the Contact Set and Regrasping</a></li>
+    <li><a href="#s19"><span class="toc-slug">§19</span>Rotation Gait and Its Safety Mechanisms</a></li>
+    <li><a href="#s20"><span class="toc-slug">§20</span>Instrumentation, How to Run, and Current Limits</a></li>
   </ol>
 </nav>
 
 <main>
+
+<div class="card indigo">
+  <div class="card-label">Reading guide — implementation snapshot, 25 August 2026</div>
+  <p>
+    Sections §0–§11 preserve the theory and the historical Push Anything / OSC
+    discussion that motivated this work. They are not a literal description of
+    the executable Allegro experiment. Sections §12–§20 are the current project
+    record, checked against <code>examples/sampling_c3/allegro_grasp_c3_squeeze.cc</code>
+    and its helpers. When the two parts differ, the implementation section and
+    source code are authoritative.
+  </p>
+</div>
 
 <!-- ══════════════════════════════════════════════════════════
      §0  FOUNDATIONS
@@ -626,7 +647,7 @@
 <div class="eq">
   \[
     [\mathbf{p}]_\times
-    = \begin{pmatrix} 0 & -p_z & p_y \\ p_z & 0 & -p_x \\ -p_y & p_x & 0 \end{pmatrix}
+    = \begin{pmatrix} 0 &amp; -p_z &amp; p_y \\ p_z &amp; 0 &amp; -p_x \\ -p_y &amp; p_x &amp; 0 \end{pmatrix}
   \]
 </div>
 <p>
@@ -634,7 +655,7 @@
 </p>
 <div class="eq">
   \[
-    G = \begin{bmatrix} G_1 & G_2 & \cdots & G_n \end{bmatrix}
+    G = \begin{bmatrix} G_1 &amp; G_2 &amp; \cdots &amp; G_n \end{bmatrix}
     \in \mathbb{R}^{6 \times 3n}
   \]
 </div>
@@ -1339,7 +1360,8 @@
 </div>
 <p>
   Here \(\mathbf{x}_k\) is the full system state (robot joints + object pose),
-  \(\mathbf{u}_k\) is the control input (e.g. end-effector Cartesian force),
+  \(\mathbf{u}_k\) is the commandable control input (end-effector force in a
+  reduced model, or generalized joint torque in the current Allegro model),
   \(\boldsymbol{\lambda}_k\) is the contact force vector, and
   \(\Phi\) is the signed distance (gap) between contact pairs — positive when
   separated, zero at contact. The symbol \(\perp\) means <em>complementarity</em>:
@@ -1377,15 +1399,15 @@
   <li>\(\boldsymbol{\lambda}_k^t \in \mathbb{R}^{n_c \cdot n_e}\) — tangential (friction) forces, with \(n_e\) being the number of edges of the polyhedral friction cone approximation</li>
 </ul>
 <p>
-  In Push Anything, \(n_e = 4\): the circular Coulomb cone is approximated by a
-  4-sided pyramid. This turns the nonlinear friction cone constraint into a set
-  of linear inequalities, which is what makes the LCS tractable.
+  The number of directions is a model choice. The current Allegro executable
+  defaults to \(n_e=2\) friction directions per contact; the four-direction
+  Push Anything example remains a useful, more isotropic reference.
 </p>
 <div class="eq">
   \[
     \|\mathbf{f}_t\| \leq \mu f_n
     \quad\longrightarrow\quad
-    \text{approximated by } n_e = 4 \text{ linear faces of a pyramid}
+    \text{approximated by a finite set of } n_e \text{ friction directions}
   \]
 </div>
 
@@ -1403,9 +1425,10 @@
     <li><strong>Projection step</strong>: project the contact forces onto the feasible complementarity set \(\{(\boldsymbol{\lambda}, \boldsymbol{\eta}) : 0 \leq \boldsymbol{\lambda} \perp \boldsymbol{\eta} \geq 0\}\) — this is done independently per timestep and can be parallelised.</li>
   </ul>
   <p style="margin-top:0.6rem;">
-    The output of C3 is a <em>desired trajectory</em>: a sequence of desired
-    end-effector positions or forces over the horizon. C3 runs at the high
-    level — it does not directly produce joint torques.
+    The output of C3 is a state, input, and contact-force trajectory. The
+    meaning of the input follows the plant: the current Allegro C3+ model
+    optimizes 16 generalized hand torques, whereas a reduced pushing model can
+    optimize Cartesian end-effector force.
   </p>
 </div>
 
@@ -1492,24 +1515,26 @@
 
 
 <!-- ══════════════════════════════════════════════════════════
-     §8  MUJOCO + ALLEGRO: FRICTION IN SIMULATION
+     §8  DRAKE SAP + ALLEGRO: FRICTION IN SIMULATION
 ══════════════════════════════════════════════════════════ -->
 <div class="sec">
   <span class="slug">§8</span>
-  <h2 id="s8">MuJoCo + Allegro Hand: Will Friction Be Applied, and How Accurate Is It?</h2>
+  <h2 id="s8">Drake SAP + Allegro Hand: Current Simulation and a MuJoCo Contrast</h2>
   <div class="rule"></div>
 </div>
 
 <p>
-  Suppose you set up the Allegro hand holding a coloured cube in MuJoCo, and
-  drive the fingers to press inward with a given normal force on each of the
-  4 lateral faces. Two questions arise: (1) does MuJoCo automatically apply
-  frictional forces, or do you have to specify them? (2) How well does MuJoCo's
-  friction match the contact model assumed by C3/C3+?
+  The executable experiment does <strong>not</strong> use MuJoCo. It runs a
+  discrete-time Drake <strong>SAP</strong> simulation at 1 ms, while C3+
+  linearizes a separate continuous Drake plant into an LCS. The default grasp
+  has index and middle on the cube's \(-Y\) face and thumb on its \(+Y\) face;
+  an optional ring-finger topology is described in §18–§19. The MuJoCo material
+  below is retained only as a useful comparison with another compliant-contact
+  simulator, not as a statement about this project's runtime.
 </p>
 
-<!-- ── Q1: Does MuJoCo apply friction? ── -->
-<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Yes — MuJoCo applies friction automatically</p>
+<!-- ── Historical MuJoCo contrast ── -->
+<p style="font-weight:600; color:var(--text); margin-top:1.2rem;">Historical contrast: MuJoCo applies friction automatically</p>
 <p>
   You do not have to manually compute or apply friction forces. MuJoCo detects
   contact between surfaces, computes normal forces, and resolves friction as
@@ -1793,7 +1818,7 @@
      Q3 + Q4: The full ADMM solve and the pyramid
 ──────────────────────────────────────────────────────────── -->
 <div class="card indigo" style="margin-top:2rem;">
-  <div class="card-label">Questions 3 & 4</div>
+  <div class="card-label">Questions 3 &amp; 4</div>
   <h3>Who solves the problem at each timestep, and what exactly are the steps? Also: how does the polyhedral cone approximation work?</h3>
 </div>
 
@@ -1864,7 +1889,7 @@
 <div class="eq">
   \[
     \mathbf{f}_t = \sum_{j=0}^{n_e-1} \beta_j\, \mathbf{d}_j
-    = \underbrace{\begin{bmatrix}\mathbf{d}_0 & \mathbf{d}_1 & \cdots & \mathbf{d}_{n_e-1}\end{bmatrix}}_{E_t^\top \;\in\;\mathbb{R}^{2\times n_e}} \boldsymbol{\beta},
+    = \underbrace{\begin{bmatrix}\mathbf{d}_0 &amp; \mathbf{d}_1 &amp; \cdots &amp; \mathbf{d}_{n_e-1}\end{bmatrix}}_{E_t^\top \;\in\;\mathbb{R}^{2\times n_e}} \boldsymbol{\beta},
     \quad \boldsymbol{\beta} \geq \mathbf{0}
   \]
 </div>
@@ -2050,11 +2075,11 @@
     \[
       (\hat\lambda,\, \hat\eta) =
       \begin{cases}
-        (\lambda^\circ,\; 0) & \text{if } \lambda^\circ \geq \eta^\circ \geq 0 \\
-        (0,\; \eta^\circ)    & \text{if } \eta^\circ > \lambda^\circ \geq 0 \\
-        (\lambda^\circ,\; 0) & \text{if } \lambda^\circ \geq 0,\; \eta^\circ < 0 \\
-        (0,\; \eta^\circ)    & \text{if } \eta^\circ \geq 0,\; \lambda^\circ < 0 \\
-        (0,\; 0)             & \text{if } \lambda^\circ < 0 \text{ and } \eta^\circ < 0
+        (\lambda^\circ,\; 0) &amp; \text{if } \lambda^\circ \geq \eta^\circ \geq 0 \\
+        (0,\; \eta^\circ)    &amp; \text{if } \eta^\circ > \lambda^\circ \geq 0 \\
+        (\lambda^\circ,\; 0) &amp; \text{if } \lambda^\circ \geq 0,\; \eta^\circ &lt; 0 \\
+        (0,\; \eta^\circ)    &amp; \text{if } \eta^\circ \geq 0,\; \lambda^\circ &lt; 0 \\
+        (0,\; 0)             &amp; \text{if } \lambda^\circ &lt; 0 \text{ and } \eta^\circ &lt; 0
       \end{cases}
     \]
   </div>
@@ -2379,14 +2404,15 @@
 <!-- ── Why this breaks for grasping ── -->
 <p style="font-weight:600; color:var(--text); margin-top:1.4rem;">Why this mechanism breaks for dexterous grasping</p>
 <p>
-  For pushing there is one end-effector and one contact. For the Allegro hand
-  grasping a cube there are four fingers, each pressing from a different face.
-  The implicit force mechanism breaks in three ways:
+  For pushing there is one end-effector and one contact. The default Allegro
+  experiment has three coupled fingertip contacts (index and middle on \(-Y\),
+  thumb on \(+Y\)); its optional triangle topology has four. In either case,
+  the implicit-force mechanism breaks in three ways:
 </p>
 
 <div class="critique" style="border-color:var(--amber-bd);">
   <div class="cnum" style="background:var(--amber);">1</div>
-  <h3 style="color:var(--amber);">The cube can move — and all four position errors change simultaneously</h3>
+  <h3 style="color:var(--amber);">The cube can move — and every contact position error changes simultaneously</h3>
   <p>
     For pushing, the object moves in one direction (away from the push).
     The position error \(\delta\) stays well-defined because the end-effector
@@ -2394,11 +2420,11 @@
   </p>
   <p>
     For grasping, if the cube shifts even slightly — say, it drops 1 mm due to
-    gravity — then all four contact surfaces move at once. Fingers on the top face
-    suddenly have larger \(\delta\) (more force), fingers on the bottom face have
-    smaller \(\delta\) (less force). The four contact forces become coupled
-    through the cube's motion and start fighting each other. There is no stable
-    equilibrium from pure position control with four opposing fingers.
+    gravity — then every contact surface moves at once. The position errors and
+    resulting forces change together through the cube motion, so they can fight
+    one another. Pure position control alone does not set an independent,
+    robust internal-force distribution for either the three- or four-contact
+    grasp.
   </p>
 </div>
 
@@ -2444,9 +2470,9 @@
     Contact force is a stable byproduct of position. OSC works perfectly.
   </p>
   <p style="margin-top:0.6rem;">
-    For grasping: four contacts, four directions, all coupled through the cube's
-    six degrees of freedom. Cube motion changes all four \(\delta\)s at once
-    in a coupled, unstable way. Contact forces are no longer a stable byproduct
+    For grasping: several contacts and directions are coupled through the cube's
+    six degrees of freedom. Cube motion changes all contact errors at once.
+    Contact forces are no longer a stable, independently specified byproduct
     of position — they must be controlled explicitly through a force setpoint,
     which is what the hybrid position + force OSC in §9 Q5 provides.
   </p>
@@ -2812,7 +2838,7 @@
 <div class="eq">
   \[
     \boldsymbol{\tau} = J_f^\top \Lambda
-    \begin{pmatrix}K & 0 \\ 0 & B\end{pmatrix}
+    \begin{pmatrix}K &amp; 0 \\ 0 &amp; B\end{pmatrix}
     \tilde{\mathbf{x}}^e
     + J_f^\top \tau_{ff}
     + N_f \bigl(K_n(\mathbf{q}^d_f - \mathbf{q}^f) + B_n(\dot{\mathbf{q}}^d_f - \dot{\mathbf{q}}^f)\bigr)
@@ -2866,8 +2892,8 @@
   <div class="card-label">Mechanism 3 — Termination criterion and re-sampling</div>
   <p>
     The object pose is continuously compared against the goal within specified
-    tolerances (position error \(< \epsilon_p\), orientation error
-    \(< \epsilon_\theta\)). Once inside tolerance, the current task is declared
+    tolerances (position error \(&lt; \epsilon_p\), orientation error
+    \(&lt; \epsilon_\theta\)). Once inside tolerance, the current task is declared
     complete. If the object overshoots or drifts after reaching the goal, the
     controller detects the error immediately (the receding horizon cost is no
     longer near-zero) and begins corrective pushes. The object is not released
@@ -2887,6 +2913,674 @@
     at each step.
   </p>
 </blockquote>
+
+<!-- ══════════════════════════════════════════════════════════
+     §12  CURRENT PROJECT AT A GLANCE
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s12">
+  <span class="slug">§12</span>
+  <h2>Current Project at a Glance</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The executable project is
+  <a href="examples/sampling_c3/allegro_grasp_c3_squeeze.cc"><code>examples/sampling_c3/allegro_grasp_c3_squeeze.cc</code></a>.
+  It is a closed-loop Drake simulation of a right Allegro hand grasping a free
+  6 cm cube, then using C3+ to hold or move that cube. The central experiment is
+  deliberately contact-rich: fingers must create enough normal force for
+  friction to support the cube against gravity while the optimizer replans from
+  the measured full state.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Part</th><th>Current implementation</th><th>Default / status</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Robot and object</strong></td>
+        <td>World-welded right Allegro hand (16 actuated joints) and a free numbered cube.</td>
+        <td>Implemented</td>
+      </tr>
+      <tr>
+        <td><strong>Nominal grasp</strong></td>
+        <td>Index and middle press the \(-Y\) face; thumb opposes them on \(+Y\).</td>
+        <td>Three contacts by default</td>
+      </tr>
+      <tr>
+        <td><strong>Planning</strong></td>
+        <td>C3+ solves a full-order, locally linearized complementarity MPC problem.</td>
+        <td>Implemented</td>
+      </tr>
+      <tr>
+        <td><strong>Execution</strong></td>
+        <td>Selectable direct torque playback, legacy task-space hybrid, or a joint-PD-plus-normal-force path called <code>osc</code>.</td>
+        <td><code>task_space</code> by default</td>
+      </tr>
+      <tr>
+        <td><strong>Motion experiments</strong></td>
+        <td>Static hold, 6-DOF step/sine reference tracking, optional release/regrasp, and multi-cycle rotation gaiting.</td>
+        <td>Opt-in flags</td>
+      </tr>
+      <tr>
+        <td><strong>Instrumentation</strong></td>
+        <td>Meshcat markers and ghosts, contact-force readback, solver/plan diagnostics, rotation/gait logs, and LCM telemetry.</td>
+        <td>Implemented</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card amber">
+  <div class="card-label">Important distinction</div>
+  <p>
+    “Implemented” means the behavior is present in the executable; it does not
+    claim that every experimental mode has been validated over every trajectory.
+    In particular, the hybrid executors, moving-reference path, and gait
+    machinery are useful experimental branches with explicit model-mismatch
+    caveats in §16 and §20.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §13  PLANTS, STATE, CONTACT GEOMETRY, AND GRASP SETUP
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s13">
+  <span class="slug">§13</span>
+  <h2>Plants, State, Contact Geometry, and Grasp Setup</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The program intentionally constructs two plants with the same body ordering
+  and state layout. This lets the current simulator state pass directly into
+  C3+, while keeping the differentiable continuous plant separate from the
+  discrete contact simulation.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Plant</th><th>Role</th><th>Contact/time model</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Simulation plant</strong></td>
+        <td>Runs the nonlinear physics, contact sensing, Meshcat, and all applied torques.</td>
+        <td>Discrete Drake SAP, 1 ms step.</td>
+      </tr>
+      <tr>
+        <td><strong>LCS plant</strong></td>
+        <td>Provides the local dynamics/contact linearization used by <code>LCSFactory</code>.</td>
+        <td>Continuous Drake plant, relinearized around the current state.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The full state is 45-dimensional:
+</p>
+<div class="eq">
+  \[
+    x =
+    \begin{bmatrix}
+      q_\mathrm{hand}^{16} &amp;
+      q_\mathrm{cube}^{7} &amp;
+      v_\mathrm{hand}^{16} &amp;
+      v_\mathrm{cube}^{6}
+    \end{bmatrix}^{\mathsf T}.
+  \]
+</div>
+<p>
+  The cube position representation is Drake’s free-body quaternion plus
+  translation, \([q_w,q_x,q_y,q_z,x,y,z]\); its velocity is angular then
+  translational. C3’s commandable input is therefore the 16 Allegro generalized
+  torques, not a reduced Cartesian force.
+</p>
+
+<div class="two-col">
+  <div class="card blue">
+    <div class="card-label">Default contact geometry</div>
+    <p>
+      The cube side length is 0.06 m. The default three contacts are the index
+      fingertip at \((-0.02,-0.03,0)\) in cube coordinates, middle at
+      \((+0.02,-0.03,0)\), and thumb at \((0,+0.03,0)\), before the configured
+      face inset. Index and middle default to a flush target; the thumb defaults
+      to a 5 mm inward target.
+    </p>
+  </div>
+  <div class="card blue">
+    <div class="card-label">True fingertip surface, not frame origin</div>
+    <p>
+      IK constrains a point offset from each <code>*_tip</code> frame so that
+      the target represents the collision surface rather than the body-frame
+      origin. The default index/middle/thumb offset is 11.5 mm along local
+      <code>+Z</code>; ring has separately configurable local <code>Y</code>
+      and <code>Z</code> offsets. The helper uses ±1 mm Cartesian boxes, so an
+      accepted IK result is feasible within that tolerance, not an exact
+      surface-contact certificate.
+    </p>
+  </div>
+</div>
+
+<p>
+  The right-hand URDF and its fixed world transform are supplied by
+  <a href="examples/sampling_c3/allegro_hand_utils.cc"><code>allegro_hand_utils.cc</code></a>.
+  The face geometry, state-to-pose conversion, and three- or four-fingertip IK
+  helpers live in
+  <a href="examples/sampling_c3/cube_kinematics.h"><code>cube_kinematics.h</code></a>.
+  The LCS includes only the fingertip–cube pairs selected as active. To reduce
+  unmodeled contacts, the simulation filters thumb–palm and
+  index/middle/ring inter-finger collisions, and by default filters the cube
+  against all hand geometry except the four known fingertips. That last
+  isolation can be disabled because the reach phase may need ordinary
+  whole-hand collision to seat a fingertip.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §14  REACH, CONTACT DETECTION, AND C3 HANDOFF
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s14">
+  <span class="slug">§14</span>
+  <h2>Reach, Contact Detection, and C3 Handoff</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The run has a reach phase followed by a C3 phase. The hand starts at an IK
+  pregrasp approximately 1 cm outside the targets. A cubic,
+  shape-preserving joint trajectory drives the active fingertips toward the
+  contact configuration; reach torques are joint PD with gravity compensation.
+  The default reach duration is 5 s.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Event</th><th>What the program does</th><th>Reason</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Static previews</strong></td>
+        <td>Optionally shows pregrasp and contact IK poses in Meshcat.</td>
+        <td>Checks geometry before simulation proceeds.</td>
+      </tr>
+      <tr>
+        <td><strong>Arrival</strong></td>
+        <td>Reads Drake <code>ContactResults</code>; each fingertip latches after its cube-contact force crosses the configured threshold.</td>
+        <td>Uses actual SAP contact rather than only a planned pose.</td>
+      </tr>
+      <tr>
+        <td><strong>Settle</strong></td>
+        <td>Waits <code>--handoff_settle_time</code> after the final latch (0.15 s by default).</td>
+        <td>Avoids treating a noisy 1 ms contact/gap sample as a reliable grasp.</td>
+      </tr>
+      <tr>
+        <td><strong>Warm-up pin</strong></td>
+        <td>Builds and solves C3+, but keeps the cube kinematically reset to its initial pose and zero velocity for 0.5 s after handoff.</td>
+        <td>Lets the fingers establish preload before the cube is free.</td>
+      </tr>
+      <tr>
+        <td><strong>Release</strong></td>
+        <td>Stops overwriting the cube state and continues closed-loop C3 execution.</td>
+        <td>Begins the physical hold or motion experiment.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card amber">
+  <div class="card-label">How to interpret the pin</div>
+  <p>
+    The pin is a deliberately nonphysical initialization aid, not a contact
+    model. It can store preload and penetration that are released when the
+    overwrite stops. Therefore early post-release acceleration is a handoff
+    transient; it should be separated from steady hold or reference-tracking
+    performance.
+  </p>
+</div>
+
+<p>
+  In the pinned C3 phase, the non-direct executors hold the contact joint
+  target with PD plus hand gravity compensation because the pinned cube gives
+  the optimizer little reason to command a load-bearing torque. Once in the
+  C3 phase, the final applied torque is clipped to
+  <code>±--tau_max</code>. The same bound is added as an input constraint to
+  every C3+ reconstruction; the default numeric bound is intentionally loose
+  for exploratory simulation and should be tightened for a physical actuator.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §15  C3+ PROBLEM, SCALING, AND REPLANNING
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s15">
+  <span class="slug">§15</span>
+  <h2>C3+ Problem, Scaling, and Replanning</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  At handoff and whenever the active contact set changes, the program builds a
+  <code>C3Plus</code> object from a local LCS. The solved model has the familiar
+  form
+</p>
+<div class="eq">
+  \[
+    x_{k+1}=A_kx_k+B_ku_k+D_k\lambda_k+d_k,\qquad
+    0\leq\lambda_k\perp E_kx_k+F_k\lambda_k+H_ku_k+c_k\geq0.
+  \]
+</div>
+<p>
+  It is a local model, not a global description of rolling contact. A single
+  linearization is used over each short horizon; relinearization makes the
+  next solve use the latest measured state and current active contacts.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Quantity</th><th>Default</th><th>Meaning</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Horizon <code>N</code></td><td>5</td><td>Five force/input intervals and six state knots.</td></tr>
+      <tr><td>LCS step <code>c3_dt</code></td><td>0.05 s</td><td>Prediction interval for linearization and C3+ dynamics.</td></tr>
+      <tr><td>Controller step</td><td>0.001 s</td><td>Simulation and torque-update cadence.</td></tr>
+      <tr><td>Solve / relin period</td><td>40 control steps</td><td>Normally 25 Hz, matching one C3 interval.</td></tr>
+      <tr><td>Contact model</td><td>Stewart–Trinkle</td><td>Can instead use Anitescu; normal-force grouping adapts to either.</td></tr>
+      <tr><td>Friction coefficient <code>mu</code></td><td>0.5</td><td>LCS friction parameter; it must be interpreted alongside the SAP contact parameters.</td></tr>
+      <tr><td>Friction directions</td><td>2 per contact</td><td>Polyhedral approximation used by the LCS.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  The state cost anchors the cube pose in world coordinates
+  (<code>w_cube=10000</code> by default), with separate optional weights for
+  cube velocity, hand velocity, and active hand-joint deviation from the grasp
+  target. The control cost is <code>w_R</code>. A normal-force tracking cost is
+  available through <code>w_lambda</code> and <code>alpha_m</code>, with the
+  thumb reference twice the index/middle reference, but it is off by default.
+  Keeping it optional matters: a force reference regularizes the squeeze
+  nullspace, whereas the basic hold experiment asks C3+ to find support from
+  the cube-pose objective and gravity in the LCS drift.
+</p>
+
+<p>
+  The program conditions the torque input using a scale \(s_u\), derived from
+  \(\lVert A\rVert/\lVert B\rVert\) unless explicitly set. It scales the LCS
+  input matrix and compensates the input cost, then applies
+  \(s_u u_0\) whenever an executor is configured to use C3’s optimized input.
+  C3’s contact coordinates have a separate internal scaling. Diagnostics
+  distinguish physical returned force solutions from internal LCS coordinates
+  before combining them with \(E,F,H\), \(D\), or the consensus variable.
+</p>
+
+<div class="card red">
+  <div class="card-label">Current optimization boundary</div>
+  <p>
+    Torque box constraints are implemented inside C3+. General joint-position,
+    velocity, acceleration, torque-rate, and fingertip trust-region constraints
+    are not yet part of this problem. The planner is also local: a contact
+    normal, witness point, and linearization can become stale across large
+    movement within one horizon. These are limitations of the current
+    experiment, not guarantees supplied by the existing solver.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §16  THREE EXECUTABLE CONTROLLER CONTRACTS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s16">
+  <span class="slug">§16</span>
+  <h2>Three Executable Controller Contracts</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The flag <code>--exec_mode</code> makes the planner/executor contract
+  explicit. This is more useful than treating every low-level law as the same
+  “OSC”: the three modes apply materially different signals to the SAP plant.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Mode</th><th>Applied post-handoff torque</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>direct</code></td>
+        <td>\(\tau=s_u u_0^{C3}\)</td>
+        <td>Pure receding-horizon replay of the optimized C3 input. No PD, grip term, or explicit hand gravity compensation is added.</td>
+      </tr>
+      <tr>
+        <td><code>task_space</code></td>
+        <td>Fingertip task-space PD + Jacobian-transpose normal grip + \(s_u u_0^{C3}\); explicit gravity compensation is optional.</td>
+        <td>Legacy hybrid hold path. It can hold fixed grasp points or FK targets from C3’s next planned joint state.</td>
+      </tr>
+      <tr>
+        <td><code>osc</code></td>
+        <td>\(\tau=\tau_g+K_p(q_\mathrm{des}-q)-K_d(v-\dot q_\mathrm{des})+\sum_iJ_i^\mathsf{T}f_{n,i}\hat n_i\)</td>
+        <td>Joint-space PD with filtered desired velocity plus normal-force feedforward from the C3 force plan. It does <strong>not</strong> apply \(u_0\).</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  In <code>osc</code>, the target is C3’s first future hand knot by default,
+  or a live grasp-IK target when contact tracking is enabled. The desired
+  joint velocity is a low-pass-filtered finite difference of the final target,
+  avoiding the earlier behavior of damping every intended gait movement toward
+  zero velocity. The C3 force bridge sums each active contact’s normal-force
+  group, applies it along a cube-frame face normal through the fingertip
+  Jacobian transpose, and supports force and torque cross-fades during
+  contact-set changes.
+</p>
+
+<div class="card amber">
+  <div class="card-label">What the current “osc” mode is — and is not</div>
+  <p>
+    It is a practical joint-PD-plus-\(J^\mathsf{T}f\) executor. It is not a
+    constrained whole-hand inverse-dynamics QP, and it does not reproduce the
+    full frictional contact wrench or C3’s optimized torque input. The
+    normal-only force bridge intentionally discards tangential force components;
+    this makes the branch useful for grip experiments, but it is not a faithful
+    realization of the complete LCS solution. The <code>direct</code> mode is
+    the cleanest available test of C3’s own torque command.
+  </p>
+</div>
+
+<p>
+  The <code>task_space</code> mode has a different hybrid contract: after
+  release it builds fingertip PD forces, adds a normal grip read from the
+  complementarity-side solution (optionally floored), and adds C3’s
+  \(s_u u_0\) feedforward. The modes should therefore be compared as distinct
+  experiments, not as gain-only variations of one controller.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §17  MOVING CUBE REFERENCES AND LIVE CONTACT IK
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s17">
+  <span class="slug">§17</span>
+  <h2>Moving Cube References and Live Contact IK</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The project can test more than static holding. <code>--cube_motion_mode</code>
+  accepts <code>none</code>, <code>step</code>, and <code>sine</code>. The latter
+  two command a complete cube pose offset:
+  world \(x,y,z\) translation plus cube-frame roll, pitch, and yaw. A fifth-order
+  minimum-jerk envelope makes a step start and stop at rest, and ramps the
+  amplitude of a sine so it does not begin with a velocity discontinuity.
+</p>
+
+<p>
+  For every C3 knot, the code writes the scheduled cube quaternion, translation,
+  and translational velocity into the target state. Angular-velocity feedforward
+  is intentionally left at zero because the floating-base angular-velocity
+  convention was not yet re-derived for this path. Meshcat shows the immutable
+  starting cube and a live cyan target ghost; the latter is the raw scheduled
+  pose, not necessarily the clamped IK pose below.
+</p>
+
+<div class="card green">
+  <div class="card-label">Live contact reference</div>
+  <p>
+    With <code>--track_cube_contact</code>, the program solves grasp IK against
+    the desired cube pose at the current reference time and at the horizon end.
+    It caps the target’s translational and rotational lead from the measured
+    cube using <code>cube_ik_lead_pos_max</code> and
+    <code>cube_ik_lead_rot_max</code>. The current and horizon-end IK results
+    are interpolated into C3’s hand-state target. In <code>osc</code>, the
+    target is also ramped from one IK update to the next rather than stepped in
+    a single 1 ms tick.
+  </p>
+</div>
+
+<p>
+  A failed live IK solve does not command the solver’s failed iterate. The
+  executor holds the last good target and reports a throttled residual for the
+  worst finger. This is a deliberate failure mode: the cube may lag an
+  unreachable target, but the hand is not commanded to jump to an arbitrary
+  configuration. Rotation logging reports commanded rotation, achieved
+  rotation along the command axis, off-axis rotation, pose error, and
+  per-axis translation drift. In particular, vertical drift diagnoses loss of
+  frictional support, whereas drift along the pinch axis diagnoses an
+  unbalanced normal-force distribution.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §18  CHANGING THE CONTACT SET AND REGRASPING
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s18">
+  <span class="slug">§18</span>
+  <h2>Changing the Contact Set and Regrasping</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The historical name <code>--release_middle</code> now enables a four-finger
+  triangle topology from the initial reach: index and ring form the base on the
+  \(-Y\) face, middle is the apex on that face, and thumb remains on \(+Y\).
+  At the configured post-release time, the selected finger can be middle or
+  ring. This is not merely an executor mask: the active contact set changes the
+  LCS dimensions and has to change the C3+ problem itself.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Situation</th><th>Hand behavior</th><th>Planner behavior</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Initial triangle</td>
+        <td>Four-point IK establishes index/middle/ring/thumb contact targets.</td>
+        <td>C3+ is built with four fingertip–cube contact pairs.</td>
+      </tr>
+      <tr>
+        <td>Finger released</td>
+        <td>The released finger follows a free-space PD spline; the remaining fingers continue holding.</td>
+        <td>C3+ is rebuilt with only the contacts that can physically remain.</td>
+      </tr>
+      <tr>
+        <td>Ring regrasp</td>
+        <td>Ring follows an outward arc and a slow final approach toward a new face point.</td>
+        <td>It is added back only after contact and target-proximity checks settle.</td>
+      </tr>
+      <tr>
+        <td>Further triangle moves</td>
+        <td>Middle and index can subsequently move through their own arcs in the ring-regrasp chain.</td>
+        <td>Every join/leave is represented by a corresponding rebuild.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  Rebuilding recomputes the contact pairs, number of contact variables,
+  normal-force groups, LCS, C3+ dimensions, force-tracking target, and torque
+  constraints. It also changes the hand-joint cost so that <code>k_hold</code>
+  applies only to fingers actually present in the rebuilt contact set. A
+  detached or parked finger is then held by its explicit PD override rather
+  than contaminating C3’s objective with an obsolete contact target.
+</p>
+
+<p>
+  A new C3+ object begins with no force plan. To avoid a zero-force window and
+  a cold shallow solve at a handoff, the implementation runs several temporary
+  warm-started solves before the fresh object is exposed to the executor.
+  Separately, normal-force feedforward for joining fingers and, in the relay
+  path, the full PD torque vector can be cross-faded over configurable times.
+  These are execution smoothers; they do not make the old and new contact
+  optimizations mathematically identical.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §19  ROTATION GAIT AND ITS SAFETY MECHANISMS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s19">
+  <span class="slug">§19</span>
+  <h2>Rotation Gait and Its Safety Mechanisms</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  <code>--gait</code> implements repeated rotate–regrasp cycles about the
+  cube’s own \(Y\) grasp axis. Its supported execution path is
+  <code>--exec_mode=osc</code>, and the program requires
+  <code>--track_cube_contact</code>. The triangle scheme enables the
+  four-finger topology; the relay scheme begins from the default three-finger
+  grasp and keeps ring out of the reach phase. Gaiting overrides the ordinary
+  step/sine cube reference. A cycle commands a minimum-jerk rotation by
+  <code>--gait_delta</code> (45° by default), holds briefly, then restores
+  finger travel budget by moving fingers one at a time. Two default cycles
+  request a quarter turn.
+</p>
+
+<div class="two-col">
+  <div class="card indigo">
+    <div class="card-label">Triangle scheme</div>
+    <p>
+      All four fingertips remain in the grasp during rotation. Ring, middle,
+      and index then regrasp sequentially. This is the most direct realization
+      of the triangle geometry, but individual reachability can limit it.
+    </p>
+  </div>
+  <div class="card indigo">
+    <div class="card-label">Relay scheme</div>
+    <p>
+      Rotation uses the three-contact index/middle/thumb grasp. Ring parks off
+      the cube, engages as a temporary holder while another finger moves, then
+      disengages. This avoids forcing every finger across the face centre.
+    </p>
+  </div>
+</div>
+
+<p>
+  Each moving leg starts with a cube-frame target, a clear-out waypoint, and,
+  for a contact-ending move, an outside hover waypoint followed by a deliberately
+  slow final approach. After the open-loop arc, the destination is repeatedly
+  re-solved against the <em>measured</em> cube pose. Recontact requires both
+  actual contact and proximity to that live target; a timeout stops the gait
+  instead of silently pretending the missing contact exists. Between legs the
+  controller waits with the available contacts intact, allowing the cube and
+  the newly rebuilt model to settle.
+</p>
+
+<p>
+  On a successful leg, the code updates the finger’s cube-frame footprint,
+  live IK state, C3 target, and active contacts together. This coupling is
+  essential: moving only a PD target would leave C3 planning around a stale
+  grasp geometry, while updating only the LCS would cause the executor to pull
+  the fingertip back to its former point. An optional realignment phase walks
+  the fingers back to their original cube-frame triangle after the requested
+  rotation is complete.
+</p>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     §20  INSTRUMENTATION, HOW TO RUN, AND CURRENT LIMITS
+══════════════════════════════════════════════════════════ -->
+<div class="sec" id="s20">
+  <span class="slug">§20</span>
+  <h2>Instrumentation, How to Run, and Current Limits</h2>
+  <div class="rule"></div>
+</div>
+
+<p>
+  The binary is built as <code>//examples/sampling_c3:allegro_grasp_c3_squeeze</code>.
+  A minimal noninteractive hold run is:
+</p>
+<div class="eq-set">
+  <p><code>bazel run //examples/sampling_c3:allegro_grasp_c3_squeeze -- --preview=false --sim_time=6 --lcm_publish=false</code></p>
+</div>
+<p>
+  The defaults select a static cube reference and the legacy
+  <code>task_space</code> executor. Motion tracking, direct C3 input playback,
+  the PD-plus-normal-force executor, release/regrasp, and gaiting are
+  deliberately explicit opt-ins. This keeps baseline hold experiments separate
+  from more speculative manipulation modes.
+</p>
+
+<div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th>Tool</th><th>What it reports</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>--plan_debug</code></td>
+        <td>One-step linearization accuracy, solved-dynamics residual, complementarity residual, and ADMM consensus residual.</td>
+      </tr>
+      <tr>
+        <td><code>--lambda_map_debug</code></td>
+        <td>The current LCS mapping from contact variables to cube translation.</td>
+      </tr>
+      <tr>
+        <td><code>--c3_joint_plan_log</code></td>
+        <td>Per-finger future-knot deviation and the split between PD and C3-normal-force torque.</td>
+      </tr>
+      <tr>
+        <td><code>--contact_force_log</code></td>
+        <td>Resolved SAP contact-force readback for the fingertip–cube pairs.</td>
+      </tr>
+      <tr>
+        <td><code>--rot_log</code> / <code>--gait_log</code></td>
+        <td>Commanded versus measured rotation, off-axis error, translational drift, gait state, and current modeled contacts.</td>
+      </tr>
+      <tr>
+        <td>LCM (when enabled)</td>
+        <td><code>GRASP_STATE</code>, <code>GRASP_Q_CONTACT</code>, <code>GRASP_TAU</code>, and <code>GRASP_IDX_TRACK</code> at the configured publication rate.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card red">
+  <div class="card-label">Limits that remain material</div>
+  <ul>
+    <li>The 1 ms compliant SAP simulation and the continuous rigid/polyhedral LCS are different models.</li>
+    <li>One local LCS is repeated across a 250 ms default horizon, so large changes in contact geometry are outside its local validity.</li>
+    <li>Only torque bounds are enforced inside C3+; state, rate, and trust-region constraints remain future work.</li>
+    <li>The warm-up pin can create a release transient and should not be confused with tracking performance.</li>
+    <li><code>osc</code> realizes a normal-only force proxy and omits \(u_0\); it is not a faithful full-wrench C3 executor.</li>
+    <li>The cyan target ghost and logged reference are raw schedules; an IK lead clamp may make the actual hand target more conservative.</li>
+    <li>Changing contact topology genuinely changes the optimization problem. Cross-fades reduce torque discontinuity but do not eliminate that physical/model discontinuity.</li>
+  </ul>
+</div>
+
+<div class="card green">
+  <div class="card-label">Source map</div>
+  <p>
+    The control loop, flags, LCS setup, executors, and gait state machine are in
+    <a href="examples/sampling_c3/allegro_grasp_c3_squeeze.cc"><code>allegro_grasp_c3_squeeze.cc</code></a>.
+    The hand placement helper is
+    <a href="examples/sampling_c3/allegro_hand_utils.cc"><code>allegro_hand_utils.cc</code></a>;
+    cube faces and IK are in
+    <a href="examples/sampling_c3/cube_kinematics.h"><code>cube_kinematics.h</code></a>;
+    and the target is declared in
+    <a href="examples/sampling_c3/BUILD.bazel"><code>examples/sampling_c3/BUILD.bazel</code></a>.
+    The companion
+    <a href="examples/sampling_c3/c3_allegro_fine_manipulation_diagnosis.html"><code>c3_allegro_fine_manipulation_diagnosis.html</code></a>
+    remains a focused diagnosis of the current fine-manipulation controller;
+    it should be read as a critique, not as the project’s implementation
+    source of truth.
+  </p>
+</div>
 
 </main>
 

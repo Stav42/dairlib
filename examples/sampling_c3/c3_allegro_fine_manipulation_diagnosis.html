@@ -1,0 +1,1136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>C3 + Allegro Fine-Manipulation Diagnosis</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #5b6875;
+      --paper: #fbfcfe;
+      --panel: #ffffff;
+      --line: #dce3ea;
+      --navy: #17385f;
+      --blue: #2367a8;
+      --blue-soft: #eaf3fb;
+      --teal: #087f78;
+      --teal-soft: #e8f7f5;
+      --amber: #a85a00;
+      --amber-soft: #fff4df;
+      --red: #a93636;
+      --red-soft: #fff0ef;
+      --green: #246b45;
+      --green-soft: #ebf7ef;
+      --shadow: 0 14px 40px rgba(26, 49, 73, 0.09);
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 24px;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 0%, rgba(35, 103, 168, 0.08), transparent 28rem),
+        linear-gradient(180deg, #f5f8fb 0, var(--paper) 22rem);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+    }
+
+    a { color: var(--blue); }
+    a:hover { color: var(--teal); }
+
+    code, pre, .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      padding: 0.1rem 0.35rem;
+      border: 1px solid #dbe4ee;
+      border-radius: 5px;
+      color: #173b61;
+      background: #f1f6fa;
+      font-size: 0.9em;
+    }
+
+    .hero {
+      color: white;
+      background:
+        linear-gradient(120deg, rgba(8, 127, 120, 0.3), transparent 52%),
+        linear-gradient(135deg, #102b49, #1d4f7f 68%, #216f77);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+    }
+
+    .hero-inner {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 64px 0 58px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: #b9ddf4;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(2.1rem, 5vw, 4rem);
+      line-height: 1.06;
+      letter-spacing: -0.045em;
+    }
+
+    .subtitle {
+      max-width: 850px;
+      margin: 22px 0 0;
+      color: #deedf7;
+      font-size: clamp(1rem, 2vw, 1.25rem);
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 999px;
+      color: #edf7fc;
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 0.82rem;
+      font-weight: 650;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 880px);
+      gap: 38px;
+      width: min(1180px, calc(100% - 40px));
+      margin: 36px auto 80px;
+      align-items: start;
+    }
+
+    nav {
+      position: sticky;
+      top: 24px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 24px rgba(26, 49, 73, 0.05);
+      backdrop-filter: blur(8px);
+    }
+
+    nav strong {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--navy);
+      font-size: 0.76rem;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+
+    nav a {
+      display: block;
+      padding: 6px 8px;
+      border-radius: 7px;
+      color: #425365;
+      font-size: 0.85rem;
+      line-height: 1.3;
+      text-decoration: none;
+    }
+
+    nav a:hover {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    main { min-width: 0; }
+
+    section {
+      margin: 0 0 28px;
+      padding: 32px 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 6px 25px rgba(26, 49, 73, 0.045);
+    }
+
+    section > :first-child { margin-top: 0; }
+    section > :last-child { margin-bottom: 0; }
+
+    h2 {
+      margin: 0 0 18px;
+      color: var(--navy);
+      font-size: 1.65rem;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+
+    h3 {
+      margin: 30px 0 10px;
+      color: #244b70;
+      font-size: 1.12rem;
+      line-height: 1.3;
+    }
+
+    h4 {
+      margin: 22px 0 7px;
+      color: var(--ink);
+      font-size: 1rem;
+    }
+
+    p { margin: 0.8rem 0; }
+    ul, ol { padding-left: 1.35rem; }
+    li { margin: 0.42rem 0; }
+
+    .lead {
+      color: #304355;
+      font-size: 1.08rem;
+    }
+
+    .thesis {
+      padding: 22px 24px;
+      border: 1px solid #b9d7eb;
+      border-left: 6px solid var(--blue);
+      border-radius: 10px;
+      background: linear-gradient(135deg, #f4f9fd, #edf7fa);
+      color: #173b5d;
+      font-size: 1.08rem;
+      font-weight: 650;
+    }
+
+    .callout {
+      margin: 20px 0;
+      padding: 16px 18px;
+      border: 1px solid;
+      border-left-width: 5px;
+      border-radius: 10px;
+    }
+
+    .callout strong:first-child {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .callout.warn {
+      border-color: #f0cc91;
+      border-left-color: var(--amber);
+      color: #6c3d09;
+      background: var(--amber-soft);
+    }
+
+    .callout.danger {
+      border-color: #efc1bd;
+      border-left-color: var(--red);
+      color: #742d2d;
+      background: var(--red-soft);
+    }
+
+    .callout.good {
+      border-color: #b8dec6;
+      border-left-color: var(--green);
+      color: #24563a;
+      background: var(--green-soft);
+    }
+
+    .callout.info {
+      border-color: #b8dbd7;
+      border-left-color: var(--teal);
+      color: #175b57;
+      background: var(--teal-soft);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin: 22px 0;
+    }
+
+    .stat {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #f9fbfd;
+    }
+
+    .stat .value {
+      display: block;
+      color: var(--navy);
+      font-size: 1.45rem;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .stat .label {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .equation {
+      margin: 20px 0;
+      padding: 18px;
+      overflow-x: auto;
+      border: 1px solid #ccdae7;
+      border-radius: 10px;
+      color: #153d63;
+      background: #f4f8fb;
+      font-family: Cambria, "Times New Roman", serif;
+      font-size: 1.2rem;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 10px;
+      align-items: stretch;
+      margin: 24px 0;
+    }
+
+    .flow .node {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 104px;
+      padding: 15px;
+      border: 1px solid #bfd2e3;
+      border-radius: 11px;
+      background: #f5f9fc;
+      text-align: center;
+    }
+
+    .flow .node.bad-node {
+      border-color: #e8b9b5;
+      background: #fff4f3;
+    }
+
+    .flow .node.good-node {
+      border-color: #a9d5c7;
+      background: #f0faf6;
+    }
+
+    .flow .node b {
+      color: var(--navy);
+      font-size: 0.93rem;
+    }
+
+    .flow .node span {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    .arrow {
+      display: grid;
+      place-items: center;
+      color: #6f879c;
+      font-size: 1.4rem;
+      font-weight: 800;
+    }
+
+    table {
+      width: 100%;
+      margin: 18px 0;
+      border-collapse: separate;
+      border-spacing: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      color: #244867;
+      background: #edf3f8;
+      font-size: 0.78rem;
+      letter-spacing: 0.045em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:nth-child(even) { background: #fbfcfd; }
+
+    .rank {
+      display: inline-grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--red);
+      font-size: 0.78rem;
+      font-weight: 800;
+    }
+
+    .severity {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .severity.critical { color: #8c2d2d; background: #fde4e2; }
+    .severity.high { color: #825006; background: #ffedcb; }
+    .severity.medium { color: #155a6c; background: #e1f2f5; }
+
+    .code-location {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.75rem;
+      overflow-wrap: anywhere;
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin-top: 20px;
+    }
+
+    .architecture article {
+      padding: 21px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fbfcfe;
+    }
+
+    .architecture article.recommended {
+      border-color: #8dc9ba;
+      box-shadow: inset 0 4px 0 var(--teal);
+      background: #f7fcfa;
+    }
+
+    .architecture h3 { margin-top: 0; }
+
+    .badge {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: #175b57;
+      background: #dff4ef;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .roadmap {
+      position: relative;
+      margin: 22px 0 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: roadmap;
+    }
+
+    .roadmap li {
+      position: relative;
+      margin: 0 0 18px 18px;
+      padding: 0 0 18px 38px;
+      border-left: 2px solid #ccdae7;
+      counter-increment: roadmap;
+    }
+
+    .roadmap li:last-child {
+      padding-bottom: 0;
+      border-color: transparent;
+    }
+
+    .roadmap li::before {
+      content: counter(roadmap);
+      position: absolute;
+      left: -17px;
+      top: -2px;
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      border: 3px solid white;
+      border-radius: 50%;
+      color: white;
+      background: var(--blue);
+      box-shadow: 0 0 0 1px #b7cadb;
+      font-size: 0.8rem;
+      font-weight: 800;
+    }
+
+    .roadmap b { color: var(--navy); }
+
+    pre {
+      margin: 18px 0;
+      padding: 17px 19px;
+      overflow-x: auto;
+      border: 1px solid #cdd9e5;
+      border-radius: 10px;
+      color: #dceaf6;
+      background: #162a3d;
+      font-size: 0.82rem;
+      line-height: 1.55;
+    }
+
+    .references {
+      display: grid;
+      gap: 9px;
+      margin: 16px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .references li {
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbfd;
+    }
+
+    .references a {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.8rem;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    footer {
+      padding: 30px 20px 50px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-align: center;
+    }
+
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; }
+      nav a { display: inline-block; }
+      .architecture { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 680px) {
+      .hero-inner, .layout { width: min(100% - 24px, 1180px); }
+      .hero-inner { padding: 44px 6px 42px; }
+      section { padding: 24px 20px; }
+      .stats { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      table { display: block; overflow-x: auto; }
+    }
+
+    @media print {
+      body { background: white; font-size: 10.5pt; }
+      .hero { color: var(--ink); background: white; }
+      .hero-inner { width: 100%; padding: 20px 0 24px; }
+      .hero .subtitle, .hero .eyebrow { color: var(--muted); }
+      .pill { color: var(--ink); border-color: var(--line); background: white; }
+      .layout { display: block; width: 100%; margin: 0; }
+      nav { display: none; }
+      section { break-inside: avoid; box-shadow: none; }
+      a { color: inherit; text-decoration: none; }
+      .flow, .architecture { break-inside: avoid; }
+      footer { padding-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Technical diagnosis · C3 · Allegro Hand · Fine manipulation</p>
+      <h1>Why the Current C3 Fine-Manipulation Controller Underperforms</h1>
+      <p class="subtitle">
+        A code-level analysis of the C3 plan, the Allegro execution path, the IK projection,
+        contact-force semantics, the cube-release transient, and the controller architecture
+        required to make C3 materially responsible for object manipulation.
+      </p>
+      <div class="meta">
+        <span class="pill">Analysis only — no implementation</span>
+        <span class="pill">Evidence: <span class="mono">/tmp/c3_ik_sine_roll_dz.log</span></span>
+        <span class="pill">20 August 2026</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="Report contents">
+      <strong>Contents</strong>
+      <a href="#conclusion">1. Executive conclusion</a>
+      <a href="#evidence">2. What the log proves</a>
+      <a href="#unpin">3. The observed jerk</a>
+      <a href="#contract">4. Broken C3 contract</a>
+      <a href="#lambda">5. Lambda problems</a>
+      <a href="#projection">6. IK projection</a>
+      <a href="#planner">7. Planning limitations</a>
+      <a href="#franka">8. Franka reference</a>
+      <a href="#solution">9. Recommended solution</a>
+      <a href="#validation">10. Validation protocol</a>
+      <a href="#dont">11. What not to tune</a>
+      <a href="#code-map">12. Code map</a>
+    </nav>
+
+    <main>
+      <section id="conclusion">
+        <h2>1. Executive conclusion</h2>
+        <div class="thesis">
+          The current experiment is not a faithful execution of a C3 plan. It transforms C3’s
+          predicted state, discards C3’s optimized control input, and reinterprets C3’s contact
+          reaction as an independently commandable actuator. Consequently, even a mathematically
+          excellent C3 solution is not expected to reproduce its predicted cube motion.
+        </div>
+        <p class="lead">
+          The failure is architectural rather than a single bad cost weight. Three problems are
+          stacked on top of one another:
+        </p>
+        <ol>
+          <li><strong>Planner/executor mismatch:</strong> C3 optimizes joint torque <code>u</code>, but the OSC path ignores it.</li>
+          <li><strong>Lossy state transformation:</strong> the already full-order C3 joint state is converted through FK and a loose, redundant IK solve.</li>
+          <li><strong>Incorrect contact-force execution:</strong> lambda is rescaled incorrectly and collapsed to a normal-only force.</li>
+        </ol>
+        <div class="callout info">
+          <strong>Interpretation</strong>
+          The latest high state weights have made the raw first C3 knot locally reasonable. The
+          current log therefore does not show that C3 is incapable of fine manipulation. It shows
+          that the rest of the program does not execute the optimization problem C3 solved.
+        </div>
+      </section>
+
+      <section id="evidence">
+        <h2>2. What the latest log proves</h2>
+        <div class="stats">
+          <div class="stat">
+            <span class="value">0.05–0.07 rad</span>
+            <span class="label">Typical raw first-knot joint displacement</span>
+          </div>
+          <div class="stat">
+            <span class="value">0.02–0.03 rad</span>
+            <span class="label">Typical displacement after IK projection</span>
+          </div>
+          <div class="stat">
+            <span class="value">1.0–1.7 mm</span>
+            <span class="label">Frequently accepted Cartesian projection residual</span>
+          </div>
+        </div>
+
+        <h3>2.1 The catastrophic joint-plan explosions are largely gone</h3>
+        <p>
+          The earlier multi-radian and out-of-range <code>q[1]</code> plans are absent in this run.
+          Every displayed projection succeeds, the raw displacement remains local, and no NaN or
+          fallback is reported. Higher state penalties therefore helped regularize the optimizer.
+        </p>
+
+        <h3>2.2 The projection substantially changes what C3 requested</h3>
+        <p>
+          A common sample changes from approximately <code>raw_dq = 0.065</code> to
+          <code>projected_dq = 0.027</code>. In joint norm, the projection is removing roughly
+          55–65% of the planned displacement. Some of that difference can be redundant posture,
+          but it also changes joint Jacobians, velocities, future contact geometry, and the dynamics
+          that made the C3 prediction valid.
+        </p>
+
+        <h3>2.3 “Projection OK” is a narrow numerical statement</h3>
+        <p>
+          It means that IK placed the fingertip points within a tolerance of positions obtained by
+          forward-kinematics of C3’s <code>q1</code>. It does <em>not</em> establish that:
+        </p>
+        <ul>
+          <li>the fingertips lie on the actual cube surface;</li>
+          <li>the predicted cube pose and fingertip pose remain mutually consistent;</li>
+          <li>the same contact mode, normal, or witness point is preserved;</li>
+          <li>the C3 velocity or force trajectory is realizable;</li>
+          <li>the nonlinear SAP plant will follow the linearized C3 prediction.</li>
+        </ul>
+
+        <h3>2.4 The implemented controller is overwhelmingly position-driven</h3>
+        <p>
+          In the settled portion of the displayed log, <code>|tau_pd|</code> is commonly near
+          1 N·m while the implemented <code>|tau_lambda|</code> is around 0.05–0.075 N·m. Torque
+          norms do not directly equal object-level authority, but they clearly show that the current
+          behavior is dominated by kinematic PD rather than by the C3 contact term.
+        </p>
+      </section>
+
+      <section id="unpin">
+        <h2>3. The displayed jerk is primarily a cube-unpin transient</h2>
+        <div class="equation">
+          t<sub>handoff</sub> = 3.373 s &nbsp;&nbsp;+&nbsp;&nbsp; 0.500 s pin hold
+          &nbsp;&nbsp;=&nbsp;&nbsp; 3.873 s release
+        </div>
+        <p>
+          The jerk reports begin at <code>t = 3.87 s</code>, exactly when the hard kinematic pin is
+          removed. The commanded roll is still printed as zero. This timing is too exact to treat as
+          a coincidence.
+        </p>
+        <div class="callout danger">
+          <strong>What the pin does physically</strong>
+          During the 0.5-second warm-up, the fingers push into the cube while the code overwrites the
+          cube pose and velocity after every simulation step. The cube cannot move to its loaded
+          equilibrium. When that overwrite stops, accumulated contact preload and penetration unload
+          into the free cube as an acceleration spike.
+        </div>
+        <p>
+          The report label <code>[JERK]</code> is itself slightly misleading: the implementation takes
+          one finite difference of cube velocity, so it detects acceleration, not the derivative of
+          acceleration. The early events therefore do not demonstrate that the sine trajectory has a
+          discontinuous mathematical jerk.
+        </p>
+        <div class="callout good">
+          <strong>Experimental correction</strong>
+          Initialize the unpinned hand–cube system close to a force-balanced equilibrium, or release
+          the constraint continuously. Exclude the immediate release window when evaluating
+          fine-manipulation tracking. This release transient is separate from the earlier ring-to-C3
+          contact-set handoff problem.
+        </div>
+      </section>
+
+      <section id="contract">
+        <h2>4. The central error: C3’s control contract is broken</h2>
+        <p>C3 solves a local complementarity dynamics problem of the form:</p>
+        <div class="equation">
+          x<sub>k+1</sub> = A x<sub>k</sub> + B u<sub>k</sub> + D λ<sub>k</sub> + d
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>Meaning in the Allegro C3 model</th>
+              <th>What the OSC executor currently does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>x</strong></td>
+              <td>16 hand positions, cube pose, 16 hand velocities, cube twist</td>
+              <td>Takes only <code>q1</code>, transforms it through FK→IK, then position-tracks it</td>
+            </tr>
+            <tr>
+              <td><strong>u</strong></td>
+              <td>The 16 commandable Allegro joint torques</td>
+              <td><strong>Discarded</strong> in <code>--exec_mode=osc</code></td>
+            </tr>
+            <tr>
+              <td><strong>λ</strong></td>
+              <td>Contact-force coefficients jointly constrained by complementarity</td>
+              <td>Reinterpreted as an independent, normal-only force command</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="flow" aria-label="Current inconsistent controller flow">
+          <div class="node">
+            <b>C3 optimizer</b>
+            <span>Predicts x, joint torque u, and contact reaction λ together</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node bad-node">
+            <b>Lossy reinterpretation</b>
+            <span>q1→FK→IK; u0 dropped; λ collapsed and rescaled</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node bad-node">
+            <b>Different closed-loop system</b>
+            <span>gravity + pure position PD + ad hoc Jᵀ normal force</span>
+          </div>
+        </div>
+
+        <p>
+          The predicted cube trajectory is only consistent with the particular <code>u</code> and
+          <code>λ</code> appearing in the C3 solution. Once <code>u0</code> is replaced by a different
+          PD law, the prediction no longer describes the executed system.
+        </p>
+        <div class="callout warn">
+          <strong>Why the zero-lambda ablation made C3 appear irrelevant</strong>
+          In OSC mode, removing the lambda-derived term leaves only the PD controller because the
+          actual C3 input <code>u0</code> was already absent. That experiment revealed the execution
+          mismatch; it did not establish that C3’s optimized control input had no value.
+        </div>
+      </section>
+
+      <section id="lambda">
+        <h2>5. Lambda is not being executed with correct semantics</h2>
+
+        <h3>5.1 Lambda is endogenous, not a second actuator</h3>
+        <p>
+          Lambda is selected jointly with state and input so that the contact complementarity model
+          closes. In the full-hand model, the commandable input is joint torque <code>u</code>. Lambda
+          is the contact reaction predicted to emerge under that motion and torque. It cannot be
+          independently imposed while simultaneously replacing <code>u</code> with an unrelated PD law.
+        </p>
+
+        <h3>5.2 The frictional direction is discarded</h3>
+        <p>The Anitescu model constructs cone directions approximately as:</p>
+        <div class="equation">J<sub>c</sub> = E<sub>t</sub><sup>T</sup>J<sub>n</sub> + μJ<sub>t</sub></div>
+        <p>
+          Each lambda coefficient therefore acts along a combined normal–tangential friction-cone
+          direction. The Allegro executor sums the coefficients into one scalar and applies a
+          hard-coded cube-face normal. Fine rolling depends precisely on tangential traction, so this
+          discards the most important portion of the planned wrench. It also uses the fingertip frame
+          origin rather than the actual contact witness point, changing the moment arm.
+        </p>
+
+        <h3>5.3 The physical lambda is divided by its scale a second time</h3>
+        <p>
+          <code>C3::Solve()</code> converts the stored force solution back to physical units before
+          returning. The API states:</p>
+        <div class="equation">
+          λ<sub>physical</sub> = GetLambdaScaling() · λ<sub>internal</sub>
+        </div>
+        <p>
+          Nevertheless, the executor computes
+          <code>GetForceSolution()[0] / GetLambdaScaling()</code>. That converts the already physical
+          value back toward the internal scaled coordinate. The adjacent source comment claiming the
+          division recovers physical units is incorrect.
+        </p>
+
+        <h3>5.4 Relinearization can change applied force without a new plan</h3>
+        <p>
+          <code>UpdateLCS()</code> may update the current scaling. If relinearization runs every 5 ms
+          while C3 solves every 40 ms, the stored force plan comes from the old solve but the executor
+          divides it using the newly updated scale. The applied term may consequently jump on a
+          relinearization tick despite there being no new C3 solution. A reported event with
+          <code>solve_age=21 ms</code> and <code>relin_age=1 ms</code> is consistent with this mechanism.
+        </p>
+      </section>
+
+      <section id="projection">
+        <h2>6. Why the C3→FK→IK projection is not the right abstraction</h2>
+        <p>
+          The Franka reference needs a task-space-to-full-order mapping because its C3 model is reduced.
+          The Allegro C3 model is already full order: <code>q1</code> contains all 16 Allegro joint
+          positions. Projecting it through fingertip FK and then IK is therefore not model reduction;
+          it is a lossy remapping of an existing full-order prediction.
+        </p>
+
+        <h3>6.1 The accepted error is exactly explained by the IK box</h3>
+        <p>
+          IK permits ±1 mm independently in each Cartesian coordinate. Therefore an accepted point may
+          be as far as <code>√3 mm ≈ 1.732 mm</code> from its nominal target. The observed maximum of
+          1.70659 mm is the expected edge of that feasible box, not evidence of high-precision contact.
+        </p>
+
+        <h3>6.2 The solve is under-specified</h3>
+        <p>
+          The projection contains position constraints and an initial guess, but no explicit posture
+          continuity objective, fingertip orientation target, surface-normal condition, contact-frame
+          constraint, or desired velocity. Redundant IK can therefore move to a different joint-space
+          branch while remaining nominally position-feasible.
+        </p>
+
+        <h3>6.3 It does not certify contact consistency</h3>
+        <p>
+          The projection targets are generated from hand FK alone. They are not recomputed from the
+          C3-predicted cube pose at knot 1, and they are not constrained to the cube’s signed-distance
+          surface. Preserving three world points approximately does not preserve the contact model that
+          gave C3 its predicted object motion.
+        </p>
+
+        <h3>6.4 It changes the timing</h3>
+        <p>
+          C3’s first future knot is 50 ms ahead, while the ramp reaches that knot over a typical 40 ms
+          solve period. The executor therefore asks for the planned state about 20% faster than the
+          model that generated it, and restarts the interpolation whenever a new solve arrives.
+        </p>
+        <div class="callout info">
+          <strong>Correct response to invalid C3 joint states</strong>
+          If <code>q1</code> violates joint or velocity limits, those constraints belong inside C3.
+          Post-processing an invalid trajectory into a different one destroys the dynamic consistency
+          that is the principal reason to use MPC.
+        </div>
+      </section>
+
+      <section id="planner">
+        <h2>7. Important limitations in the current C3 problem</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Priority</th>
+              <th>Problem</th>
+              <th>Consequence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="rank">1</span></td>
+              <td><span class="severity critical">Critical</span><br><strong>Only input torque is hard-bounded</strong></td>
+              <td>No C3 joint-position, velocity, acceleration, torque-rate, fingertip-step, or trust-region bounds.</td>
+            </tr>
+            <tr>
+              <td><span class="rank">2</span></td>
+              <td><span class="severity high">High</span><br><strong>One local LCS is repeated over the horizon</strong></td>
+              <td>Normals, contact points, mass properties, and Jacobians are frozen while the plan rolls the cube.</td>
+            </tr>
+            <tr>
+              <td><span class="rank">3</span></td>
+              <td><span class="severity high">High</span><br><strong>Simulator/model mismatch</strong></td>
+              <td>1 ms SAP compliant contact is compared with 50 ms rigid polyhedral complementarity.</td>
+            </tr>
+            <tr>
+              <td><span class="rank">4</span></td>
+              <td><span class="severity high">High</span><br><strong>Desired behavior is double-specified</strong></td>
+              <td>IK already prescribes finger joints from the desired cube path while C3 is also told to track that cube path.</td>
+            </tr>
+            <tr>
+              <td><span class="rank">5</span></td>
+              <td><span class="severity medium">Medium</span><br><strong>Quaternion handled in Euclidean coordinates</strong></td>
+              <td>The local state cost has no unit-quaternion manifold constraint over the predicted horizon.</td>
+            </tr>
+            <tr>
+              <td><span class="rank">6</span></td>
+              <td><span class="severity medium">Medium</span><br><strong>Complementarity depends on ADMM convergence</strong></td>
+              <td>A numerically returned plan is not proof that consensus and complementarity residuals are acceptably small.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>7.1 The contact model is especially weak for roll</h3>
+        <p>
+          Rolling changes the cube-face normals and moves each fingertip witness point. A single
+          linearization repeated across a 250 ms horizon assumes those quantities stay local. Without
+          a trust region, C3 is allowed to request a motion for which its own matrices are no longer a
+          faithful approximation.
+        </p>
+
+        <h3>7.2 The friction parameters are not identical</h3>
+        <p>
+          The simulation cube uses static friction 0.8 and dynamic friction 0.5, while the LCS is
+          commonly run with <code>--mu=0.5</code>. The LCS therefore lacks the simulator’s larger static
+          sticking region. Near stick–slip transitions, this changes the contact mode and force needed
+          to initiate motion.
+        </p>
+
+        <h3>7.3 High state weights solve the symptom but suppress C3’s role</h3>
+        <p>
+          Large hand-state penalties prevent grotesque joint predictions, which is useful. But the
+          desired hand state itself comes from IK. As the weight grows, C3 increasingly becomes an
+          expensive tracker of a manipulation trajectory selected outside C3. The dynamically
+          meaningful portion—the optimized torque <code>u</code>—is then ignored by OSC.
+        </p>
+      </section>
+
+      <section id="franka">
+        <h2>8. What the Franka reference actually does</h2>
+        <p>
+          The reference implementation uses a reduced C3 plant whose controlled end effector has three
+          translational degrees of freedom. C3’s <code>u</code> is consequently a real three-dimensional
+          end-effector force, not a hidden 7-joint torque vector and not lambda.
+        </p>
+
+        <div class="flow" aria-label="Franka reference architecture">
+          <div class="node good-node">
+            <b>Reduced C3</b>
+            <span>EE state + object state; commandable EE force u</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node good-node">
+            <b>Timestamped references</b>
+            <span>EE position trajectory + exact u trajectory</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node good-node">
+            <b>High-rate OSC</b>
+            <span>Force tracking, position tracking, acceleration limits, smoothing</span>
+          </div>
+        </div>
+
+        <p>
+          The Franka pipeline publishes <code>GetInputSolution()</code> as
+          <code>end_effector_force_target</code>. Its low-level OSC then realizes the state and the exact
+          commandable input together. It does not publish or directly execute C3’s lambda trajectory.
+        </p>
+        <div class="callout warn">
+          <strong>Why the analogy matters</strong>
+          The Allegro <code>c3_ik</code> path claims to mirror the reduced-model/full-order-tracker
+          separation, but its C3 model is not reduced. Converting a 16-joint C3 state back through IK
+          does not reproduce the reference architecture.
+        </div>
+      </section>
+
+      <section id="solution">
+        <h2>9. Recommended solution</h2>
+        <p class="lead">
+          Choose one coherent planner/controller contract. Two valid designs exist; the present hybrid
+          should not be tuned further as though it were one of them.
+        </p>
+
+        <div class="architecture">
+          <article>
+            <span class="badge">Near-term validation path</span>
+            <h3>Full-order joint-space C3</h3>
+            <p>Keep the current full Allegro state, but faithfully execute the input it optimizes.</p>
+            <ul>
+              <li>Add hard <code>q</code>, <code>v</code>, <code>u</code>, and <code>Δu</code> bounds.</li>
+              <li>Add joint/fingertip trust regions and acceleration limits.</li>
+              <li>Relinearize and solve atomically on the same cadence.</li>
+              <li>Use <code>τ = s<sub>u</sub>u<sub>0</sub> + K(x*−x)</code>.</li>
+              <li>Use <code>q*</code> and <code>v*</code> as feedback references, not a pure PD command.</li>
+              <li>Keep lambda diagnostic-only during the first validation stage.</li>
+              <li>Remove the FK→IK projection.</li>
+            </ul>
+          </article>
+
+          <article class="recommended">
+            <span class="badge">Recommended final architecture</span>
+            <h3>Reduced task-space multi-finger C3</h3>
+            <p>Make C3 choose object/contact behavior in coordinates the hand controller can realize.</p>
+            <ul>
+              <li>State: cube pose/twist and fingertip/contact-frame positions/velocities.</li>
+              <li>Optionally include surface coordinates, gaps, or low-dimensional grasp synergies.</li>
+              <li>Input <code>u</code>: commandable full 3D fingertip forces or contact-frame commands.</li>
+              <li>High-rate whole-hand QP/OSC maps state and exact <code>u</code> to joint torque.</li>
+              <li>QP enforces joint, velocity, acceleration, torque, rate, and posture constraints.</li>
+              <li>Lambda remains the internal predicted contact reaction/contact-mode variable.</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>9.1 Coherent full-order feedback law</h3>
+        <div class="equation">
+          τ(t) = s<sub>u</sub>u<sub>0</sub><sup>C3</sup> + K(t)(x<sup>*</sup>(t) − x(t))
+        </div>
+        <p>
+          The feedforward term is the command C3 used in its prediction. The feedback term rejects
+          modeling error around the nominal plan. A constrained inverse-dynamics QP or local TVLQR is
+          preferable to pure position PD because it can track position and velocity while enforcing
+          actuation and acceleration limits.
+        </p>
+
+        <h3>9.2 Better contact-aware MPC</h3>
+        <p>
+          For larger motion, use time-varying linearizations along a nominal trajectory, successive
+          convexification, or contact-implicit MPC with explicit trust regions. At minimum, shorten the
+          horizon until predicted witness-point and normal motion remains genuinely local.
+        </p>
+
+        <h3>9.3 Make plan and model an atomic bundle</h3>
+        <p>
+          A control plan must retain the exact LCS, input scale, lambda scale, contact basis, and witness
+          points under which it was solved. Do not update one of those objects independently while the
+          executor continues consuming an older plan.
+        </p>
+      </section>
+
+      <section id="validation">
+        <h2>10. Research-grade validation protocol</h2>
+        <p>
+          Before committing to either architecture, separate optimizer quality, model quality, and
+          execution quality with a one-step nonlinear rollout test.
+        </p>
+
+        <ol class="roadmap">
+          <li>
+            <b>Capture one complete C3 solution.</b><br>
+            Store the common initial state <code>x0</code>, optimized <code>u0</code>, physical
+            <code>lambda0</code>, predicted <code>x1</code>, contact basis, and scaling values.
+          </li>
+          <li>
+            <b>Check the optimization residuals.</b><br>
+            Report ADMM consensus, complementarity, dynamics equality, input bounds, and trust-region
+            violations. “Solver returned a solution” is not a convergence certificate.
+          </li>
+          <li>
+            <b>Run a nonlinear one-step experiment.</b><br>
+            Starting from the identical, unpinned <code>x0</code>, apply the exact C3 <code>u0</code> to
+            the 1 ms SAP plant for one 50 ms C3 interval.
+          </li>
+          <li>
+            <b>Compare prediction with reality.</b><br>
+            Measure cube pose/twist, fingertip positions, signed gaps, contact mode, witness points,
+            full contact wrenches, and <code>x1_SAP − x1_C3</code>.
+          </li>
+          <li>
+            <b>Add feedback and repeat.</b><br>
+            Compare exact <code>u0</code>, feedback-only, and <code>u0 + feedback</code>. Keep direct
+            lambda injection disabled so the causal role of C3 input remains identifiable.
+          </li>
+          <li>
+            <b>Only then evaluate long-horizon fine manipulation.</b><br>
+            Once one-step predictions are credible, evaluate roll/dz tracking after the release
+            transient and quantify RMS/peak object error rather than relying only on visual inspection.
+          </li>
+        </ol>
+
+        <div class="callout info">
+          <strong>Decision rule</strong>
+          If the SAP one-step rollout matches C3 under exact <code>u0</code>, the planner is useful and
+          the primary fault is execution. If it does not, improve the linearization, contact model, and
+          trust region before building a more elaborate tracker around that prediction.
+        </div>
+      </section>
+
+      <section id="dont">
+        <h2>11. What will not solve the root problem</h2>
+        <ul>
+          <li><strong>Increasing <code>k_hold</code> indefinitely:</strong> makes the state plan tame but increasingly turns C3 into an IK tracker.</li>
+          <li><strong>Increasing the velocity weight alone:</strong> slows the plan without repairing the planner/executor contract.</li>
+          <li><strong>More ADMM iterations alone:</strong> may improve convergence but cannot make a different low-level controller execute the C3 dynamics.</li>
+          <li><strong>Tightening only the IK tolerance:</strong> reduces one source of Cartesian error but still transforms and retimes the plan.</li>
+          <li><strong>Crossfading lambda:</strong> hides an abrupt command but preserves the wrong force semantics and scaling.</li>
+          <li><strong>Multiplying lambda by zero:</strong> is a useful ablation, but in the current OSC path it also removes nearly the only remaining C3-derived actuation.</li>
+          <li><strong>Judging the first 100 ms after unpin:</strong> mostly measures release preload, not fine-manipulation quality.</li>
+        </ul>
+        <div class="thesis">
+          C3 should be judged only after its exact commandable input and predicted state are realized
+          together by a controller whose constraints and timing match the model interface.
+        </div>
+      </section>
+
+      <section id="code-map">
+        <h2>12. Code evidence map</h2>
+        <p>The following locations support the diagnosis. Links are repository-relative.</p>
+        <ul class="references">
+          <li><a href="allegro_grasp_c3_squeeze.cc">allegro_grasp_c3_squeeze.cc:4281 — direct mode executes the optimized C3 input</a></li>
+          <li><a href="allegro_grasp_c3_squeeze.cc">allegro_grasp_c3_squeeze.cc:4479 — OSC constructs position-PD torque</a></li>
+          <li><a href="allegro_grasp_c3_squeeze.cc">allegro_grasp_c3_squeeze.cc:4496 — physical lambda is divided by scaling again</a></li>
+          <li><a href="allegro_grasp_c3_squeeze.cc">allegro_grasp_c3_squeeze.cc:4749 — hard cube pin release after 0.5 seconds</a></li>
+          <li><a href="cube_kinematics.h">cube_kinematics.h:109 — ±1 mm per-axis IK constraints</a></li>
+          <li><a href="../../c3_src/core/c3.h">c3_src/core/c3.h:226 — documented physical lambda scaling</a></li>
+          <li><a href="../../c3_src/core/c3.cc">c3_src/core/c3.cc:404 — force solution is rescaled to physical units</a></li>
+          <li><a href="../../c3_src/core/lcs.cc">c3_src/core/lcs.cc:46 — complementarity dynamics scaling</a></li>
+          <li><a href="../../c3_src/multibody/lcs_factory.cc">c3_src/multibody/lcs_factory.cc:303 — local multibody LCS construction</a></li>
+          <li><a href="../../c3_src/multibody/lcs_factory.cc">c3_src/multibody/lcs_factory.cc:421 — one LCS repeated over the horizon</a></li>
+          <li><a href="../../c3_src/multibody/lcs_factory.cc">c3_src/multibody/lcs_factory.cc:496 — Anitescu friction-cone basis</a></li>
+          <li><a href="../../systems/controllers/sampling_based_c3_controller.cc">sampling_based_c3_controller.cc:1703 — Franka reads C3 input solution</a></li>
+          <li><a href="../../systems/controllers/sampling_based_c3_controller.cc">sampling_based_c3_controller.cc:1824 — Franka publishes exact u as force target</a></li>
+          <li><a href="franka_osc_controller.cc">franka_osc_controller.cc:149 — high-rate position/force OSC construction</a></li>
+          <li><a href="urdf/numbered_cube/numbered_cube.sdf">numbered_cube.sdf:87 — simulation static/dynamic friction parameters</a></li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    C3 + Allegro fine-manipulation diagnosis · Read-only technical analysis · No source implementation performed
+  </footer>
+</body>
+</html>
