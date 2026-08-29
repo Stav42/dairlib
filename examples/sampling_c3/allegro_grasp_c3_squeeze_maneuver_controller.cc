@@ -9,13 +9,21 @@ ManeuverController::ManeuverController(const SqueezeConfig& config,
     : config_(config), grasp_(grasp),
       ring_engaged_(grasp->grasp_finger_count == 4) {
   DRAKE_DEMAND(grasp_ != nullptr);
-  gait_plan_ = config_.gait_scheme == "relay"
-                   ? std::vector<std::pair<int, GaitLegKind>>{
-                         {3, GaitLegKind::kEngage}}
-                   : std::vector<std::pair<int, GaitLegKind>>{
-                         {3, GaitLegKind::kRegrasp},
-                         {1, GaitLegKind::kRegrasp},
-                         {0, GaitLegKind::kRegrasp}};
+  if (config_.gait_scheme == "relay") {
+    gait_plan_ = {{3, GaitLegKind::kEngage}};
+  } else if (config_.gait_scheme == "triangle") {
+    gait_plan_ = {{3, GaitLegKind::kRegrasp},
+                  {1, GaitLegKind::kRegrasp},
+                  {0, GaitLegKind::kRegrasp}};
+  }
+}
+
+bool ManeuverController::UsesParkedRing() const {
+  return config_.gait_scheme == "relay" || IsSpiderYawOnly();
+}
+
+bool ManeuverController::IsSpiderYawOnly() const {
+  return config_.gait_scheme == "spider";
 }
 
 void ManeuverController::Update(
@@ -54,19 +62,26 @@ void ManeuverController::ConfigureCubeReference(
   if (!config_.gait) return;
   reference->gait_enabled = true;
   reference->gait_rotate_start_time = gait_rotate_start_;
-  reference->gait_rotate_duration = config_.gait_rotate_duration;
+  reference->gait_rotate_duration = IsSpiderYawOnly()
+      ? config_.spider_yaw_duration
+      : config_.gait_rotate_duration;
   reference->gait_theta_start = gait_theta_start_;
   reference->gait_theta_target = gait_theta_target_;
+  reference->gait_rotation_frame = IsSpiderYawOnly()
+      ? GaitRotationFrame::kWorldZ
+      : GaitRotationFrame::kCubeY;
 }
 
 bool ManeuverController::ring_engaged() const { return ring_engaged_; }
 
 void ManeuverController::OverrideJointTarget(
     double time, Eigen::VectorXd* desired) const {
-  if (config_.gait_scheme == "relay" && !ring_engaged_ &&
+  const bool ring_is_moving =
+      gait_phase_ == GaitPhase::kMove && gait_entered_ &&
+      !gait_plan_.empty() && gait_plan_[gait_leg_].first == 3;
+  if (UsesParkedRing() && !ring_engaged_ &&
       ring_parked_positions_.size() == desired->size() &&
-      !(gait_phase_ == GaitPhase::kMove && gait_entered_ &&
-        gait_plan_[gait_leg_].first == 3)) {
+      !ring_is_moving) {
     const int start = GraspSetup::kFingerStarts[3];
     desired->segment<4>(start) = ring_parked_positions_.segment<4>(start);
   }

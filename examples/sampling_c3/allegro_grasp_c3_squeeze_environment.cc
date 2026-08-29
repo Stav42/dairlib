@@ -47,7 +47,7 @@ struct SimulationEnvironment::Impl {
                                   config.isolate_cube);
     meshcat = AddGraspVisualization(
         &builder, *plant, *scene_graph, config.release_middle,
-        config.gait && config.gait_scheme == "relay");
+        config.gait && config.gait_scheme != "triangle");
     telemetry = AddGraspTelemetry(&builder, *plant, hand, config.lcm_publish,
                                   config.lcm_publish_hz);
 

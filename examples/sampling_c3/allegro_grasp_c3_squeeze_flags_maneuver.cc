@@ -102,10 +102,10 @@ DEFINE_double(release_middle_tri_apex_z, 0.02,
 // That matters beyond convenience — the thumb is the sole opposing contact,
 // and releasing it while all three others are on one face would drop the cube.
 DEFINE_bool(gait, false,
-            "Run the rotate-then-regrasp gait. Implies the 4-finger triangle "
-            "topology (as --release_middle builds it) and suppresses the "
-            "one-shot --release_finger chain, which this replaces with a "
-            "repeatable cycle. Requires --exec_mode=osc and "
+            "Run the selected maneuver from --gait_scheme. triangle implies "
+            "the 4-finger topology; relay and spider begin with the genuine "
+            "3-finger index/middle/thumb grasp and park ring. Suppresses the "
+            "one-shot --release_finger chain. Requires --exec_mode=osc and "
             "--track_cube_contact.");
 DEFINE_double(gait_delta, 0.7854,
               "Cube rotation per gait cycle (rad, about the grasp axis). "
@@ -133,7 +133,19 @@ DEFINE_string(gait_scheme, "triangle",
               "and comes down only to hold while index and middle step "
               "round, then lifts again. No finger ever crosses the face's "
               "centre line, which is what put ring out of reach in the "
-              "triangle scheme.");
+              "triangle scheme.\n"
+              "  spider   - first lateral-reorientation milestone only: "
+              "index/middle/thumb make one small world-+Z yaw while ring "
+              "stays parked; yaw then stops and holds. No finger relocation "
+              "runs yet.");
+DEFINE_double(spider_yaw_delta, 0.17453292519943295,
+              "spider: signed world-+Z yaw for this first isolated turn "
+              "(rad). Default +10 deg. This is deliberately independent of "
+              "the historical 45 deg --gait_delta about cube +Y.");
+DEFINE_double(spider_yaw_duration, 1.0,
+              "spider: duration (s) of the minimum-jerk small-yaw ramp. "
+              "After this ramp and --gait_hold_time, the controller stops "
+              "the maneuver and holds the final yaw.");
 DEFINE_double(relay_ring_hold_z, 0.0,
               "relay: where on the -Y face ring holds, as a height (m) above "
               "the face centre. Negative is below.\n"
@@ -193,12 +205,10 @@ DEFINE_double(gait_log_period, 0.02,
               "see a fast transient (a jerk plays out in tens of ms), only "
               "enough for a slow trend.");
 DEFINE_bool(legacy_log, false,
-            "Restore the old high-rate diagnostics: the per-relinearization "
-            "'[t=..] relin |A|=..' line, the '[track IK] N ms' timing, and "
-            "the per-solve 'C3 PLAN' header. At --relin_period_steps=5 and "
-            "--track_ik_period_steps=5 the first two print at 200 Hz each, "
-            "which buries everything the gait says. Off by default; the "
-            "gait's own state prints and --gait_log carry what matters.");
+            "Print the compact historical-style C3 PLAN report after every "
+            "solve: physical C3 normal-force trajectory, C3 input magnitude, "
+            "and planned cube height. It is intentionally verbose at a fast "
+            "--c3_period_steps; keep it off unless inspecting the plan.");
 DEFINE_int32(gait_seek_period_steps, 5,
              "Re-solve a regrasp leg's destination against the cube's MEASURED "
              "pose once every this many control steps (control_dt=1ms), for "

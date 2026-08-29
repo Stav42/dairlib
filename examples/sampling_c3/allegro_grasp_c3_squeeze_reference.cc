@@ -57,6 +57,14 @@ CubeReference MakeCubeReference(
     const double theta = config.gait_theta_start +
                          ramp * (config.gait_theta_target -
                                  config.gait_theta_start);
+    if (config.gait_rotation_frame == GaitRotationFrame::kWorldZ) {
+      const RotationMatrix<double> world_yaw(
+          RollPitchYaw<double>(0.0, 0.0, theta));
+      return {RigidTransform<double>(
+                  world_yaw * initial_cube_pose.rotation(),
+                  initial_cube_pose.translation()),
+              Eigen::Vector3d::Zero()};
+    }
     return {initial_cube_pose *
                 RigidTransform<double>(
                     RotationMatrix<double>(RollPitchYaw<double>(0.0, theta, 0.0))),

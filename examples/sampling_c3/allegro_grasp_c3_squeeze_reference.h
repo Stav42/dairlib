@@ -9,6 +9,14 @@
 
 namespace dairlib::allegro_grasp_c3 {
 
+enum class GaitRotationFrame {
+  // Historical gait: post-multiply by a rotation about the cube's own +Y.
+  kCubeY,
+  // Lateral spiderwalk: pre-multiply the cube orientation by world +Z while
+  // leaving the cube center fixed.
+  kWorldZ,
+};
+
 // Parameters of the cube-reference generator. These are data rather than
 // gflags so the profile can be evaluated deterministically in a unit test.
 struct CubeMotionReferenceConfig {
@@ -24,6 +32,7 @@ struct CubeMotionReferenceConfig {
   double gait_rotate_duration{4.0};
   double gait_theta_start{0.0};
   double gait_theta_target{0.0};
+  GaitRotationFrame gait_rotation_frame{GaitRotationFrame::kCubeY};
 };
 
 struct CubeReference {

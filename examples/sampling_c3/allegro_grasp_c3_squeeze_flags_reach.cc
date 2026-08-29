@@ -61,13 +61,14 @@ DEFINE_bool(track_cube_contact, false,
             "of pointing at the static t=0 q_contact. Default false keeps the "
             "static q_contact (A/B toggle).");
 DEFINE_bool(contact_force_log, false,
-            "Print the sim plant's resolved contact force (ContactResults, "
-            "one PointPairContactInfo per colliding geometry pair), "
-            "throttled to --contact_force_log_hz and only when all 3 "
-            "fingertip-cube pairs are simultaneously in contact. Suppresses "
-            "the C3 PLAN / --plan_debug SOLVER DIAG tables, the relin "
-            "|A|/|B|/|D|/|v_hand| line, and the tau(unclamped) saturation "
-            "line while active, so this is the ONLY per-step output.");
+            "Print a throttled per-finger SAP contact table for forces "
+            "actually resolved ON THE CUBE. Each row sums every point-pair "
+            "contact for that fingertip and reports geometric-normal "
+            "compression, friction magnitude, vertical force, and slip. "
+            "In osc mode, it also reports C3's raw normal force and the "
+            "post-scale/crossfade OSC normal-force command from the prior "
+            "1 ms tick. Suppresses the C3 PLAN / --plan_debug SOLVER DIAG "
+            "tables and other high-rate diagnostics while active.");
 DEFINE_double(contact_force_log_hz, 10.0,
               "Print rate (Hz) for --contact_force_log.");
 DEFINE_bool(lcm_publish, true,
@@ -226,5 +227,10 @@ DEFINE_bool(c3_joint_plan_log, false,
             "after every solve, together with measured q and per-finger "
             "q1-minus-measured norms. Intended to diagnose whether "
             "--osc_target_source=c3 is producing sensible PD targets.");
+DEFINE_bool(osc_torque_split_log, false,
+            "With --exec_mode=osc, print at each C3 solve the magnitude and "
+            "per-finger split between OSC's joint-PD torque and its C3 "
+            "normal-force Jacobian-transpose torque. Percentages normalize "
+            "those two component norms only; gravity is deliberately excluded.");
 
 }  // namespace dairlib

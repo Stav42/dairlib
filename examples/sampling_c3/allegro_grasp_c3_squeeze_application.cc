@@ -3,7 +3,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
+
+#include <Eigen/Geometry>
+
+#include <drake/math/roll_pitch_yaw.h>
 
 #include "allegro_grasp_c3_squeeze_execution.h"
 #include "allegro_grasp_c3_squeeze_diagnostics.h"
@@ -16,6 +22,8 @@ namespace {
 
 using Eigen::Vector3d;
 using Eigen::VectorXd;
+
+constexpr double kRotationAxisEpsilon = 1e-6;
 
 }  // namespace
 
@@ -42,6 +50,7 @@ int SqueezeApplication::Run() {
     environment_.PublishState();
     const std::array<bool, 4> touching = DetectContacts();
     LogContacts(time);
+    LogRotation(time);
     VectorXd torque;
     if (phase_ == ControlPhase::kReach) {
       torque = ComputeReachTorque(time, touching);
@@ -79,16 +88,87 @@ void SqueezeApplication::LogContacts(double time) const {
       1, static_cast<int>(std::lround(
              1.0 / (config_.contact_force_log_hz * kControlDt))));
   if (static_cast<long>(std::lround(time / kControlDt)) % period != 0) return;
-  const auto& contacts = environment_.contacts();
-  std::cout << "[t=" << time << "] contacts="
-            << contacts.num_point_pair_contacts();
-  for (int k = 0; k < contacts.num_point_pair_contacts(); ++k) {
-    const auto& info = contacts.point_pair_contact_info(k);
-    std::cout << " [" << environment_.plant().get_body(info.bodyA_index()).name()
-              << "-" << environment_.plant().get_body(info.bodyB_index()).name()
-              << " |f|=" << info.contact_force().norm() << "]";
+  PrintSapContactForceDiagnostic({
+      time,
+      last_osc_normal_command_.time,
+      last_osc_normal_command_.valid,
+      config_.lambda_torque_scale,
+      SummarizeSapFingertipCubeContacts(
+          environment_.contacts(), grasp_.cube_body, grasp_.tip_bodies),
+      last_osc_normal_command_.c3_normal_force_target,
+      last_osc_normal_command_.c3_normal_force_applied});
+}
+
+void SqueezeApplication::LogRotation(double time) const {
+  if (!config_.rot_log || phase_ != ControlPhase::kC3) return;
+  const int period = std::max(
+      1, static_cast<int>(std::lround(
+             std::max(kControlDt, config_.rot_log_period) / kControlDt)));
+  if (static_cast<long>(std::lround(time / kControlDt)) % period != 0) return;
+
+  // The raw reference, rather than the IK-lead-clamped pose, is what C3 and
+  // the target ghost receive. Express command and measurement in the initial
+  // cube frame so their rotation angles and axes have the same reference.
+  const double reference_time = std::max(0.0, time - (handoff_time_ + 0.5));
+  const auto commanded = CubeTarget(reference_time).pose;
+  const auto measured = CubePoseFromPositions(environment_.cube_positions());
+  const Eigen::Matrix3d R_WC0 = grasp_.initial_cube_pose.rotation().matrix();
+  const Eigen::Matrix3d R_C0C_cmd =
+      R_WC0.transpose() * commanded.rotation().matrix();
+  const Eigen::Matrix3d R_C0C_meas =
+      R_WC0.transpose() * measured.rotation().matrix();
+  const Eigen::Matrix3d R_cmd_meas =
+      commanded.rotation().matrix().transpose() * measured.rotation().matrix();
+  // Left-relative rotations expose rotation about fixed world axes.  In
+  // particular, yaw() below is the signed progress of the spider primitive
+  // about world Z even when the cube's initial orientation is not identity.
+  const drake::math::RollPitchYaw<double> command_world_delta(
+      commanded.rotation() * grasp_.initial_cube_pose.rotation().inverse());
+  const drake::math::RollPitchYaw<double> measured_world_delta(
+      measured.rotation() * grasp_.initial_cube_pose.rotation().inverse());
+  const double yaw_error = std::remainder(
+      measured_world_delta.yaw_angle() - command_world_delta.yaw_angle(),
+      2.0 * M_PI);
+
+  const Eigen::AngleAxisd command_rotation(R_C0C_cmd);
+  const Eigen::AngleAxisd measured_rotation(R_C0C_meas);
+  const Eigen::AngleAxisd residual_rotation(R_cmd_meas);
+  const bool have_axes =
+      command_rotation.angle() > kRotationAxisEpsilon &&
+      measured_rotation.angle() > kRotationAxisEpsilon;
+  const double axis_drift = have_axes
+      ? std::acos(std::clamp(command_rotation.axis().dot(
+                                  measured_rotation.axis()),
+                              -1.0, 1.0))
+      : 0.0;
+  const Vector3d position_drift_C0 = R_WC0.transpose() *
+      (measured.translation() - grasp_.initial_cube_pose.translation());
+  const double position_error =
+      (measured.translation() - commanded.translation()).norm();
+
+  std::ostringstream line;
+  line << std::fixed << std::setprecision(3)
+       << "[ROTATION t=" << time << " ref=" << reference_time
+       << " pinned=" << cube_pinned_ << "] "
+       << std::setprecision(6)
+       << "cmd_angle=" << command_rotation.angle() << " rad "
+       << "meas_angle=" << measured_rotation.angle() << " rad "
+       << "residual_angle=" << residual_rotation.angle() << " rad "
+       << "cmd_world_yaw=" << command_world_delta.yaw_angle() << " rad "
+       << "meas_world_yaw=" << measured_world_delta.yaw_angle() << " rad "
+       << "yaw_error=" << yaw_error << " rad "
+       << "meas_world_roll=" << measured_world_delta.roll_angle() << " rad "
+       << "meas_world_pitch=" << measured_world_delta.pitch_angle() << " rad "
+       << "axis_drift=";
+  if (have_axes) {
+    line << axis_drift << " rad ";
+  } else {
+    line << "n/a ";
   }
-  std::cout << "\n";
+  line << "pos_drift_C0=[" << position_drift_C0.transpose() << "] m "
+       << "|pos_drift|=" << position_drift_C0.norm() << " m "
+       << "pos_error=" << position_error << " m";
+  std::cout << line.str() << "\n";
 }
 
 VectorXd SqueezeApplication::ComputeReachTorque(
@@ -176,6 +256,7 @@ void SqueezeApplication::UpdateManeuver(
 }
 
 void SqueezeApplication::UpdatePlanner(double time) {
+  schedule_.solved_this_tick = false;
   const bool relinearize = config_.relinearize &&
       schedule_.control_steps % std::max(1, config_.relin_period_steps) == 0;
   const bool solve =
@@ -195,8 +276,23 @@ void SqueezeApplication::UpdatePlanner(double time) {
   UpdateHorizonTarget(reference_time);
   if (solve) {
     planner_.Solve(environment_.state());
+    schedule_.solved_this_tick = true;
     schedule_.last_solve_time = time;
     ++schedule_.solves;
+    if (config_.legacy_log && !config_.contact_force_log) {
+      const PlannerDimensions& d = planner_.dimensions();
+      PrintLegacyC3Plan({
+          time, config_.c3_dt, d.hand_positions + 6,
+          planner_.implementation().GetLambdaScaling(), planner_.input_scale(),
+          planner_.active_fingers(), planner_.normal_groups(),
+          planner_.state_solution(), planner_.input_solution(),
+          planner_.force_solution(), ComputePlannedCubeVerticalContactForces()});
+    }
+    if (config_.c3_joint_plan_log) {
+      PrintC3JointPlan({time, planner_.dimensions().hand_positions,
+                        environment_.hand_positions(),
+                        planner_.state_solution()});
+    }
     if (config_.lambda_map_debug &&
         planner_.active_fingers() == std::vector<int>({0, 1, 2})) {
       const PlannerDimensions& d = planner_.dimensions();
@@ -208,6 +304,31 @@ void SqueezeApplication::UpdatePlanner(double time) {
            config_.c3_dt, config_.contact_model});
     }
   }
+}
+
+std::vector<double> SqueezeApplication::ComputePlannedCubeVerticalContactForces() {
+  const PlannerDimensions& d = planner_.dimensions();
+  const std::vector<VectorXd> force_plan = planner_.force_solution();
+  const auto& lcs = planner_.implementation().GetLCS();
+  const std::vector<Eigen::MatrixXd>& D = lcs.D();
+  std::vector<VectorXd> cube_z_rows;
+  cube_z_rows.reserve(force_plan.size());
+  const int cube_z_velocity_row = d.positions + d.hand_velocities + 5;
+  const double lambda_scaling = planner_.implementation().GetLambdaScaling();
+  for (size_t knot = 0; knot < force_plan.size() && !D.empty(); ++knot) {
+    const Eigen::MatrixXd& D_k = D.at(std::min(knot, D.size() - 1));
+    if (cube_z_velocity_row >= D_k.rows()) break;
+    cube_z_rows.push_back(D_k.row(cube_z_velocity_row).transpose() /
+                          lambda_scaling);
+  }
+  auto& plant = lcs_model_.plant();
+  const auto cube_body = plant.GetBodyIndices(lcs_model_.cube_model()).at(0);
+  const double cube_mass = plant.get_body(cube_body).get_mass(lcs_model_.context());
+  const int first_contact_force =
+      config_.contact_model == "stewart_and_trinkle" ? d.contacts : 0;
+  return ComputePlannedVerticalContactForces({
+      cube_mass, config_.c3_dt, first_contact_force, std::move(cube_z_rows),
+      force_plan});
 }
 
 void SqueezeApplication::UpdateTrackingReference(double time,
@@ -238,7 +359,8 @@ void SqueezeApplication::UpdateTrackingReference(double time,
 
 void SqueezeApplication::UpdateHorizonTarget(double reference_time) {
   const bool track = config_.track_cube_contact && !cube_pinned_;
-  const bool motion = config_.cube_motion_mode != "none" && !cube_pinned_;
+  const bool motion =
+      (config_.cube_motion_mode != "none" || config_.gait) && !cube_pinned_;
   if (!track && !motion) return;
 
   HorizonStateLayout layout{
@@ -311,6 +433,32 @@ VectorXd SqueezeApplication::ComputeOscTorque(double time) {
           config_.osc_qd_filter_tau, config_.gait_force_ramp_time,
           config_.lambda_torque_scale},
       &desired_velocity_filter_);
+  last_osc_normal_command_ = {
+      true, time, result.normal_force_target, result.normal_force_applied};
+  if (config_.osc_torque_split_log && schedule_.solved_this_tick) {
+    const VectorXd commanded = ClampTorque(result.torque, config_.tau_max);
+    const auto command_projection = ProjectHandTorqueToFingertipForces({
+        environment_.plant(), environment_.plant_context(),
+        environment_.hand_model(), grasp_.tip_bodies, GraspSetup::kFingerStarts,
+        commanded});
+    const auto pd_projection = ProjectHandTorqueToFingertipForces({
+        environment_.plant(), environment_.plant_context(),
+        environment_.hand_model(), grasp_.tip_bodies, GraspSetup::kFingerStarts,
+        result.pd_torque});
+    PrintOscTorqueSplit(
+        {time,
+         GraspSetup::kFingerStarts,
+         commanded,
+         result.pd_torque,
+         result.force_torque,
+         command_projection.force_world,
+         pd_projection.force_world,
+         result.normal_direction_world,
+         command_projection.relative_torque_residual,
+         pd_projection.relative_torque_residual,
+         result.normal_force_target,
+         result.normal_force_applied});
+  }
   return result.torque;
 }
 

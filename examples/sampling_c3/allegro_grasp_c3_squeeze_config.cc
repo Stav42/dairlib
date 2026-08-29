@@ -51,6 +51,7 @@ SqueezeConfig LoadSqueezeConfig() {
   result.lambda_map_debug = FLAGS_lambda_map_debug;
   result.plan_debug = FLAGS_plan_debug;
   result.c3_joint_plan_log = FLAGS_c3_joint_plan_log;
+  result.osc_torque_split_log = FLAGS_osc_torque_split_log;
   result.task_kp = FLAGS_task_kp;
   result.task_kd = FLAGS_task_kd;
   result.exec_mode = FLAGS_exec_mode;
@@ -93,6 +94,8 @@ SqueezeConfig LoadSqueezeConfig() {
   result.gait_cycles = FLAGS_gait_cycles;
   result.gait_rotate_duration = FLAGS_gait_rotate_duration;
   result.gait_scheme = FLAGS_gait_scheme;
+  result.spider_yaw_delta = FLAGS_spider_yaw_delta;
+  result.spider_yaw_duration = FLAGS_spider_yaw_duration;
   result.relay_ring_hold_z = FLAGS_relay_ring_hold_z;
   result.relay_ring_press = FLAGS_relay_ring_press;
   result.relay_ring_retract = FLAGS_relay_ring_retract;

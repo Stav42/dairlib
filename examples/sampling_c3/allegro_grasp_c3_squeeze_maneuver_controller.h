@@ -63,6 +63,8 @@ class ManeuverController {
                       const Eigen::VectorXd& state, double time,
                       C3Planner* planner, Eigen::VectorXd* contact_start,
                       Eigen::VectorXd* contact_end);
+  bool UsesParkedRing() const;
+  bool IsSpiderYawOnly() const;
 
   const SqueezeConfig& config_;
   GraspSetup* grasp_{};

@@ -52,6 +52,7 @@ struct SqueezeConfig {
   bool lambda_map_debug;
   bool plan_debug;
   bool c3_joint_plan_log;
+  bool osc_torque_split_log;
   double task_kp;
   double task_kd;
   std::string exec_mode;
@@ -94,6 +95,8 @@ struct SqueezeConfig {
   int gait_cycles;
   double gait_rotate_duration;
   std::string gait_scheme;
+  double spider_yaw_delta;
+  double spider_yaw_duration;
   double relay_ring_hold_z;
   double relay_ring_press;
   double relay_ring_retract;

@@ -35,8 +35,19 @@ struct PlannerSchedule {
   long control_steps{};
   long relinearizations{};
   long solves{};
+  bool solved_this_tick{};
   double last_relinearization_time{-1e9};
   double last_solve_time{-1e9};
+};
+
+// The normal-force command that generated the contact state measured on the
+// following 1 ms control tick. Kept separately from the executor result so the
+// simulator-contact diagnostic has a small, explicit data dependency.
+struct OscNormalForceCommand {
+  bool valid{};
+  double time{};
+  std::array<double, 4> c3_normal_force_target{};
+  std::array<double, 4> c3_normal_force_applied{};
 };
 
 class SqueezeApplication {
@@ -47,6 +58,7 @@ class SqueezeApplication {
  private:
   std::array<bool, 4> DetectContacts() const;
   void LogContacts(double time) const;
+  void LogRotation(double time) const;
   Eigen::VectorXd ComputeReachTorque(double time,
                                      const std::array<bool, 4>& touching);
   void StartPlanner(double time);
@@ -54,6 +66,7 @@ class SqueezeApplication {
   void UpdateManeuver(double time, const std::array<bool, 4>& touching);
   void UpdateTrackingReference(double time, double reference_time);
   void UpdateHorizonTarget(double reference_time);
+  std::vector<double> ComputePlannedCubeVerticalContactForces();
   Eigen::VectorXd ComputeExecutionTorque(double time);
   Eigen::VectorXd ComputeOscTorque(double time);
   Eigen::VectorXd ComputeTaskSpaceTorque();
@@ -73,6 +86,7 @@ class SqueezeApplication {
   ReachState reach_;
   TrackingState tracking_;
   PlannerSchedule schedule_;
+  OscNormalForceCommand last_osc_normal_command_;
   DesiredVelocityFilterState desired_velocity_filter_;
   bool cube_pinned_{true};
   double handoff_time_{-1.0};

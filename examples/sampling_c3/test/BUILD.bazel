@@ -22,3 +22,14 @@ cc_binary(
         "@c3//:libc3",
     ],
 )
+
+cc_test(
+    name = "allegro_grasp_c3_squeeze_reference_test",
+    size = "small",
+    srcs = ["allegro_grasp_c3_squeeze_reference_test.cc"],
+    deps = [
+        "//examples/sampling_c3:allegro_grasp_c3_squeeze_reference",
+        "@drake//:drake_shared_library",
+        "@googletest//:gtest_main",
+    ],
+)

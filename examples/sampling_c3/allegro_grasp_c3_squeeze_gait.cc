@@ -15,7 +15,13 @@ void ManeuverController::UpdateGait(
     const drake::math::RigidTransform<double>& cube_pose, C3Planner* planner,
     Eigen::VectorXd* contact_start, Eigen::VectorXd* contact_end) {
   if (gait_phase_ == GaitPhase::kDone) return;
-  if (config_.gait_scheme == "relay" && ring_parked_positions_.size() == 0) {
+  if (IsSpiderYawOnly() && ring_parked_positions_.size() == 0) {
+    // The first spider-walk primitive begins from an established three-finger
+    // grasp.  Keep the already-clear ring finger exactly where it is; there is
+    // no reason to solve a new IK target until the later support-post step.
+    ring_parked_positions_ =
+        state.head(planner->dimensions().hand_positions);
+  } else if (UsesParkedRing() && ring_parked_positions_.size() == 0) {
     bool parked_ok = false;
     ring_parked_positions_ = grasp_->SolveLegIk(
         cube_pose, 3, grasp_->relay_ring_park,
@@ -24,26 +30,43 @@ void ManeuverController::UpdateGait(
       std::cout << "[t=" << time << "] gait: ring park IK infeasible\n";
   }
   const std::vector<int> rotation_contacts =
-      config_.gait_scheme == "relay" ? std::vector<int>{0, 1, 2}
-                                      : std::vector<int>{0, 1, 2, 3};
+      UsesParkedRing() ? std::vector<int>{0, 1, 2}
+                       : std::vector<int>{0, 1, 2, 3};
 
   if (gait_phase_ == GaitPhase::kRotate) {
     const bool ready = gait_cycle_ > 0 || reference_time >= config_.gait_hold_time;
     if (!gait_entered_ && ready) {
-      gait_theta_start_ = gait_cycle_ * config_.gait_delta;
-      gait_theta_target_ = (gait_cycle_ + 1) * config_.gait_delta;
+      const double delta = IsSpiderYawOnly()
+          ? config_.spider_yaw_delta
+          : config_.gait_delta;
+      gait_theta_start_ = gait_cycle_ * delta;
+      gait_theta_target_ = (gait_cycle_ + 1) * delta;
       gait_rotate_start_ = reference_time;
       gait_entered_ = true;
       if (planner->active_fingers() != rotation_contacts)
         planner->Rebuild(rotation_contacts, state, time);
-      ring_engaged_ = config_.gait_scheme != "relay";
-      std::cout << "[t=" << time << "] gait cycle " << gait_cycle_ + 1
-                << ": rotating to "
+      ring_engaged_ = !UsesParkedRing();
+      std::cout << "[t=" << time << "] "
+                << (IsSpiderYawOnly() ? "spider small turn" : "gait cycle ")
+                << (IsSpiderYawOnly() ? "" : std::to_string(gait_cycle_ + 1))
+                << ": rotating about "
+                << (IsSpiderYawOnly() ? "world +Z" : "cube +Y") << " to "
                 << gait_theta_target_ * 180.0 / M_PI << " deg\n";
     }
+    const double rotate_duration = IsSpiderYawOnly()
+        ? config_.spider_yaw_duration
+        : config_.gait_rotate_duration;
     if (gait_entered_ &&
-        reference_time >= gait_rotate_start_ + config_.gait_rotate_duration +
+        reference_time >= gait_rotate_start_ + rotate_duration +
                               config_.gait_hold_time) {
+      if (IsSpiderYawOnly()) {
+        gait_phase_ = GaitPhase::kDone;
+        std::cout << "[t=" << time
+                  << "] spider small turn complete; holding three-finger "
+                     "grasp at "
+                  << gait_theta_target_ * 180.0 / M_PI << " deg yaw\n";
+        return;
+      }
       gait_phase_ = GaitPhase::kMove;
       gait_leg_ = 0;
       gait_entered_ = false;

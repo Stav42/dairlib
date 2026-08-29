@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <Eigen/QR>
+
 #include <drake/math/rotation_matrix.h>
 #include <drake/multibody/plant/multibody_plant.h>
 #include <drake/multibody/tree/multibody_forces.h>
@@ -44,6 +46,10 @@ OscExecutorResult ComputeOscExecutorTorque(
   VectorXd force = VectorXd::Zero(hand_velocity_count);
   OscExecutorResult result;
   result.pd_torque = pd;
+  for (int finger = 0; finger < 4; ++finger) {
+    result.normal_direction_world.at(finger) =
+        R_WC * kOscPressDirectionsInCube.at(finger);
+  }
   for (size_t active_index = 0;
        active_index < request.active_fingers.size(); ++active_index) {
     const int finger = request.active_fingers[active_index];
@@ -63,10 +69,43 @@ OscExecutorResult ComputeOscExecutorTorque(
         Vector3d::Zero(), request.plant.world_frame(), request.plant.world_frame(),
         &J);
     force += J.leftCols(hand_velocity_count).transpose() *
-             (normal_force * (R_WC * kOscPressDirectionsInCube.at(finger)));
+             (normal_force * result.normal_direction_world.at(finger));
   }
   result.force_torque = force;
   result.torque = gravity + pd + force;
+  return result;
+}
+
+FingertipTorqueProjection ProjectHandTorqueToFingertipForces(
+    const FingertipTorqueProjectionRequest& request) {
+  FingertipTorqueProjection result;
+  const int hand_velocity_count =
+      request.plant.num_velocities(request.hand_model);
+  for (int finger = 0; finger < 4; ++finger) {
+    const int first_joint = request.finger_start.at(finger);
+    if (first_joint < 0 || first_joint + 4 > hand_velocity_count ||
+        first_joint + 4 > request.hand_torque.size()) {
+      result.relative_torque_residual.at(finger) = 0.0;
+      continue;
+    }
+    Eigen::MatrixXd J(3, request.plant.num_velocities());
+    request.plant.CalcJacobianTranslationalVelocity(
+        request.context, JacobianWrtVariable::kV,
+        request.plant.get_body(request.tip_bodies.at(finger)).body_frame(),
+        Vector3d::Zero(), request.plant.world_frame(),
+        request.plant.world_frame(), &J);
+    const Eigen::MatrixXd J_finger = J.block(0, first_joint, 3, 4);
+    const Eigen::Vector4d tau_finger =
+        request.hand_torque.segment<4>(first_joint);
+    const Eigen::Vector3d force =
+        J_finger.transpose().completeOrthogonalDecomposition().solve(tau_finger);
+    result.force_world.at(finger) = force;
+    const double torque_norm = tau_finger.norm();
+    result.relative_torque_residual.at(finger) =
+        torque_norm > 1e-12
+            ? (J_finger.transpose() * force - tau_finger).norm() / torque_norm
+            : 0.0;
+  }
   return result;
 }
 

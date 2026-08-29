@@ -1,6 +1,7 @@
+#include <cmath>
 #include <limits>
-#include <string>
 #include <stdexcept>
+#include <string>
 
 #include <gflags/gflags.h>
 
@@ -40,8 +41,9 @@ void ValidateAndNormalizeSqueezeFlags() {
         "--osc_target_source must be 'auto', 'ik', or 'c3'.");
   }
   if (FLAGS_gait && FLAGS_gait_scheme != "triangle" &&
-      FLAGS_gait_scheme != "relay") {
-    throw std::runtime_error("--gait_scheme must be 'triangle' or 'relay'.");
+      FLAGS_gait_scheme != "relay" && FLAGS_gait_scheme != "spider") {
+    throw std::runtime_error(
+        "--gait_scheme must be 'triangle', 'relay', or 'spider'.");
   }
   if (FLAGS_gait) {
     FLAGS_release_middle = (FLAGS_gait_scheme == "triangle");
@@ -50,6 +52,16 @@ void ValidateAndNormalizeSqueezeFlags() {
     }
     if (FLAGS_gait_cycles < 1) {
       throw std::runtime_error("--gait_cycles must be >= 1.");
+    }
+    if (FLAGS_gait_scheme == "spider" &&
+        (FLAGS_spider_yaw_delta == 0.0 ||
+         std::abs(FLAGS_spider_yaw_delta) > 0.3)) {
+      throw std::runtime_error(
+          "--spider_yaw_delta must be nonzero and no larger than 0.3 rad "
+          "for the isolated small-turn milestone.");
+    }
+    if (FLAGS_gait_scheme == "spider" && FLAGS_spider_yaw_duration <= 0.0) {
+      throw std::runtime_error("--spider_yaw_duration must be positive.");
     }
   }
   if (FLAGS_release_middle && FLAGS_exec_mode != "osc") {

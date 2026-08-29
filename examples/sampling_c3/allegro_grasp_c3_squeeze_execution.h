@@ -56,6 +56,7 @@ struct OscExecutorResult {
   Eigen::VectorXd force_torque;
   std::array<double, 4> normal_force_target{};
   std::array<double, 4> normal_force_applied{};
+  std::array<Eigen::Vector3d, 4> normal_direction_world{};
 };
 
 // Computes tau = tau_gravity + tau_PD + sum_i J_i^T f_{n,i} n_i.  This is
@@ -63,6 +64,27 @@ struct OscExecutorResult {
 OscExecutorResult ComputeOscExecutorTorque(
     const OscExecutorRequest& request,
     DesiredVelocityFilterState* desired_velocity_filter);
+
+// A least-squares Cartesian-force proxy for one torque vector at each
+// fingertip.  For every finger this solves J_i^T f_i ≈ tau_i, independently.
+// It is a diagnostic projection of commanded torque, not the plant's resolved
+// contact force (which also depends on contact dynamics and the environment).
+struct FingertipTorqueProjectionRequest {
+  const drake::multibody::MultibodyPlant<double>& plant;
+  const drake::systems::Context<double>& context;
+  drake::multibody::ModelInstanceIndex hand_model;
+  std::array<drake::multibody::BodyIndex, 4> tip_bodies;
+  std::array<int, 4> finger_start;
+  Eigen::VectorXd hand_torque;
+};
+
+struct FingertipTorqueProjection {
+  std::array<Eigen::Vector3d, 4> force_world{};
+  std::array<double, 4> relative_torque_residual{};
+};
+
+FingertipTorqueProjection ProjectHandTorqueToFingertipForces(
+    const FingertipTorqueProjectionRequest& request);
 
 // Data for task_space after the caller has selected its position target and
 // extracted the C3 dual-delta lambda.  Keeping the force projection and the

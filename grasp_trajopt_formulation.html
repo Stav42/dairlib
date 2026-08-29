@@ -208,6 +208,13 @@
       color: #e7f0ef;
       font: .79rem/1.65 var(--mono);
     }
+    pre code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+    }
     .equation {
       max-width: 900px;
       overflow-x: auto;
@@ -282,6 +289,7 @@
       <a href="#topology">07 Contact topology</a>
       <a href="#gait">08 Gait</a>
       <a href="#operate">09 Operation</a>
+      <a href="#architecture">10 Code architecture</a>
     </div>
   </nav>
 
@@ -985,6 +993,784 @@
       </ul>
 
       <p class="small">This document is deliberately current-only. For exact flags, inspect <code>allegro_grasp_c3_squeeze_flags_*.cc</code>; for the loop, inspect <code>allegro_grasp_c3_squeeze_application.cc</code>; for ownership boundaries, inspect the environment, grasp, LCS-model, planner, and maneuver-controller classes; and for independently testable calculations, inspect the contact, control, execution, horizon, IK, maneuver, reference, setup, and diagnostics modules beside them.</p>
+    </section>
+
+    <section id="architecture">
+      <p class="section-label">10 · Refactored code architecture</p>
+      <h2>The executable is a small coordinator over explicit simulation, planning, and maneuver objects.</h2>
+      <p>The refactor separates long-lived ownership from per-tick decisions. The runtime only parses flags, validates them, creates an immutable <code>SqueezeConfig</code>, and invokes <code>SqueezeApplication::Run()</code>. The application owns the objects below and calls their named operations; it does not exchange a large tuple of references or include pieces of another function as text.</p>
+
+      <pre>main
+  └─ RunAllegroGraspC3Squeeze()
+       └─ SqueezeApplication::Run()
+            ├─ reach: DetectContacts → ComputeReachTorque → StartPlanner
+            └─ C3:    UpdateManeuver → UpdatePlanner → ComputeExecutionTorque
+                                           └─ ApplyAndAdvance</pre>
+
+      <table>
+        <thead><tr><th>Component</th><th>What it owns</th><th>Important operations</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>SqueezeConfig</code></td>
+            <td>A snapshot of every validated command-line option.</td>
+            <td><code>LoadSqueezeConfig()</code> copies gflags once; components read the explicit configuration rather than global flags.</td>
+          </tr>
+          <tr>
+            <td><code>SimulationEnvironment</code></td>
+            <td>The discrete SAP diagram, simulator, live plant context, Meshcat, optional LCM systems, and fixed input ports.</td>
+            <td><code>SetInitialState</code>, <code>contacts</code>, <code>ApplyHandTorque</code>, <code>AdvanceTo</code>, and <code>PinCube</code>.</td>
+          </tr>
+          <tr>
+            <td><code>GraspSetup</code></td>
+            <td>Initial cube pose, fingertip frames and offsets, contact footprints, static IK postures, and reach trajectories.</td>
+            <td><code>SolveContactIk</code> maps a safe cube pose to a live holding posture; <code>SolveLegIk</code> solves a one-finger transfer while the other contacts remain specified.</td>
+          </tr>
+          <tr>
+            <td><code>LcsModel</code></td>
+            <td>The separate continuous Drake plant, its AutoDiff clone, linearization contexts, and current ordered contact pairs.</td>
+            <td><code>Linearize(state, input, active_fingers, options)</code> returns the local LCS without touching the live simulator.</td>
+          </tr>
+          <tr>
+            <td><code>C3Planner</code></td>
+            <td>The C3+ object, target and cost data, input scale, force groups, active contact topology, and force-ramp bookkeeping.</td>
+            <td><code>Rebuild</code>, <code>Relinearize</code>, <code>UpdateTarget</code>, <code>Solve</code>, <code>FirstPhysicalInput</code>, and <code>FirstPhysicalForce</code>.</td>
+          </tr>
+          <tr>
+            <td><code>ManeuverController</code></td>
+            <td>Release/recontact latches, three-knot transfer trajectories, gait phase, ring parking, and rotation state.</td>
+            <td><code>Update</code> performs needed planner rebuilds; <code>OverrideJointTarget</code> replaces the moving finger's four-joint OSC target; <code>ConfigureCubeReference</code> supplies gait rotation.</td>
+          </tr>
+          <tr>
+            <td>Reference and horizon helpers</td>
+            <td>Pure descriptions of the raw cube task, IK lead clamp, and the desired state at every C3 knot.</td>
+            <td><code>MakeCubeReference</code>, <code>ClampIkLead</code>, and <code>BuildHorizonTargetTrajectory</code>.</td>
+          </tr>
+          <tr>
+            <td>Executor and control helpers</td>
+            <td>Flag-free torque realization and small numerical utilities.</td>
+            <td><code>ComputeOscExecutorTorque</code>, <code>ComputeTaskSpaceExecutorTorque</code>, <code>ComputeJointPdTorque</code>, <code>MakeNormalForceGroups</code>, and <code>ClampTorque</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>At every 1 ms simulation tick, the application reads measured state and contact information from <code>SimulationEnvironment</code>. Before handoff it runs the reach PD law. After handoff it optionally advances the maneuver state machine, relinearizes and solves C3 on its scheduled cadence, assembles the moving reference and live IK targets, realizes the chosen executor torque, clamps it to the physical limit, publishes telemetry, advances simulation, and releases or maintains the cube pin as appropriate.</p>
+
+      <div class="card blue">
+        <span class="kicker">Why this structure is testable</span>
+        <p>Reference generation, horizon-target assembly, contact-force grouping, torque realization, IK requests, C3 lifecycle, and maneuver transitions now have typed inputs and outputs. A unit test can exercise any of those calculations without starting Meshcat or a full simulation; the application loop is reserved for integration behavior.</p>
+      </div>
+    </section>
+
+    <section id="friction-execution">
+      <p class="section-label">11 · Friction-plan execution</p>
+      <h2>A planned normal force makes friction feasible; it does not command the planned friction force.</h2>
+
+      <p>For a contact (i), C3 represents the planned contact force as a normal component plus a weighted sum of discrete tangent directions:</p>
+
+      <div class="equation">
+        \[
+          f_i^{\mathrm{C3}}
+          = \lambda_{n,i}\hat n_i
+          + \sum_{a\in\mathcal{N}_i}\beta_{i,a}\hat d_{i,a}.
+        \]
+      </div>
+
+      <p>Here (hat n_i) is the inward press direction for the fingertip, (hat d_{i,a}) are the friction-pyramid directions in the tangent plane, (lambda_{n,i}) is the planned normal force, and (eta_{i,a}) are the planned tangential-force coefficients. The set (mathcal{N}_i) means “the tangent-direction indices belonging to fingertip (i)”; it is not a numerical value or a contact normal.</p>
+
+      <p>The friction constraint is an availability limit:</p>
+
+      <div class="equation">
+        \[
+          \beta_{i,a}\geq0,
+          \qquad
+          \sum_{a\in\mathcal{N}_i}\beta_{i,a}
+          \leq \mu\lambda_{n,i}.
+        \]
+      </div>
+
+      <p>Equivalently, in a smooth-cone picture, the physical tangential contact force satisfies</p>
+
+      <div class="equation">
+        \[
+          \lVert f_{t,i}\rVert \leq \mu f_{n,i},
+          \qquad\text{not}\qquad
+          \lVert f_{t,i}\rVert = \mu f_{n,i}.
+        \]
+      </div>
+
+      <div class="card amber">
+        <span class="kicker">Physical interpretation</span>
+        <p>Squeezing harder enlarges the amount of friction that <em>could</em> be produced. It does not demand that the contact produce that friction. A stationary cube uses only the tangential force needed to oppose gravity and other disturbances; it reaches the Coulomb limit only when it is about to slip.</p>
+      </div>
+
+      <h3>Why normal-only OSC can still let the cube fall</h3>
+
+      <p>In this grasp, the fingertips mostly squeeze the cube sideways. Their normal forces are therefore mostly horizontal. The upward support that keeps the cube from falling is mainly the tangential/friction part of the planned contact force, so C3's predicted vertical resultant contains the (eta) terms:</p>
+
+      <div class="equation">
+        \[
+          F_{z}^{\mathrm{C3}}
+          = \sum_i
+          \left(
+            \lambda_{n,i}\hat n_i
+            +\sum_{a\in\mathcal{N}_i}\beta_{i,a}\hat d_{i,a}
+          \right)_z.
+        \]
+      </div>
+
+      <p>The current <code>osc</code> executor does <em>not</em> map this complete planned wrench to joint torque. It applies gravity compensation, joint PD, and only the planned normal-direction term:</p>
+
+      <div class="equation">
+        \[
+          \tau_{\mathrm{osc}}
+          = \tau_g + \tau_{\mathrm{PD}}
+          + \sum_i J_i^{\mathsf T}
+            \left(\lambda_{n,i}^{\mathrm{C3}}\hat n_i\right).
+        \]
+      </div>
+
+    </section>
+
+    <section id="progress-log">
+      <h2>Progress Log</h2>
+      <h3>Progress Log 1 — August 27, 2026</h3>
+
+      <h4>Controller and code organization</h4>
+      <p>The main controller used for these experiments is <code>exec_mode=osc</code>. Its commanded hand torque is gravity compensation plus joint-space PD plus the C3 planned normal-force channel, mapped to joint torque with a fingertip Jacobian transpose. We refactored the squeeze application into separate configuration, environment, grasp, planning, execution, and diagnostics components. This makes the C3 lifecycle and the OSC torque realization easier to inspect and test independently.</p>
+
+      <div class="equation">
+        \[
+          \tau_{\mathrm{osc}}
+          = \tau_g + \tau_{\mathrm{PD}}
+          + \sum_i J_i^{\mathsf T}
+            \left(\lambda_{n,i}^{\mathrm{C3}}\hat n_i\right).
+        \]
+      </div>
+
+      <h4>What made the C3 normal-force contribution visible</h4>
+      <p>Earlier, a high joint-PD gain (<code>--osc_kp=40</code>) supplied much of the inward squeeze. With <code>--lambda_torque_scale=0</code>, which disables the C3 normal-force term, the cube could still be held by PD alone. We then reduced the PD contribution substantially, using <code>--osc_kp=0.5 --osc_kd=0.0</code>, and enabled the C3 normal-force path with <code>--lambda_torque_scale=1.0</code>. The planned C3 normal forces are then actually mapped through <code>J<sup>T</sup>f</code> and become the dominant non-gravity torque contribution after the handoff force crossfade finishes.</p>
+
+      <p>The important conclusion is that lowering PD did not necessarily make C3 plan an order-of-magnitude larger normal force. Instead, it stopped PD from masking the C3 contribution. In the present runs, C3 normally provides roughly 55–65% of the non-gravity torque after handoff, while PD provides the remainder. A more aggressive reduction to <code>--osc_kp=0.1</code> fails to maintain the grasp; <code>--osc_kp=0.5</code> is low enough to expose C3's role while still keeping the grasp stable.</p>
+
+      <h4>Planner settings and observed improvement</h4>
+      <p>We use a deliberately low planner friction coefficient, <code>--mu=0.2</code>. The SAP simulation contact model has higher physical friction (static 0.8 and dynamic 0.5), so the C3 model is conservative: for a given planned tangential support requirement, its lower friction assumption calls for a stronger normal-force plan than the simulator would ideally require.</p>
+
+      <p>Moving <code>--rho_scale</code> from 1.08 to 1.2 improved the behavior observed with 45 ADMM iterations: the force allocation was smoother, the middle-finger planned normal force stayed positive more consistently, and the three grasp contacts remained present through the tested hold. This experiment also enabled <code>--warm_start=true --warm_start_admm=true</code>, so the improvement should be treated as an observed combined tuning result rather than proof that the rho change alone caused it. A dedicated A/B test is still needed to isolate the individual effects.</p>
+
+      <h4>Force-tracing diagnostic</h4>
+      <p>We now trace the C3 executor by comparing its planned and applied normal-force command for each fingertip with the normal force reported by SAP. The C3 value is the planner's <code>lambda_n</code> after the OSC scale and handoff crossfade; it is a commanded normal-force channel, not a directly imposed physical contact force.</p>
+
+      <p>The SAP normal force is the simulator-resolved geometric-normal compression <em>on the cube</em>, obtained from Drake's contact solver. The same diagnostic also reports SAP tangential/friction magnitude, vertical force, and slip. SAP is the appropriate quantity for checking the actual simulated contact response; it may differ from the C3 planned normal force because the contact solver resolves the compliant contact dynamics independently.</p>
+
+      <h4>Contact-model limitation</h4>
+      <p>The C3 contact locations are fixed by the planned grasp geometry and the grasp IK/relinearization setup. C3 optimizes forces and motion for those assumed contact points; it does not discover the physical contact point from the simulator. SAP, meanwhile, resolves whatever physical point-pair contacts arise from the simulated geometry. This distinction is important when comparing the planned C3 force with the SAP-reported force.</p>
+
+      <h4>Frequently used command</h4>
+      <pre><code>bazel run //examples/sampling_c3:allegro_grasp_c3_squeeze -- \
+  --preview=false \
+  --lcm_publish=true \
+  --exec_mode=osc \
+  --rho_scale=1.2 \
+  --w_cube_vel=1000 \
+  --w_cube=50000 \
+  --mu=0.2 \
+  --num_friction_directions=2 \
+  --admm_iter=45 \
+  --osc_kp=0.5 \
+  --osc_kd=0.0 \
+  --k_hold=2 \
+  --w_G=10 \
+  --track_cube_contact=true \
+  --cube_motion_mode=none \
+  --cube_move_dz=0.01 \
+  --cube_move_period=1.5 \
+  --cube_move_duration=0.5 \
+  --legacy_log=true \
+  --osc_torque_split_log=true \
+  --contact_force_log=true \
+  --contact_force_log_hz=10 \
+  --lambda_torque_scale=1.0 \
+  --sim_time=6.0 \
+  --warm_start=true \
+  --warm_start_admm=true</code></pre>
+
+      <h4>Docker workflow</h4>
+      <p>To attach to the existing Docker container and start it, run:</p>
+      <pre><code>docker start -ai push-anything-container-lcm</code></pre>
+
+      <p>To open another terminal in the same running container, run:</p>
+      <pre><code>docker exec -it push-anything-container-lcm bash</code></pre>
+
+      <p>To create and start the Docker container initially, run:</p>
+      <pre><code>docker run -it -p 7000:7000 -p 8988:8988 \
+  --cap-add=NET_ADMIN \
+  -v /Users/salonivats/dair_lab/dairlib:/home/pushanything/dairlib \
+  --name push-anything-container-lcm \
+   push-anything-image</code></pre>
+
+      <h3>Progress Log 2 — August 28, 2026</h3>
+
+      <h4>Next cube-motion target: a numbered, colored 90&deg; yaw face-change</h4>
+      <p>The object is a numbered, colored cube&mdash;not an anonymous box. Each number/color is a label rigidly attached to one cube face. The next maneuver is a quarter-turn reorientation that deliberately moves those labeled faces to new world-side locations. This entry specifies only the rigid-body cube motion; finger sequencing, contact transitions, and torque realization come later.</p>
+
+      <h4>Face identity convention</h4>
+      <p>The labels below are defined in the cube body frame. They are the convention used by the numbered-cube model and remain attached to the same physical material face throughout every maneuver.</p>
+
+      <table>
+        <thead>
+          <tr><th>Face identity</th><th>Color</th><th>Cube-frame outward normal</th><th>Role in a yaw</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Face 1</td><td>red</td><td><code>+X</code></td><td>side face</td></tr>
+          <tr><td>Face 2</td><td>blue</td><td><code>-X</code></td><td>side face</td></tr>
+          <tr><td>Face 3</td><td>green</td><td><code>+Y</code></td><td>side face</td></tr>
+          <tr><td>Face 4</td><td>yellow</td><td><code>-Y</code></td><td>side face</td></tr>
+          <tr><td>Face 5</td><td>orange</td><td><code>+Z</code></td><td>top; unchanged by yaw</td></tr>
+          <tr><td>Face 6</td><td>purple</td><td><code>-Z</code></td><td>bottom; unchanged by yaw</td></tr>
+        </tbody>
+      </table>
+
+      <p>Let <code>C0</code> be the cube frame at the start of the maneuver, let <code>W</code> be the world frame, and let <code>C(t)</code> be the instantaneous cube frame. The desired motion keeps the cube center near its initial world position and rotates its body-fixed labels by yaw:</p>
+
+      <div class="equation">
+        \[
+          p_{WC}^{\mathrm{des}}(t) \approx p_{WC0},
+          \qquad
+          R_{WC}^{\mathrm{des}}(t)
+          = R_z^W\!\left(s\,\theta(t)\right) R_{WC0},
+          \qquad
+          \theta: 0 \longrightarrow \frac{\pi}{2},
+          \quad s\in\{-1,+1\}.
+        \]
+      </div>
+
+      <p>Here <code>R<sub>z</sub><sup>W</sup></code> is a right-hand rotation about the fixed world vertical <code>+Z</code> axis. For this upright cube, that also keeps face 5/orange on top and face 6/purple on the bottom. A <code>+90&deg;</code> target uses the cycle shown below; <code>-90&deg;</code> is its inverse. This is much larger than the earlier 0.05 rad diagnostic yaw: the terminal orientation change is 1.5708 rad (90&deg;).</p>
+
+      <h4>Top view: faces 1&ndash;4 change world-side location</h4>
+      <p>The diagram assumes the standard initial alignment: face 1/red initially points toward world <code>+X</code>, face 3/green toward world <code>+Y</code>, face 2/blue toward <code>-X</code>, and face 4/yellow toward <code>-Y</code>. World-side labels stay fixed; the numbered/color faces move with the cube.</p>
+
+      <pre><code>Initial pose, theta = 0                       Final pose, theta = +90 deg
+
+                world +Y                                      world +Y
+              [ 3 green ]                                   [ 1 red ]
+                    |                                             ^
+world -X [ 2 blue ] -- [ cube ] -- [ 1 red ] world +X  world -X [ 3 green ] &lt;-- [ cube ] --&gt; [ 4 yellow ] world +X
+                    |                                             v
+             [ 4 yellow ]                                  [ 2 blue ]
+                world -Y                                      world -Y
+
+Positive-yaw face cycle:
+  1 red (+X) -> world +Y       3 green (+Y) -> world -X
+  2 blue (-X) -> world -Y      4 yellow (-Y) -> world +X
+</code></pre>
+
+      <p>Equivalently, positive yaw sends face 1/red to the world <code>+Y</code> side, face 3/green to <code>-X</code>, face 2/blue to <code>-Y</code>, and face 4/yellow to <code>+X</code>. A negative 90&deg; yaw reverses that cycle.</p>
+
+      <h4>Faces that do not change sides</h4>
+      <pre><code>                 +Z / top face: [ 5 orange ] remains on top
+
+                       [ 5 orange ]
+                       +----------+
+                       |          |
+                       |   cube   |     yaw rotates only in this horizontal plane
+                       |          |
+                       +----------+
+                       [ 6 purple ]
+
+               -Z / bottom face: [ 6 purple ] remains on bottom
+</code></pre>
+
+      <h4>What the model does and does not distinguish</h4>
+      <p>Physically, the model is a single 60 mm, 50 g box collision shape with uniform friction. The six meshes provide the numbered/color appearance, but C3 and SAP do not automatically reason about the visual labels. The face-change objective must therefore be expressed through the cube orientation <code>R<sub>WC</sub></code>: the body-fixed mapping above turns a desired orientation into a statement such as &ldquo;put face 1/red on the world <code>+Y</code> side.&rdquo;</p>
+
+      <p>The cube-only completion condition for the positive face change is: preserve the cube center within tolerance; rotate by <code>+&pi;/2</code> about <code>+Z</code>; place faces 1/red, 3/green, 2/blue, and 4/yellow on world <code>+Y</code>, <code>-X</code>, <code>-Y</code>, and <code>+X</code>, respectively; and leave face 5/orange on top and face 6/purple on the bottom. How the hand realizes that exchange will be specified separately.</p>
+
+      <h4>Finger realization: one lateral reorientation unit</h4>
+      <p><strong>One unit of lateral reorientation is the entire 90&deg; side-face change.</strong> The small <code>&delta;</code>-yaw motions and finger exchanges are internal subphases; they are not individually required to return the hand to its starting state. Only the boundary of the complete 90&deg; unit must close.</p>
+
+      <div class="equation">
+        \[
+          \mathcal{L}:\;
+          \bigl(q_H^*,\;p_{\mathrm{tip}}^*,\;p_{WC}^*,\;R_{WC,k},\;0\bigr)
+          \longrightarrow
+          \bigl(q_H^*,\;p_{\mathrm{tip}}^*,\;p_{WC}^*,\;
+          R_z^W(\pi/2)R_{WC,k},\;0\bigr).
+        \]
+      </div>
+
+      <p>Thus the hand joint positions, every fingertip world position, the parked fourth-finger position, the cube center, and the settled velocities are the same at the start and end. Cube roll and pitch are also restored. The only intended state difference is that cube yaw has advanced by exactly 90&deg;, so different numbered/color faces now lie under the same fingertips.</p>
+
+      <p>To remove numbering ambiguity, this log uses the current program's finger identities:</p>
+
+      <table>
+        <thead>
+          <tr><th>Role in this log</th><th>Physical finger</th><th>Program ID</th><th>Initial role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>moving finger A</td><td>index</td><td><code>0</code></td><td>primary contact</td></tr>
+          <tr><td>moving finger B</td><td>middle</td><td><code>1</code></td><td>primary contact</td></tr>
+          <tr><td>opposing finger P</td><td>thumb</td><td><code>2</code></td><td>primary contact at the unit boundary</td></tr>
+          <tr><td>relay finger R</td><td>ring</td><td><code>3</code></td><td>parked off the cube</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Code audit: what already exists</h4>
+      <div class="card green">
+        <span class="kicker">Confirmed in the current tree</span>
+        <p><code>--gait --gait_scheme=relay</code> selects a genuine three-finger initial reach. Runtime configuration leaves <code>release_middle=false</code>; the reach and first C3 model use <code>{index, middle, thumb}</code> = <code>{0,1,2}</code>, while ring is solved to a parked pose outside the cube. After a rotation, the current gait can bring ring down, verify contact, settle it, and rebuild C3 with the new contact.</p>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Capability</th><th>Current refactored tree</th><th>Earlier implementation</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Start with index, middle, thumb</td><td>present in relay mode</td><td>present</td></tr>
+          <tr><td>Park ring during rotation</td><td>present</td><td>present</td></tr>
+          <tr><td>Engage ring after a small rotation</td><td>present</td><td>present</td></tr>
+          <tr><td>Move index to a new foothold</td><td>not in the current relay plan</td><td>present in <code>2bc04abd3</code></td></tr>
+          <tr><td>Move middle to a new foothold</td><td>not in the current relay plan</td><td>present in <code>2bc04abd3</code></td></tr>
+          <tr><td>Withdraw ring and repeat</td><td>not in the current relay plan</td><td>present in <code>2bc04abd3</code></td></tr>
+          <tr><td>Rotation axis</td><td>cube <code>+Y</code> grasp axis</td><td>cube <code>+Y</code> grasp axis</td></tr>
+          <tr><td>New required axis</td><td colspan="2"><strong>world <code>+Z</code> yaw; not implemented by either version</strong></td></tr>
+        </tbody>
+      </table>
+
+      <p>The full historical relay plan was:</p>
+
+      <pre><code>ROTATE on 3  ->  RING ENGAGE  ->  INDEX REGRASP  ->  MIDDLE REGRASP  ->  RING DISENGAGE  ->  repeat
+ {I,M,P}          {I,M,P,R}        {M,P,R}             {I,P,R}              {I,M,P}
+</code></pre>
+
+      <p>Commit <code>d9d4b933b</code> deliberately narrowed that plan to only <code>ROTATE -&gt; RING ENGAGE</code> while touchdown and handoff transients were isolated. The subsequent refactor in <code>63c854c24</code> preserved the narrowed plan faithfully. Therefore, the missing cycle was not accidentally lost by refactoring; it had already been removed immediately before the refactor, and its earlier implementation remains recoverable from history.</p>
+
+      <h4>Proposed internal sequence of one unit</h4>
+      <p>Choose an integer <code>N</code> and a small yaw increment <code>&delta;</code> such that <code>N&delta;=&pi;/2</code>. These increments partition one lateral reorientation unit; they do not define separate repeatable units.</p>
+
+      <pre><code>LATERAL REORIENTATION UNIT L(k) BEGINS
+
+  START BOUNDARY S(k)
+    all hand joints and fingertip world positions = nominal q* and p_tip*
+    active contacts = {index, middle, thumb}
+    ring = nominal parked position
+    cube center = p_WC*
+    cube yaw = k*90 deg; roll/pitch nominal; velocities settled
+          |
+          v
+  [1] SMALL +Z YAW BY delta
+      the current three-finger grasp holds and drives the cube
+          |
+          v
+  [2] RING ENGAGES A VALID CURRENT FACE TARGET
+      detect true contact, settle, then add ring to the planned contact set
+          |
+          v
+  [3] INDEX MOVES TO ITS NEXT FACE-AWARE FOOTHOLD
+      release -> clear surface/edge -> seek -> touch -> settle -> rejoin
+          |
+          v
+  [4] MIDDLE MOVES TO ITS NEXT FACE-AWARE FOOTHOLD
+      release -> clear surface/edge -> seek -> touch -> settle -> rejoin
+          |
+          v
+  [5] ANOTHER SMALL +Z YAW BY delta
+          |
+          v
+      repeat the required yaw / relay / individual-finger exchanges
+      until accumulated yaw within this unit is exactly +90 deg
+          |
+          v
+  [6] TERMINAL HAND RESTORATION
+      restore every primary finger to its nominal world position and joint posture
+      withdraw ring to exactly its nominal parked position
+      restore the original active set {index, middle, thumb}
+      settle cube and hand velocities
+          |
+          v
+  END BOUNDARY S(k+1)
+    hand state = S(k) hand state
+    cube translation = S(k) cube translation
+    cube orientation differs only by +90 deg yaw
+
+L(k) IS NOW READY TO RUN AGAIN
+</code></pre>
+
+      <div class="card blue">
+        <span class="kicker">Boundary clarification</span>
+        <p>There is no requirement that the thumb remain an axial pivot, that ring withdraw after every <code>&delta;</code>, or that the hand return to nominal after each small increment. Fingers may move through non-nominal configurations throughout the unit. The hard recurrence condition applies only after the cumulative yaw reaches 90&deg;: all fingers and the cube center must then be back where they started, while the cube alone retains the additional quarter-turn.</p>
+      </div>
+
+      <h4>Start and end state of one lateral reorientation unit</h4>
+      <pre><code>START S(k)                                  END S(k+1)
+
+hand joints          q_H*                  hand joints          q_H*
+fingertip positions  p_tip*                fingertip positions  p_tip*
+ring                  parked at p_R*        ring                  parked at p_R*
+active contacts       {I, M, P}             active contacts       {I, M, P}
+cube center           p_WC*                 cube center           p_WC*
+cube roll/pitch       nominal               cube roll/pitch       nominal
+cube yaw              k*90 deg              cube yaw              (k+1)*90 deg
+hand/cube velocities  settled               hand/cube velocities  settled
+
+Only the cube's yaw—and therefore which numbered face is at each world side—has changed.
+</code></pre>
+
+      <h4>How identical fingertip positions contact different numbered faces</h4>
+      <p>Initially, index and middle occupy their nominal positions on the world <code>-Y</code> hand side, where they contact face 4/yellow. Thumb occupies its nominal world <code>+Y</code> position and contacts face 3/green. At the end of the complete unit, those fingertips return to the same world positions, but the cube's positive 90&deg; yaw places different body-fixed faces beneath them:</p>
+
+      <pre><code>START: yaw = 0 deg                          END: yaw = +90 deg
+
+same index/middle world positions:         same index/middle world positions:
+  contact face 4 / yellow                    contact face 2 / blue
+
+same thumb world position:                 same thumb world position:
+  contact face 3 / green                     contact face 1 / red
+
+same hand geometry + same cube center + different numbered faces = one completed unit
+</code></pre>
+
+      <p>The internal foothold generator must therefore be face-aware. The earlier <code>+Y</code>-axis gait could rotate a footprint within one unchanged face plane. A <code>+Z</code> yaw carries contacts around the square perimeter and across face edges. New targets must lie on the actual cube boundary, include edge clearance, and transition explicitly to adjacent faces. At the terminal boundary, however, they must bring every fingertip back to its original world position rather than merely to a nearby reusable workspace.</p>
+
+      <h4>Completion conditions for one unit</h4>
+      <p>The lateral reorientation operator <code>&Lscr;</code> is complete only when all of the following hold simultaneously:</p>
+
+      <ul>
+        <li>the cube center at the end matches its start position within tolerance;</li>
+        <li>cube roll and pitch return to their start values, while signed yaw equals the starting yaw plus <code>&pi;/2</code>;</li>
+        <li>every hand joint returns to its starting value within tolerance;</li>
+        <li>every fingertip returns to its starting world position within tolerance;</li>
+        <li>index, middle, and thumb are again confirmed contacts and form the active three-finger C3 set;</li>
+        <li>ring is clear of the cube and has returned to exactly its starting parked position;</li>
+        <li>hand and cube velocities have settled so the next unit starts from the same dynamical condition;</li>
+        <li>the numbered-face mapping matches the expected one-side positive-yaw cycle.</li>
+      </ul>
+
+      <p>Running the same closed unit repeatedly gives <code>0&deg; &rarr; 90&deg; &rarr; 180&deg; &rarr; 270&deg; &rarr; 360&deg;</code> while the hand and cube center recur at every boundary. After four units, the numbered/color face arrangement also returns to its original orientation.</p>
+    </section>
+
+    <section id="progress-log-3">
+      <p class="section-label">Unified contact-gait design</p>
+      <h3>Progress Log 3 — August 29, 2026</h3>
+
+      <div class="card amber">
+        <span class="kicker">Current design</span>
+        <p>This entry supersedes the preliminary finger sequence in Progress Log 2. One lateral reorientation unit is a complete 90&deg; cube yaw assembled from many small yaw&ndash;pause&ndash;finger-step cycles. The hand continuously <strong>spiderwalks</strong> around the cube so that each small relocation creates room for the next yaw.</p>
+      </div>
+
+      <h4>Goal and repeating boundary state</h4>
+      <p>The maneuver starts with index, middle, and thumb holding the numbered cube while ring is parked. It ends with the same hand joint positions, the same fingertip world positions, the same cube center, the same roll and pitch, the same three-finger contact topology, ring in the same parked pose, and settled velocities. The only intended boundary-state difference is that cube yaw has advanced by exactly 90&deg;.</p>
+
+      <pre><code>START S(k)                                  END S(k+1)
+
+hand joints          q_H*                  hand joints          q_H*
+fingertip positions  p_tip*                fingertip positions  p_tip*
+active contacts       {index,middle,thumb}  active contacts       {index,middle,thumb}
+ring                  parked                ring                  parked
+cube center           p_WC*                 cube center           p_WC*
+cube roll/pitch       nominal               cube roll/pitch       nominal
+cube yaw              k*90 deg              cube yaw              (k+1)*90 deg
+velocities            settled               velocities            settled
+
+Only cube yaw—and therefore the numbered/color faces beneath the fingers—changes.
+</code></pre>
+
+      <table>
+        <thead>
+          <tr><th>Finger</th><th>Start face</th><th>End face after +90&deg;</th><th>Role during the unit</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>index</td><td>face 4 / yellow</td><td>face 2 / blue</td><td>ordinary spiderwalking primary finger;</td></tr>
+          <tr><td>middle</td><td>face 4 / yellow</td><td>face 2 / blue</td><td>ordinary spiderwalking primary finger;</td></tr>
+          <tr><td>thumb</td><td>face 3 / green</td><td>face 1 / red</td><td>opposing squeeze finger requiring a special ring-supported lifted step;</td></tr>
+          <tr><td>ring</td><td>parked off cube</td><td>parked off cube</td><td>temporary load-bearing relay and thumb-handoff anchor.</td></tr>
+        </tbody>
+      </table>
+
+      <h4>The basic spiderwalking cycle</h4>
+      <p>The cube turns only a small amount at a time. Yaw then pauses so the hand can repair its grasp before the next rotation. Three fingers remain planted while one finger becomes the moving, or <em>swing</em>, finger. A new contact is not accepted until simulator-resolved force confirms it.</p>
+
+      <pre><code>ONE MICRO-CYCLE
+
+  rotate cube through a small +Z yaw, delta
+            |
+            v
+  pause yaw and settle
+            |
+            v
+  identify the finger becoming stretched, crowded, near an edge,
+  or poorly positioned for the next yaw
+            |
+            v
+  retain three verified stance contacts
+            |
+            v
+  unload and lift one swing finger
+            |
+            v
+  retreat -> clear cube/edge -> move to new target -> approach
+            |
+            v
+  touch -> build compression -> verify SAP force and slip -> settle
+            |
+            v
+  rebuild the planned contact set
+            |
+            v
+  move another finger if necessary, otherwise begin the next small yaw
+</code></pre>
+
+      <div class="card blue">
+        <span class="kicker">Not all fingers move every time</span>
+        <p>Every small yaw creates a decision point, not a requirement to move all four fingers. The controller advances whichever finger most needs recentering. Ring may remain engaged across several micro-cycles so that primary fingers can move one at a time; it does not have to withdraw after every <code>&delta;</code>.</p>
+      </div>
+
+      <h4>Where the contact targets come from</h4>
+      <p>There are two different target types, and they should not be confused.</p>
+
+      <div class="grid">
+        <div class="card green">
+          <span class="kicker">Final targets</span>
+          <p>The required 90&deg; boundary state fixes these points. Place the cube in its final orientation and determine which cube material point lies beneath each required nominal fingertip world position. The optimizer is not allowed to move these terminal contacts somewhere more convenient.</p>
+        </div>
+        <div class="card blue">
+          <span class="kicker">Temporary footholds</span>
+          <p>These are stepping-stone contacts used inside the 90&deg; unit. They are selected from safe interior regions on the numbered faces and ranked according to reachability, stability, future usefulness, and ease of reaching the fixed final targets.</p>
+        </div>
+      </div>
+
+      <p class="small"><strong>Optional technical form:</strong> with a consistent surface-contact convention, the final cube-body contact for finger <code>i</code> is</p>
+
+      <div class="equation">
+        \[
+          p_{C,i}^{\rm final}
+          =
+          \left(R_{WC}^{\rm final}\right)^T
+          \left(p_{W,i}^{*}-p_{WC}^{*}\right).
+        \]
+      </div>
+
+      <p>If <code>p<sub>W,i</sub><sup>*</sup></code> represents a rounded fingertip center instead of its surface contact, the fingertip-radius offset must be handled first. Target construction, SAP verification, and C3 must all use the same convention.</p>
+
+      <h4>Generating temporary footholds</h4>
+      <p>Each possible contact is stored as a numbered face plus two coordinates on that face, for example, &ldquo;face 2/blue, slightly above and left of center.&rdquo; This identity remains attached to the rotating cube. Candidate points are sampled only from the safe interior after removing an edge band large enough for the complete fingertip patch.</p>
+
+      <div class="equation">
+        \[
+          p_C(u,v)=h\,n_C+u\,t_{1,C}+v\,t_{2,C},
+          \qquad |u|,|v|\le h-m_{\rm edge}.
+        \]
+        \[
+          p_W(\theta_{\rm hold})
+          =
+          p_{WC}+R_{WC}(\theta_{\rm hold})p_C(u,v).
+        \]
+      </div>
+
+      <pre><code>CANDIDATE-SELECTION PIPELINE
+
+  sample several interior points on the intended numbered face
+        |
+  remove points near edges or corners
+        |
+  remove unreachable points and joint-limit postures
+        |
+  remove points with colliding retreat, transit, or approach paths
+        |
+  remove choices that crowd or block another fingertip
+        |
+  remove choices whose remaining three contacts cannot support the cube
+        |
+  score the surviving complete choices with J
+        |
+  retain the best route that can still close at the exact 90 deg boundary
+</code></pre>
+
+      <div class="card amber">
+        <span class="kicker">Hard failures are not costs</span>
+        <p>A collision, wrong numbered face, unreachable posture, inadequate edge clearance, excessive required torque, or inability to hold the cube removes a candidate completely. The cost function <code>J</code> ranks only candidates that already pass every must-pass safety and feasibility check.</p>
+      </div>
+
+      <h4>What the cost function <code>J</code> should prefer</h4>
+      <p>The planner should compare complete small-step schedules rather than selecting index, middle, thumb, or ring targets independently. A good index point is useless if it blocks the only feasible middle point or prevents the later thumb transfer.</p>
+
+      <div class="equation">
+        \[
+          J_{\rm plan}
+          =
+          w_{\rm move}C_{\rm move}
+          +w_{\rm edge}C_{\rm edge}
+          +w_{\rm joint}C_{\rm joint}
+          +w_{\rm crowd}C_{\rm crowd}
+          +w_{\rm grasp}C_{\rm grasp}
+          +w_{\rm torque}C_{\rm torque}
+          +w_{\rm next}C_{\rm next\ yaw}
+          +w_{\rm close}C_{\rm terminal\ closure}.
+        \]
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Cost</th><th>Plain-language meaning</th><th>A good choice</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>C_move</code></td><td>finger travel needed to reach the foothold;</td><td>uses a short, simple path;</td></tr>
+          <tr><td><code>C_edge</code></td><td>remaining distance from edges after the fingertip patch is considered;</td><td>lies comfortably inside one face;</td></tr>
+          <tr><td><code>C_joint</code></td><td>joint-limit and awkward-posture penalty;</td><td>keeps useful joint margin;</td></tr>
+          <tr><td><code>C_crowd</code></td><td>finger and approach-path crowding;</td><td>leaves room for all later finger moves;</td></tr>
+          <tr><td><code>C_grasp</code></td><td>weakness of the stance grasp during the move;</td><td>leaves three strong supporting contacts;</td></tr>
+          <tr><td><code>C_torque</code></td><td>predicted actuator effort;</td><td>maintains contact with torque margin;</td></tr>
+          <tr><td><code>C_next yaw</code></td><td>predicted condition after the next <code>&delta;</code> yaw;</td><td>remains useful for continued rotation;</td></tr>
+          <tr><td><code>C_terminal closure</code></td><td>difficulty reaching the exact recurring end state;</td><td>leads naturally to the fixed 90&deg; targets.</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Every landing point must make the next yaw easier</h4>
+      <p>A contact may look comfortable while the cube is paused and become poor immediately after the next yaw. For each surviving candidate, the planner should pretend the finger lands there, simulate the next small yaw with that material contact sticking, and inspect the resulting joint posture, edge distance, collision clearance, force direction, and torque. A short-sighted contact that immediately requires another emergency move is rejected or strongly penalized.</p>
+
+      <pre><code>CHECK AT THE CURRENT PAUSE                 LOOK AHEAD THROUGH THE NEXT delta
+
+Is the target safe now?                    Will it remain comfortable?
+Is it reachable?                           Will it stay away from an edge?
+Is its approach collision-free?            Will joints retain margin?
+Can the other three fingers hold?           Will torque and contact forces remain reasonable?
+
+A spider step is good only when both columns pass.
+</code></pre>
+
+      <h4>How a finger crosses onto the next numbered face</h4>
+      <p>Index and middle first creep across safe points on yellow. As yaw accumulates, blue becomes more exposed. There is normally a range of angles where the old yellow contact is still safe and at least one blue interior point is already reachable. This is the local <em>overlap window</em> for that finger.</p>
+
+      <pre><code>cube yaw
+
+  old yellow contact safe:  ==============================
+  new blue target usable:                   ==============================
+                                             ^^^^^^^^^^^^^^
+                                         good crossing range
+
+yellow foothold -> later yellow foothold -> first safe blue foothold -> later blue foothold
+</code></pre>
+
+      <p>The controller does not wait through many yaws and then make one enormous jump. The face change is one ordinary spider step performed when an adjacent-face target enters the safe reachable region. Index and middle may cross at different yaw angles. If no overlap exists, the current geometry is infeasible and needs a temporary foothold, a different finger order, a different yaw partition, or a revised ring/contact target.</p>
+
+      <h4>The thumb uses lift-and-replant Strategy B</h4>
+      <p>Thumb must change from face 3/green to face 1/red, but it is also the opposing side of the squeeze. It will therefore be fully lifted and replanted only after ring establishes a deliberately selected temporary load-bearing hold. The ring must stretch far enough to stabilize the cube, but not so close to full extension that it loses joint margin, force leverage, or torque authority.</p>
+
+      <pre><code>REQUIRED THUMB HANDOFF
+
+  pause at a suitable yaw
+        |
+  stretch ring to a candidate load-bearing target
+        |
+  touch -> increase ring compression -> verify SAP contact -> settle
+        |
+  rebuild the four-contact model
+        |
+  gradually unload thumb while it remains close enough to recover
+        |
+  {index,middle,ring} hold test passes?
+        |
+        +---- NO -> restore thumb force; reject ring target; do not move thumb
+        |
+       YES
+        |
+  lift thumb from green -> clear green/red edge -> approach safe red target
+        |
+  verify thumb contact and settle
+        |
+  rebuild C3 with thumb on red
+</code></pre>
+
+      <h4>The thumb-unload test is a hard permission gate</h4>
+      <p>Four contacts before thumb release do not prove that the remaining three contacts can hold the cube. Before thumb retreats, its commanded normal force is gradually reduced toward zero. Index, middle, and ring must then demonstrate that they can hold cube translation, orientation, and gravity without relying on thumb.</p>
+
+      <table>
+        <thead>
+          <tr><th>Signal</th><th>Pass requirement</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>cube translation</td><td>stays inside a small drift tolerance;</td></tr>
+          <tr><td>yaw, roll, and pitch</td><td>stay inside hold tolerances;</td></tr>
+          <tr><td>SAP normal forces</td><td>index, middle, and ring remain positively loaded and settled;</td></tr>
+          <tr><td>slip</td><td>remains below threshold at all stance contacts;</td></tr>
+          <tr><td>joint torque</td><td>remains below limits with useful margin;</td></tr>
+          <tr><td>C3 feasibility</td><td>the thumb-free three-contact support problem remains feasible.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="card amber">
+        <span class="kicker">Recover before retreat</span>
+        <p>If drift, slip, contact loss, excessive torque, or infeasibility appears, ramp thumb compression back up and settle the original grasp. Try a different ring point or held yaw. Thumb must never continue toward red after a failed unload test.</p>
+      </div>
+
+      <h4>Selecting the special ring target</h4>
+      <p>Ring candidates use the same numbered-face, edge-clearance, IK, and collision checks as other contacts. They also require a useful stabilizing force direction, enough wrench authority to replace thumb temporarily, and clearance for the complete thumb retreat and red-face approach. A visually convincing ring contact that pushes in an ineffective direction is discarded.</p>
+
+      <p>The ring score is the same unified plan cost with extra emphasis on joint extension, force direction, thumb-path clearance, and predicted cube drift after thumb unload. Crucially, an unsuccessful thumb-free support test is a hard rejection, not a large but acceptable cost.</p>
+
+      <h4>Unified 90&deg; execution sequence</h4>
+      <pre><code>START S(k)
+  index + middle on yellow; thumb on green; ring parked
+        |
+  engage ring when the first primary-finger spider step requires four contacts
+        |
+  repeat:
+      small +Z yaw
+      pause and settle
+      choose the most trailing, strained, or strategically useful swing finger
+      choose a target that is safe now and after the next delta
+      retain three verified stance contacts
+      move one finger and verify its new SAP contact
+        |
+  index and middle creep across yellow; each crosses to blue when its own
+  safe adjacent-face overlap window appears
+        |
+  at the selected thumb handoff:
+      place ring in its load-bearing target
+      pass the thumb-unload {index,middle,ring} hold test
+      lift thumb from green and replant it on red
+      verify and rebuild
+        |
+  continue yaw-pause-spider-step cycles until cumulative yaw is exactly +90 deg
+        |
+  perform terminal steps that return index, middle, and thumb to their exact
+  nominal world positions and joint posture
+        |
+  park ring and settle hand/cube velocities
+        |
+END S(k+1)
+  identical hand state and cube translation; cube yaw advanced by 90 deg
+</code></pre>
+
+      <p>The exact order of index, middle, and thumb face crossings is not permanently hard-coded. The planner chooses an order whose three-contact stance modes are all feasible. The special ring-supported thumb gate remains mandatory regardless of that order.</p>
+
+      <h4>Planning and runtime structure</h4>
+      <p>Most choices can be prepared offline. Build a small graph whose nodes contain cube-yaw bins, active fingers, numbered face identities, and body-fixed contact sites. Graph edges represent one small yaw, ring engagement, or one finger step. Remove edges that fail geometry, IK, collision, torque, edge-clearance, or stance-grasp checks. Search for a low-cost path from <code>S(k)</code> to <code>S(k+1)</code>. During simulation, measured pose and SAP contact guards decide whether each planned transition is actually allowed.</p>
+
+      <pre><code>OFFLINE                              RUNTIME
+
+sample face targets                  measure actual cube pose
+solve IK and collision checks        pause at transition guards
+test next-yaw look-ahead             confirm resolved contact forces
+test every three-contact stance      reject slip or excessive drift
+search complete 0-to-90 route        use ranked backup target if needed
+enforce exact terminal closure       rebuild C3 only after confirmation
+</code></pre>
+
+      <h4>Validation order before the complete gait</h4>
+      <ol>
+        <li><strong>Ring hold and thumb-unload:</strong> test candidate ring targets while thumb remains ready to recover; do not move thumb yet.</li>
+        <li><strong>One ordinary spider step:</strong> execute one paused index or middle relocation and confirm stable contact.</li>
+        <li><strong>Several same-face steps:</strong> demonstrate repeated yaw&ndash;pause&ndash;step cycles without crossing a cube edge.</li>
+        <li><strong>Index/middle face crossing:</strong> demonstrate one controlled yellow-to-blue step inside a verified overlap window.</li>
+        <li><strong>Thumb lift and replant:</strong> after a passed unload gate, demonstrate green-to-red thumb motion and recovery.</li>
+        <li><strong>Full closure:</strong> combine the verified pieces and require the exact recurring hand state at +90&deg;.</li>
+        <li><strong>Repetition:</strong> run multiple 90&deg; units and verify the same hand state recurs at every boundary.</li>
+      </ol>
+
+      <div class="card green">
+        <span class="kicker">Unified design recorded</span>
+        <p>One lateral reorientation unit is a complete 90&deg; quarter-turn built from repeated yaw&ndash;pause&ndash;single-finger spider steps. Temporary contacts are face-aware, selected jointly, and tested one yaw ahead. Index and middle creep from yellow to blue. Thumb is lifted from green and replanted on red only after a deliberately stretched ring hold passes the thumb-unload support test. The unit is complete only when the full hand state recurs and cube yaw alone has advanced by 90&deg;.</p>
+      </div>
     </section>
   </main>
 
