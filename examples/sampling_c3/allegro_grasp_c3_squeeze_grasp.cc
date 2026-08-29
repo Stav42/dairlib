@@ -82,6 +82,15 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
       0.0, -(half - config.relay_ring_press), config.relay_ring_hold_z);
   relay_ring_park = Vector3d(
       0.0, -(half + config.relay_ring_retract), config.relay_ring_hold_z);
+  // For the lateral spider-walk, ring is the temporary bridge onto the
+  // incoming face 1 / red. Red is body +X, while its two in-face coordinates
+  // are body Y and Z. The park point is outside that same face along +X.
+  spider_ring_hold = Vector3d(
+      half - config.relay_ring_press, config.spider_ring_red_y,
+      config.spider_ring_hold_z);
+  spider_ring_park = Vector3d(
+      half + config.relay_ring_retract, config.spider_ring_red_y,
+      config.spider_ring_hold_z);
 
   VectorXd targets(9);
   for (int i = 0; i < 3; ++i)

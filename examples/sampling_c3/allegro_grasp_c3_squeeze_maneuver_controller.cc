@@ -11,6 +11,10 @@ ManeuverController::ManeuverController(const SqueezeConfig& config,
   DRAKE_DEMAND(grasp_ != nullptr);
   if (config_.gait_scheme == "relay") {
     gait_plan_ = {{3, GaitLegKind::kEngage}};
+  } else if (config_.gait_scheme == "spider") {
+    // This milestone ends immediately after ring establishes the fourth
+    // support post.  Later spider-walk legs will be appended deliberately.
+    gait_plan_ = {{3, GaitLegKind::kEngage}};
   } else if (config_.gait_scheme == "triangle") {
     gait_plan_ = {{3, GaitLegKind::kRegrasp},
                   {1, GaitLegKind::kRegrasp},
@@ -19,10 +23,10 @@ ManeuverController::ManeuverController(const SqueezeConfig& config,
 }
 
 bool ManeuverController::UsesParkedRing() const {
-  return config_.gait_scheme == "relay" || IsSpiderYawOnly();
+  return config_.gait_scheme == "relay" || IsSpider();
 }
 
-bool ManeuverController::IsSpiderYawOnly() const {
+bool ManeuverController::IsSpider() const {
   return config_.gait_scheme == "spider";
 }
 
@@ -62,12 +66,12 @@ void ManeuverController::ConfigureCubeReference(
   if (!config_.gait) return;
   reference->gait_enabled = true;
   reference->gait_rotate_start_time = gait_rotate_start_;
-  reference->gait_rotate_duration = IsSpiderYawOnly()
+  reference->gait_rotate_duration = IsSpider()
       ? config_.spider_yaw_duration
       : config_.gait_rotate_duration;
   reference->gait_theta_start = gait_theta_start_;
   reference->gait_theta_target = gait_theta_target_;
-  reference->gait_rotation_frame = IsSpiderYawOnly()
+  reference->gait_rotation_frame = IsSpider()
       ? GaitRotationFrame::kWorldZ
       : GaitRotationFrame::kCubeY;
 }

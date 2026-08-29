@@ -134,18 +134,32 @@ DEFINE_string(gait_scheme, "triangle",
               "round, then lifts again. No finger ever crosses the face's "
               "centre line, which is what put ring out of reach in the "
               "triangle scheme.\n"
-              "  spider   - first lateral-reorientation milestone only: "
-              "index/middle/thumb make one small world-+Z yaw while ring "
-              "stays parked; yaw then stops and holds. No finger relocation "
-              "runs yet.");
+              "  spider   - lateral-reorientation milestones: index/middle/"
+              "thumb make one small world-+Z yaw while ring stays parked; "
+              "the cube then holds still while ring approaches through an "
+              "outside waypoint and joins as the fourth support contact. "
+              "The maneuver stops there; no finger relocation runs yet.");
 DEFINE_double(spider_yaw_delta, 0.17453292519943295,
               "spider: signed world-+Z yaw for this first isolated turn "
               "(rad). Default +10 deg. This is deliberately independent of "
               "the historical 45 deg --gait_delta about cube +Y.");
 DEFINE_double(spider_yaw_duration, 1.0,
               "spider: duration (s) of the minimum-jerk small-yaw ramp. "
-              "After this ramp and --gait_hold_time, the controller stops "
-              "the maneuver and holds the final yaw.");
+              "After this ramp and --gait_hold_time, the controller holds "
+              "the final yaw and begins ring placement.");
+DEFINE_double(spider_ring_red_y, -0.015,
+              "spider: body-fixed Y coordinate (m) of ring's temporary "
+              "support point on face 1 / red (the cube's +X face) after the "
+              "small world-Z yaw. Negative lies toward the red-yellow edge. "
+              "The default is a preferred point safely inside red; if it is "
+              "just beyond ring's joint limits, spider moves it toward red's "
+              "face centre in 1 mm steps and uses the first IK-reachable "
+              "point. Keep it within 2 cm of face centre.");
+DEFINE_double(spider_ring_hold_z, 0.015,
+              "spider: body-fixed Z coordinate (m) of ring's support point "
+              "on face 1 / red. The validated +15 mm height keeps the ring "
+              "well inside the face while reducing the pitch disturbance at "
+              "four-contact handoff.");
 DEFINE_double(relay_ring_hold_z, 0.0,
               "relay: where on the -Y face ring holds, as a height (m) above "
               "the face centre. Negative is below.\n"

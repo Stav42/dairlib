@@ -46,6 +46,8 @@ class GraspSetup {
   std::array<Eigen::Vector3d, 4> initial_footprints;
   Eigen::Vector3d relay_ring_hold;
   Eigen::Vector3d relay_ring_park;
+  Eigen::Vector3d spider_ring_hold;
+  Eigen::Vector3d spider_ring_park;
   std::array<Eigen::Vector3d, 3> relay_regrasp_targets;
 
   Eigen::VectorXd contact_positions;

@@ -37,6 +37,7 @@ SqueezeApplication::SqueezeApplication(SqueezeConfig config)
   tracking_.contact_start = grasp_.contact_positions;
   tracking_.contact_end = grasp_.contact_positions;
   tracking_.ramp_origin = grasp_.contact_positions;
+  ring_engaged_last_control_ = maneuver_.ring_engaged();
 }
 
 int SqueezeApplication::Run() {
@@ -420,7 +421,7 @@ VectorXd SqueezeApplication::ComputeOscTorque(double time) {
     desired = plan[1].head(planner_.dimensions().hand_positions);
   maneuver_.OverrideJointTarget(time, &desired);
 
-  const OscExecutorResult result = ComputeOscExecutorTorque(
+  OscExecutorResult result = ComputeOscExecutorTorque(
       OscExecutorRequest{
           environment_.plant(), environment_.plant_context(),
           environment_.hand_model(), environment_.cube_model(),
@@ -433,6 +434,31 @@ VectorXd SqueezeApplication::ComputeOscTorque(double time) {
           config_.osc_qd_filter_tau, config_.gait_force_ramp_time,
           config_.lambda_torque_scale},
       &desired_velocity_filter_);
+  const bool ring_engaged = maneuver_.ring_engaged();
+  if (ring_engaged && !ring_engaged_last_control_ &&
+      last_osc_pd_torque_.size() == result.pd_torque.size()) {
+    // Four-contact IK changes the desired posture of the whole hand, not just
+    // ring.  Preserve the applied pre-handoff PD torque and blend toward the
+    // new four-contact value so that a valid ring touchdown does not kick the
+    // cube into a new tilted static-friction equilibrium.
+    osc_pd_crossfade_from_ = last_osc_pd_torque_;
+    osc_pd_crossfade_start_time_ = time;
+    osc_pd_crossfade_active_ = true;
+  }
+  ring_engaged_last_control_ = ring_engaged;
+  if (osc_pd_crossfade_active_) {
+    const double blend = config_.gait_torque_ramp_time <= 0.0
+        ? 1.0
+        : std::clamp((time - osc_pd_crossfade_start_time_) /
+                         config_.gait_torque_ramp_time,
+                     0.0, 1.0);
+    const VectorXd blended_pd =
+        (1.0 - blend) * osc_pd_crossfade_from_ + blend * result.pd_torque;
+    result.torque += blended_pd - result.pd_torque;
+    result.pd_torque = blended_pd;
+    if (blend >= 1.0) osc_pd_crossfade_active_ = false;
+  }
+  last_osc_pd_torque_ = result.pd_torque;
   last_osc_normal_command_ = {
       true, time, result.normal_force_target, result.normal_force_applied};
   if (config_.osc_torque_split_log && schedule_.solved_this_tick) {

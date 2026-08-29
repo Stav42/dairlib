@@ -63,6 +63,13 @@ void ValidateAndNormalizeSqueezeFlags() {
     if (FLAGS_gait_scheme == "spider" && FLAGS_spider_yaw_duration <= 0.0) {
       throw std::runtime_error("--spider_yaw_duration must be positive.");
     }
+    if (FLAGS_gait_scheme == "spider" &&
+        (std::abs(FLAGS_spider_ring_red_y) > 0.02 ||
+         std::abs(FLAGS_spider_ring_hold_z) > 0.02)) {
+      throw std::runtime_error(
+          "--spider_ring_{red_y,hold_z} must lie within +/-0.02 m of face "
+          "centre.");
+    }
   }
   if (FLAGS_release_middle && FLAGS_exec_mode != "osc") {
     throw std::runtime_error(

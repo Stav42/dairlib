@@ -96,6 +96,8 @@ SqueezeConfig LoadSqueezeConfig() {
   result.gait_scheme = FLAGS_gait_scheme;
   result.spider_yaw_delta = FLAGS_spider_yaw_delta;
   result.spider_yaw_duration = FLAGS_spider_yaw_duration;
+  result.spider_ring_red_y = FLAGS_spider_ring_red_y;
+  result.spider_ring_hold_z = FLAGS_spider_ring_hold_z;
   result.relay_ring_hold_z = FLAGS_relay_ring_hold_z;
   result.relay_ring_press = FLAGS_relay_ring_press;
   result.relay_ring_retract = FLAGS_relay_ring_retract;

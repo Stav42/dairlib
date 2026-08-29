@@ -97,6 +97,8 @@ struct SqueezeConfig {
   std::string gait_scheme;
   double spider_yaw_delta;
   double spider_yaw_duration;
+  double spider_ring_red_y;
+  double spider_ring_hold_z;
   double relay_ring_hold_z;
   double relay_ring_press;
   double relay_ring_retract;

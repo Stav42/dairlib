@@ -94,6 +94,8 @@ DECLARE_double(gait_rotate_duration);
 DECLARE_string(gait_scheme);
 DECLARE_double(spider_yaw_delta);
 DECLARE_double(spider_yaw_duration);
+DECLARE_double(spider_ring_red_y);
+DECLARE_double(spider_ring_hold_z);
 DECLARE_double(relay_ring_hold_z);
 DECLARE_double(relay_ring_press);
 DECLARE_double(relay_ring_retract);

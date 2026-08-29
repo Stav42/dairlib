@@ -88,6 +88,11 @@ class SqueezeApplication {
   PlannerSchedule schedule_;
   OscNormalForceCommand last_osc_normal_command_;
   DesiredVelocityFilterState desired_velocity_filter_;
+  Eigen::VectorXd last_osc_pd_torque_;
+  Eigen::VectorXd osc_pd_crossfade_from_;
+  bool ring_engaged_last_control_{};
+  bool osc_pd_crossfade_active_{};
+  double osc_pd_crossfade_start_time_{};
   bool cube_pinned_{true};
   double handoff_time_{-1.0};
   static constexpr double kControlDt = 0.001;
