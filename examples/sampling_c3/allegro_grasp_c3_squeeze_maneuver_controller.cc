@@ -12,9 +12,17 @@ ManeuverController::ManeuverController(const SqueezeConfig& config,
   if (config_.gait_scheme == "relay") {
     gait_plan_ = {{3, GaitLegKind::kEngage}};
   } else if (config_.gait_scheme == "spider") {
-    // This milestone ends immediately after ring establishes the fourth
-    // support post.  Later spider-walk legs will be appended deliberately.
-    gait_plan_ = {{3, GaitLegKind::kEngage}};
+    // Establish ring on yellow a little above face centre, then stop in the
+    // four-contact hold. Index remains on yellow until a later maneuver
+    // explicitly asks to move it.
+    // With the four-finger spider start, ring is already on the cube and no
+    // placement trajectory is needed after the yaw.
+    gait_plan_ = config_.gait && grasp->grasp_finger_count == 4
+                     ? std::vector<std::pair<int, GaitLegKind>>{}
+                     : std::vector<std::pair<int, GaitLegKind>>{
+                           {3, GaitLegKind::kEngage}};
+    if (config_.spider_index_crawl_after_ring)
+      gait_plan_.push_back({0, GaitLegKind::kSpiderCrawl});
   } else if (config_.gait_scheme == "triangle") {
     gait_plan_ = {{3, GaitLegKind::kRegrasp},
                   {1, GaitLegKind::kRegrasp},
@@ -23,7 +31,8 @@ ManeuverController::ManeuverController(const SqueezeConfig& config,
 }
 
 bool ManeuverController::UsesParkedRing() const {
-  return config_.gait_scheme == "relay" || IsSpider();
+  return config_.gait_scheme == "relay" ||
+         (IsSpider() && grasp_->grasp_finger_count < 4);
 }
 
 bool ManeuverController::IsSpider() const {
@@ -33,11 +42,13 @@ bool ManeuverController::IsSpider() const {
 void ManeuverController::Update(
     double time, double reference_time,
     const std::array<bool, 4>& touching, const Eigen::VectorXd& state,
-    const drake::math::RigidTransform<double>& cube_pose, C3Planner* planner,
+    const drake::math::RigidTransform<double>& cube_pose,
+    double sap_vertical_contact_force, double cube_weight, C3Planner* planner,
     Eigen::VectorXd* contact_start, Eigen::VectorXd* contact_end) {
   if (config_.gait) {
-    UpdateGait(time, reference_time, touching, state, cube_pose, planner,
-               contact_start, contact_end);
+    UpdateGait(time, reference_time, touching, state, cube_pose,
+               sap_vertical_contact_force, cube_weight, planner, contact_start,
+               contact_end);
   } else if (config_.release_middle) {
     UpdateRelease(time, reference_time, touching, state, planner,
                   contact_start, contact_end);
@@ -59,6 +70,7 @@ void ManeuverController::CompleteFinger(
     contacts.push_back(finger);
   std::sort(contacts.begin(), contacts.end());
   planner->Rebuild(contacts, state, time);
+  ++handoff_generation_;
 }
 
 void ManeuverController::ConfigureCubeReference(
@@ -78,10 +90,24 @@ void ManeuverController::ConfigureCubeReference(
 
 bool ManeuverController::ring_engaged() const { return ring_engaged_; }
 
+int ManeuverController::handoff_generation() const {
+  return handoff_generation_;
+}
+
+std::array<Eigen::Vector3d, 4>
+ManeuverController::OscPressDirectionsInCube() const {
+  std::array<Eigen::Vector3d, 4> result{
+      Eigen::Vector3d(0, 1, 0), Eigen::Vector3d(0, 1, 0),
+      Eigen::Vector3d(0, -1, 0), Eigen::Vector3d(0, 1, 0)};
+  // The spider ring now returns to yellow / -Y, so its existing +Y press
+  // direction is also its inward normal direction after it joins C3.
+  return result;
+}
+
 void ManeuverController::OverrideJointTarget(
     double time, Eigen::VectorXd* desired) const {
   const bool ring_is_moving =
-      gait_phase_ == GaitPhase::kMove && gait_entered_ &&
+      gait_phase_ == GaitPhase::kMove && (gait_entered_ || gait_retreating_) &&
       !gait_plan_.empty() && gait_plan_[gait_leg_].first == 3;
   if (UsesParkedRing() && !ring_engaged_ &&
       ring_parked_positions_.size() == desired->size() &&
@@ -107,11 +133,21 @@ void ManeuverController::OverrideJointTarget(
   }
   if (config_.gait && gait_phase_ == GaitPhase::kMove && gait_entered_) {
     const int finger = gait_plan_[gait_leg_].first;
-    const double elapsed = time - gait_trajectory_start_;
-    const Eigen::VectorXd q = elapsed >= gait_trajectory_.end_time()
-                                  ? gait_destination_
-                                  : gait_trajectory_.value(
-                                        std::max(0.0, elapsed)).col(0);
+    Eigen::VectorXd q;
+    if (gait_retreating_) {
+      const double elapsed = std::clamp(
+          time - gait_retreat_start_time_, 0.0,
+          gait_retreat_trajectory_.end_time());
+      q = gait_retreat_trajectory_.value(elapsed).col(0);
+    } else if (gait_touch_hold_active_ &&
+               gait_touch_hold_positions_.size() == desired->size()) {
+      q = gait_touch_hold_positions_;
+    } else {
+      const double elapsed = time - gait_trajectory_start_;
+      q = elapsed >= gait_trajectory_.end_time()
+              ? gait_destination_
+              : gait_trajectory_.value(std::max(0.0, elapsed)).col(0);
+    }
     const int start = GraspSetup::kFingerStarts[finger];
     desired->segment<4>(start) = q.segment<4>(start);
   }

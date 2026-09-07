@@ -19,7 +19,7 @@ namespace dairlib::allegro_grasp_c3 {
 // reads or mutates the live simulator.
 class LcsModel {
  public:
-  LcsModel();
+  explicit LcsModel(double cube_size_scale);
   ~LcsModel();
 
   LcsModel(const LcsModel&) = delete;
@@ -42,6 +42,14 @@ class LcsModel {
   drake::multibody::ModelInstanceIndex cube_model() const;
   const std::vector<drake::SortedPair<drake::geometry::GeometryId>>&
   contact_pairs() const;
+  // World-frame force directions corresponding one-for-one to the contact
+  // variables in the most recent Linearize() call.  With the finger/cube
+  // ordering used here, each direction is the force applied to the cube.
+  const std::vector<Eigen::Vector3d>& contact_force_bases() const;
+  // World-frame witness/contact points, one per active finger and in the
+  // same order as contact_pairs(), from the most recent Linearize() call.
+  // Each point is the midpoint of the two collider witness points.
+  const std::vector<Eigen::Vector3d>& contact_points_world() const;
 
  private:
   struct Impl;

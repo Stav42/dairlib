@@ -20,10 +20,6 @@ using drake::multibody::JacobianWrtVariable;
 using Eigen::Vector3d;
 using Eigen::VectorXd;
 
-const std::array<Vector3d, 4> kOscPressDirectionsInCube{
-    Vector3d(0, 1, 0), Vector3d(0, 1, 0), Vector3d(0, -1, 0),
-    Vector3d(0, 1, 0)};
-
 }  // namespace
 
 OscExecutorResult ComputeOscExecutorTorque(
@@ -46,21 +42,57 @@ OscExecutorResult ComputeOscExecutorTorque(
   VectorXd force = VectorXd::Zero(hand_velocity_count);
   OscExecutorResult result;
   result.pd_torque = pd;
+  result.used_full_contact_force =
+      request.use_full_contact_force &&
+      request.has_c3_full_contact_force_plan;
   for (int finger = 0; finger < 4; ++finger) {
     result.normal_direction_world.at(finger) =
-        R_WC * kOscPressDirectionsInCube.at(finger);
+        R_WC * request.press_directions_in_cube.at(finger);
   }
   for (size_t active_index = 0;
        active_index < request.active_fingers.size(); ++active_index) {
     const int finger = request.active_fingers[active_index];
-    double normal_force = SumNormalForce(
+    const Vector3d c3_force_on_cube =
+        request.c3_force_on_cube_world.at(finger);
+    result.c3_force_on_cube_world.at(finger) = c3_force_on_cube;
+    const double normal_force_target = SumNormalForce(
         request.lambda0_physical, request.normal_groups.at(active_index));
-    result.normal_force_target.at(finger) = normal_force;
+    result.normal_force_target.at(finger) = normal_force_target;
+    // Keep the legacy normal-only path bit-for-bit equivalent when the
+    // experimental full-force option is off.
+    double normal_force = normal_force_target;
     normal_force = BlendJoinedNormalForce(
         request.force_crossfade_from.at(finger), normal_force,
         request.time - request.finger_joined_time.at(finger),
         request.force_ramp_time, request.lambda_torque_scale);
+    // A negative scalar would turn a full contact-force command into a
+    // tensile, outward push. The experimental branch refuses it; valid C3
+    // normal-force solutions are already nonnegative.
+    if (result.used_full_contact_force)
+      normal_force = std::max(0.0, normal_force);
     result.normal_force_applied.at(finger) = normal_force;
+    Vector3d force_command_on_cube =
+        normal_force * result.normal_direction_world.at(finger);
+    if (result.used_full_contact_force) {
+      // Keep the same scalar normal-force safety ramp used by the legacy
+      // executor, then apply every physical lambda_n/beta component with its
+      // C3 world-frame direction. A nonpositive raw normal force has no
+      // admissible friction force, so command no full contact force.
+      const double scale =
+          normal_force_target > 1e-9 ? normal_force / normal_force_target
+                                     : 0.0;
+      force_command_on_cube = scale * c3_force_on_cube;
+      // This correction is constructed from the measured SAP contact
+      // geometry and constrained before reaching the executor.  Keep it
+      // separate from C3's normal-force crossfade: it is only present for an
+      // established resolved contact, and blending it again would make the
+      // measured outer loop's applied command ambiguous.
+      const Vector3d feedback_force =
+          request.wrench_feedback_force_on_cube_world.at(finger);
+      force_command_on_cube += feedback_force;
+      result.wrench_feedback_force_on_cube_world.at(finger) = feedback_force;
+    }
+    result.force_command_on_cube_world.at(finger) = force_command_on_cube;
 
     Eigen::MatrixXd J(3, request.plant.num_velocities());
     request.plant.CalcJacobianTranslationalVelocity(
@@ -69,7 +101,7 @@ OscExecutorResult ComputeOscExecutorTorque(
         Vector3d::Zero(), request.plant.world_frame(), request.plant.world_frame(),
         &J);
     force += J.leftCols(hand_velocity_count).transpose() *
-             (normal_force * result.normal_direction_world.at(finger));
+             force_command_on_cube;
   }
   result.force_torque = force;
   result.torque = gravity + pd + force;

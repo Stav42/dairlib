@@ -87,6 +87,55 @@ DEFINE_double(lambda_torque_scale, 1.0,
               "Scale applied to the Jacobian-transpose torque generated from "
               "C3's planned lambda forces. 1 = normal behavior; 0 disables "
               "lambda-force feedforward while leaving position PD active.");
+DEFINE_bool(osc_full_contact_force, false,
+            "EXPERIMENTAL OSC realization mode. false executes only C3's "
+            "per-finger normal-force scalar. true reconstructs and executes "
+            "the complete first-knot C3 contact force (normal lambda_n plus "
+            "tangential beta rays) through the measured fingertip Jacobians. "
+            "C3's noisy joint-input u remains unused. The full force is "
+            "scaled by the existing normal-force crossfade and "
+            "--lambda_torque_scale, then actuator torque is still clamped "
+            "by --tau_max.");
+DEFINE_bool(osc_wrench_feedback, false,
+            "EXPERIMENTAL measured-wrench feedback around the full C3 OSC "
+            "force executor. At a slow outer-loop rate it measures SAP's "
+            "resolved cube wrench and reallocates a bounded tangential "
+            "contact-force correction to reduce world-Z yaw error. Requires "
+            "--exec_mode=osc and --osc_full_contact_force=true. It never "
+            "applies C3's joint input u.");
+DEFINE_double(osc_wrench_feedback_period, 0.02,
+              "Outer-loop update period (s) for --osc_wrench_feedback.");
+DEFINE_double(osc_wrench_feedback_yaw_kp, 0.02,
+              "Yaw-error proportional gain (N m/rad) for measured-wrench "
+              "feedback.");
+DEFINE_double(osc_wrench_feedback_yaw_ki, 0.003,
+              "Yaw-error integral gain (N m/(rad s)) for measured-wrench "
+              "feedback. The integrator freezes if SAP shows no authority.");
+DEFINE_double(osc_wrench_feedback_max_yaw_moment, 0.008,
+              "Maximum additional world-Z moment (N m) requested by the "
+              "measured-wrench outer loop.");
+DEFINE_double(osc_wrench_feedback_max_force_per_contact, 0.35,
+              "Maximum magnitude (N) of the outer-loop tangential force "
+              "correction at any one fingertip.");
+DEFINE_double(osc_wrench_feedback_force_rate_limit, 4.0,
+              "Maximum change (N/s) of each outer-loop fingertip force "
+              "correction.");
+DEFINE_double(osc_wrench_feedback_allocation_damping, 1e-4,
+              "Tikhonov damping (m^2) for yaw-moment force allocation. "
+              "Larger values spread less force for a given yaw correction.");
+DEFINE_double(osc_wrench_feedback_min_commanded_yaw_moment, 5e-4,
+              "Smallest allocated outer-loop yaw moment (N m) that counts "
+              "as an authority test.");
+DEFINE_double(osc_wrench_feedback_min_resolved_yaw_moment, 2e-4,
+              "Minimum SAP-resolved yaw moment (N m) expected during an "
+              "outer-loop authority test.");
+DEFINE_double(osc_wrench_feedback_authority_timeout, 0.5,
+              "Seconds of commanded yaw correction with insufficient SAP "
+              "yaw response before the feedback integrator freezes and the "
+              "outer correction is disabled.");
+DEFINE_bool(osc_wrench_feedback_log, true,
+            "Print measured-wrench outer-loop diagnostics at its update "
+            "rate when --osc_wrench_feedback is enabled.");
 DEFINE_bool(fk_target, false,
             "Fingertip POSITION target source. DEFAULT false = fixed grasp "
             "points on the upright reference cube X_WC0 (the geometric hold — "

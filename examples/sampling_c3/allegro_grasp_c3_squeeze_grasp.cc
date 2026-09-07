@@ -39,18 +39,51 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
   const auto hand = environment_->hand_model();
   const auto cube = environment_->cube_model();
 
-  const double half = kCubeSize / 2.0;
-  const double index_x = config.release_middle
-                             ? -config.release_middle_tri_spread
-                             : -0.02;
-  const double index_z = config.release_middle
-                             ? config.release_middle_tri_base_z
-                             : 0.0;
-  const double middle_x = config.release_middle ? 0.0 : 0.02;
-  const double middle_z = config.release_middle
-                              ? config.release_middle_tri_apex_z
-                              : 0.0;
-  grasp_finger_count = config.release_middle ? 4 : 3;
+  cube_size = kNominalCubeSize * config_.cube_size_scale;
+  const double half = cube_size / 2.0;
+  const double in_face_scale = config_.cube_size_scale;
+  const bool spider_triangle =
+      config.gait && config.gait_scheme == "spider";
+  const double spider_half_width =
+      config.spider_triangle_half_width * in_face_scale;
+  const double spider_base_z = config.spider_triangle_base_z * in_face_scale;
+  const double spider_apex_z = config.spider_triangle_apex_z * in_face_scale;
+  const double index_x = spider_triangle
+                             ? -spider_half_width
+                             : config.release_middle
+                                   ? -config.release_middle_tri_spread *
+                                         in_face_scale
+                                   : -0.02 * in_face_scale;
+  const double index_z = spider_triangle
+                             ? spider_base_z
+                             : config.release_middle
+                                   ? config.release_middle_tri_base_z *
+                                         in_face_scale
+                                   : 0.0;
+  const double middle_x = spider_triangle
+                              ? 0.0
+                              : config.release_middle ? 0.0
+                                                      : 0.02 * in_face_scale;
+  const double middle_z = spider_triangle
+                              ? spider_apex_z
+                              : config.release_middle
+                                    ? config.release_middle_tri_apex_z *
+                                          in_face_scale
+                                    : 0.0;
+  const double ring_x = spider_triangle
+                            ? spider_half_width
+                            : config.release_middle_tri_spread * in_face_scale;
+  const double ring_z = spider_triangle
+                            ? spider_base_z
+                            : config.release_middle_tri_base_z * in_face_scale;
+  // Spider can now start with the ring already seated on the cube.  In that
+  // mode the initial planner must include all four contacts; otherwise the
+  // ring would be treated as parked and a later placement gait would be
+  // scheduled.
+  grasp_finger_count = (config.release_middle ||
+                        (config.gait && config.gait_scheme == "spider"))
+                           ? 4
+                           : 3;
   hand_positions = plant.num_positions(hand);
   initial_cube_pose = RigidTransform<double>(
       RotationMatrix<double>(),
@@ -74,23 +107,19 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
       Vector3d(middle_x,
                -(half - config.penetration_index_middle), middle_z),
       Vector3d(0.0, half - config.penetration_thumb, 0.0),
-      Vector3d(config.release_middle_tri_spread,
-               -(half - config.penetration_index_middle),
-               config.release_middle_tri_base_z)};
+      Vector3d(ring_x, -(half - config.penetration_index_middle), ring_z)};
   initial_footprints = footprints;
   relay_ring_hold = Vector3d(
       0.0, -(half - config.relay_ring_press), config.relay_ring_hold_z);
   relay_ring_park = Vector3d(
       0.0, -(half + config.relay_ring_retract), config.relay_ring_hold_z);
-  // For the lateral spider-walk, ring is the temporary bridge onto the
-  // incoming face 1 / red. Red is body +X, while its two in-face coordinates
-  // are body Y and Z. The park point is outside that same face along +X.
+  // For the spider handoff, middle is the apex on the yellow-face centre
+  // line, while index and ring are opposite base corners below centre. Ring
+  // approaches its base-right point from outside -Y.
   spider_ring_hold = Vector3d(
-      half - config.relay_ring_press, config.spider_ring_red_y,
-      config.spider_ring_hold_z);
+      ring_x, -(half - config.relay_ring_press), ring_z);
   spider_ring_park = Vector3d(
-      half + config.relay_ring_retract, config.spider_ring_red_y,
-      config.spider_ring_hold_z);
+      ring_x, -(half + config.relay_ring_retract), ring_z);
 
   VectorXd targets(9);
   for (int i = 0; i < 3; ++i)
@@ -98,7 +127,11 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
   const Vector3d ring_target = initial_cube_pose * footprints[3];
   GraspIkSolver solver(plant, &context, hand, cube, initial_cube_positions,
                        tip_bodies, tip_surface_offset, ring_surface_offset);
-  contact_positions = config.release_middle
+  // A spider maneuver now begins with the triangle already established on
+  // yellow: index and ring at the base corners, middle at the upper apex.
+  // Therefore the ring must be included in the *initial* IK solve, not just
+  // counted as an eventual C3 contact.
+  contact_positions = grasp_finger_count == 4
                           ? solver.SolveWithRing("contact", targets, ring_target)
                           : solver.SolveThreeFinger("contact", targets);
 
@@ -109,13 +142,13 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
     release_middle_positions = solver.SolveWithRing(
         "release_middle", release_targets, ring_target);
   } else if (config.release_middle && config.release_finger == "ring") {
-    const Vector3d ring_end_C(config.release_middle_tri_spread,
+    const Vector3d ring_end_C(config.release_middle_tri_spread * in_face_scale,
                               -(half - config.penetration_index_middle),
                               middle_z);
     const Vector3d ring_mid_C(
-        config.release_middle_tri_spread,
+        config.release_middle_tri_spread * in_face_scale,
         -(half + config.regrasp_arc_clearance),
-        0.5 * (config.release_middle_tri_base_z + middle_z));
+        0.5 * (config.release_middle_tri_base_z * in_face_scale + middle_z));
     ring_regrasp_mid_positions = solver.SolveWithRing(
         "regrasp_ring_mid", targets, initial_cube_pose * ring_mid_C);
     ring_regrasp_positions = solver.SolveWithRing(
@@ -123,10 +156,10 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
 
     const Vector3d middle_end_C(
         middle_x, -(half - config.penetration_index_middle),
-        config.release_middle_tri_base_z);
+        config.release_middle_tri_base_z * in_face_scale);
     const Vector3d middle_mid_C(
         middle_x, -(half + config.regrasp_arc_clearance),
-        0.5 * (middle_z + config.release_middle_tri_base_z));
+        0.5 * (middle_z + config.release_middle_tri_base_z * in_face_scale));
     VectorXd middle_targets = targets;
     middle_targets.segment<3>(3) = initial_cube_pose * middle_mid_C;
     middle_regrasp_mid_positions = solver.SolveWithRing(
@@ -158,8 +191,7 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
       initial_cube_pose * Vector3d(middle_x, -(half + 0.01), middle_z),
       initial_cube_pose * Vector3d(0.0, half + 0.01, 0.0);
   const Vector3d ring_pregrasp = initial_cube_pose * Vector3d(
-      config.release_middle_tri_spread, -(half + 0.01),
-      config.release_middle_tri_base_z);
+      ring_x, -(half + 0.01), ring_z);
   pregrasp_positions = config.release_middle
                            ? solver.SolveWithRing("pregrasp", pregrasp_targets,
                                                   ring_pregrasp)
@@ -177,16 +209,16 @@ GraspSetup::GraspSetup(const SqueezeConfig& config,
   if (config.show_cube_target) {
     environment_->meshcat()->SetObject(
         "/cube_target",
-        drake::geometry::Box(kCubeSize + 0.002, kCubeSize + 0.002,
-                             kCubeSize + 0.002),
+        drake::geometry::Box(cube_size + 0.002, cube_size + 0.002,
+                             cube_size + 0.002),
         drake::geometry::Rgba(0.0, 0.9, 1.0, 0.35));
     environment_->meshcat()->SetTransform("/cube_target", initial_cube_pose);
   }
   if (config.show_cube_start) {
     environment_->meshcat()->SetObject(
         "/cube_start",
-        drake::geometry::Box(kCubeSize + 0.004, kCubeSize + 0.004,
-                             kCubeSize + 0.004),
+        drake::geometry::Box(cube_size + 0.004, cube_size + 0.004,
+                             cube_size + 0.004),
         drake::geometry::Rgba(1.0, 0.0, 0.0, 0.35));
     environment_->meshcat()->SetTransform("/cube_start", initial_cube_pose);
   }

@@ -30,11 +30,13 @@ class GraspSetup {
   Eigen::Vector3d FingertipPosition(int finger) const;
   Eigen::VectorXd FingertipPositionsForHand(const Eigen::VectorXd& joints);
 
-  static constexpr double kCubeSize = 0.06;
+  static constexpr double kNominalCubeSize = 0.06;
   static constexpr std::array<int, 4> kFingerStarts{0, 4, 12, 8};
 
   int grasp_finger_count{};
   int hand_positions{};
+  // Actual edge length of the selected cube model (m).
+  double cube_size{};
   drake::math::RigidTransform<double> initial_cube_pose;
   Eigen::VectorXd initial_cube_positions;
   Eigen::Vector3d tip_surface_offset;

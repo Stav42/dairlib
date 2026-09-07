@@ -16,6 +16,7 @@ SqueezeConfig LoadSqueezeConfig() {
   result.ring_tip_surface_offset_z = FLAGS_ring_tip_surface_offset_z;
   result.ring_tip_surface_offset_y = FLAGS_ring_tip_surface_offset_y;
   result.track_cube_contact = FLAGS_track_cube_contact;
+  result.contact_ik_pose_source = FLAGS_contact_ik_pose_source;
   result.contact_force_log = FLAGS_contact_force_log;
   result.contact_force_log_hz = FLAGS_contact_force_log_hz;
   result.lcm_publish = FLAGS_lcm_publish;
@@ -62,6 +63,26 @@ SqueezeConfig LoadSqueezeConfig() {
   result.exec_grav_comp = FLAGS_exec_grav_comp;
   result.force_floor = FLAGS_force_floor;
   result.lambda_torque_scale = FLAGS_lambda_torque_scale;
+  result.osc_full_contact_force = FLAGS_osc_full_contact_force;
+  result.osc_wrench_feedback = FLAGS_osc_wrench_feedback;
+  result.osc_wrench_feedback_period = FLAGS_osc_wrench_feedback_period;
+  result.osc_wrench_feedback_yaw_kp = FLAGS_osc_wrench_feedback_yaw_kp;
+  result.osc_wrench_feedback_yaw_ki = FLAGS_osc_wrench_feedback_yaw_ki;
+  result.osc_wrench_feedback_max_yaw_moment =
+      FLAGS_osc_wrench_feedback_max_yaw_moment;
+  result.osc_wrench_feedback_max_force_per_contact =
+      FLAGS_osc_wrench_feedback_max_force_per_contact;
+  result.osc_wrench_feedback_force_rate_limit =
+      FLAGS_osc_wrench_feedback_force_rate_limit;
+  result.osc_wrench_feedback_allocation_damping =
+      FLAGS_osc_wrench_feedback_allocation_damping;
+  result.osc_wrench_feedback_min_commanded_yaw_moment =
+      FLAGS_osc_wrench_feedback_min_commanded_yaw_moment;
+  result.osc_wrench_feedback_min_resolved_yaw_moment =
+      FLAGS_osc_wrench_feedback_min_resolved_yaw_moment;
+  result.osc_wrench_feedback_authority_timeout =
+      FLAGS_osc_wrench_feedback_authority_timeout;
+  result.osc_wrench_feedback_log = FLAGS_osc_wrench_feedback_log;
   result.fk_target = FLAGS_fk_target;
   result.N = FLAGS_N;
   result.c3_dt = FLAGS_c3_dt;
@@ -96,8 +117,47 @@ SqueezeConfig LoadSqueezeConfig() {
   result.gait_scheme = FLAGS_gait_scheme;
   result.spider_yaw_delta = FLAGS_spider_yaw_delta;
   result.spider_yaw_duration = FLAGS_spider_yaw_duration;
+  result.spider_yaw_only = FLAGS_spider_yaw_only;
+  result.spider_ring_placement_duration =
+      FLAGS_spider_ring_placement_duration;
+  result.spider_triangle_half_width = FLAGS_spider_triangle_half_width;
+  result.spider_triangle_base_z = FLAGS_spider_triangle_base_z;
+  result.spider_triangle_apex_z = FLAGS_spider_triangle_apex_z;
   result.spider_ring_red_y = FLAGS_spider_ring_red_y;
   result.spider_ring_hold_z = FLAGS_spider_ring_hold_z;
+  result.spider_index_crawl = FLAGS_spider_index_crawl;
+  result.spider_index_arc_clearance = FLAGS_spider_index_arc_clearance;
+  result.spider_index_duration = FLAGS_spider_index_duration;
+  result.spider_index_crawl_after_ring =
+      FLAGS_spider_index_crawl_after_ring;
+  result.spider_support_normal_margin = FLAGS_spider_support_normal_margin;
+  result.spider_support_verify_time = FLAGS_spider_support_verify_time;
+  result.spider_support_settle_time = FLAGS_spider_support_settle_time;
+  result.spider_support_settle_yaw_error =
+      FLAGS_spider_support_settle_yaw_error;
+  result.spider_support_settle_translation_error =
+      FLAGS_spider_support_settle_translation_error;
+  result.spider_support_settle_linear_speed =
+      FLAGS_spider_support_settle_linear_speed;
+  result.spider_support_settle_angular_speed =
+      FLAGS_spider_support_settle_angular_speed;
+  result.spider_ring_handoff_vertical_force_deficit =
+      FLAGS_spider_ring_handoff_vertical_force_deficit;
+  result.spider_support_max_translation_error =
+      FLAGS_spider_support_max_translation_error;
+  result.spider_support_max_orientation_error =
+      FLAGS_spider_support_max_orientation_error;
+  result.spider_support_max_linear_speed =
+      FLAGS_spider_support_max_linear_speed;
+  result.spider_support_max_angular_speed =
+      FLAGS_spider_support_max_angular_speed;
+  result.spider_allow_unverified_index_lift =
+      FLAGS_spider_allow_unverified_index_lift;
+  result.spider_virtual_ring_search = FLAGS_spider_virtual_ring_search;
+  result.spider_ring_search_rows = FLAGS_spider_ring_search_rows;
+  result.spider_ring_search_cols = FLAGS_spider_ring_search_cols;
+  result.spider_ring_search_face_margin =
+      FLAGS_spider_ring_search_face_margin;
   result.relay_ring_hold_z = FLAGS_relay_ring_hold_z;
   result.relay_ring_press = FLAGS_relay_ring_press;
   result.relay_ring_retract = FLAGS_relay_ring_retract;
@@ -118,6 +178,7 @@ SqueezeConfig LoadSqueezeConfig() {
   result.cube_start_x = FLAGS_cube_start_x;
   result.cube_start_y = FLAGS_cube_start_y;
   result.cube_start_z = FLAGS_cube_start_z;
+  result.cube_size_scale = FLAGS_cube_size_scale;
   result.preview = FLAGS_preview;
   result.sim_time = FLAGS_sim_time;
   return result;

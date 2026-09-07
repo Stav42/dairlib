@@ -108,28 +108,49 @@ struct SapFingerContactForce {
   double tangential_force_magnitude_sum{};
   double max_slip_speed{};
   Eigen::Vector3d force_on_cube_world{Eigen::Vector3d::Zero()};
+  // Arithmetic mean of the resolved point-pair contact geometry for this
+  // fingertip.  These are suitable for low-rate wrench feedback, not a
+  // replacement for individual point-pair constraints.
+  Eigen::Vector3d contact_point_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d normal_into_cube_world{Eigen::Vector3d::Zero()};
 };
 
 struct SapFingertipCubeContactSummary {
   std::array<SapFingerContactForce, 4> fingers{};
+  Eigen::Vector3d net_force_on_cube_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d moment_about_cube_center_world{Eigen::Vector3d::Zero()};
 };
 
 SapFingertipCubeContactSummary SummarizeSapFingertipCubeContacts(
     const drake::multibody::ContactResults<double>& contacts,
     drake::multibody::BodyIndex cube_body,
-    const std::array<drake::multibody::BodyIndex, 4>& tip_bodies);
+    const std::array<drake::multibody::BodyIndex, 4>& tip_bodies,
+    const Eigen::Vector3d& cube_center_world);
 
 // Reports the actual contact forces applied to the cube by SAP.  When an OSC
 // command is available, its raw C3 normal force and post-scale/crossfade normal
 // force are included for a like-for-like requested-versus-resolved comparison.
+// In experimental full-contact-force mode it also reports the planned and
+// resolved yaw moments about the current cube center.
 struct SapContactForceDiagnostic {
   double time{};
   double osc_command_time{};
   bool has_osc_command{};
+  bool osc_used_full_contact_force{};
   double lambda_torque_scale{1.0};
   SapFingertipCubeContactSummary sap;
   std::array<double, 4> c3_normal_force_target{};
   std::array<double, 4> c3_normal_force_applied{};
+  std::array<Eigen::Vector3d, 4> c3_force_on_cube_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+  std::array<Eigen::Vector3d, 4> osc_force_command_on_cube_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+  std::array<Eigen::Vector3d, 4> c3_contact_point_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+  Eigen::Vector3d cube_center_world{Eigen::Vector3d::Zero()};
 };
 
 void PrintSapContactForceDiagnostic(const SapContactForceDiagnostic& diagnostic);

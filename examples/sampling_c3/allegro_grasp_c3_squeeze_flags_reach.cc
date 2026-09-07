@@ -55,11 +55,19 @@ DEFINE_double(ring_tip_surface_offset_y, 0.005,
               "link_11_tip's raw origin — when solving q_contact/"
               "q_pregrasp/q_release_middle/q_regrasp_ring.");
 DEFINE_bool(track_cube_contact, false,
-            "Re-solve the 3-point grasp IK against the CURRENT cube pose "
-            "every relin (once unpinned), so the C3 cost's hand-q reference "
-            "(k_hold) AND the OSC anchor track the cube as it moves, instead "
-            "of pointing at the static t=0 q_contact. Default false keeps the "
+            "Re-solve the grasp-contact IK periodically after release, so the "
+            "C3 hand-q reference (k_hold) and OSC PD anchor update instead "
+            "of staying at static t=0 q_contact. The pose used for that IK is "
+            "selected by --contact_ik_pose_source. Default false keeps the "
             "static q_contact (A/B toggle).");
+DEFINE_string(contact_ik_pose_source, "reference",
+              "Pose source for live contact IK when --track_cube_contact=true: "
+              "'reference' preserves the existing behavior: use the commanded "
+              "cube reference, capped by --cube_ik_lead_{pos,rot}_max relative "
+              "to the measured cube. 'measured' uses the current simulator cube "
+              "pose directly, so the OSC PD contact targets move with a drifting "
+              "cube. Measured mode is contact-following, not a new force or "
+              "contact-loss recovery controller.");
 DEFINE_bool(contact_force_log, false,
             "Print a throttled per-finger SAP contact table for forces "
             "actually resolved ON THE CUBE. Each row sums every point-pair "
@@ -67,7 +75,9 @@ DEFINE_bool(contact_force_log, false,
             "compression, friction magnitude, vertical force, and slip. "
             "In osc mode, it also reports C3's raw normal force and the "
             "post-scale/crossfade OSC normal-force command from the prior "
-            "1 ms tick. Suppresses the C3 PLAN / --plan_debug SOLVER DIAG "
+            "1 ms tick. With --osc_full_contact_force=true it additionally "
+            "prints C3, OSC-command, and SAP-resolved M_z about the cube "
+            "center. Suppresses the C3 PLAN / --plan_debug SOLVER DIAG "
             "tables and other high-rate diagnostics while active.");
 DEFINE_double(contact_force_log_hz, 10.0,
               "Print rate (Hz) for --contact_force_log.");

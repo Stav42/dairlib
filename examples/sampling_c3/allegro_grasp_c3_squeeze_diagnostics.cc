@@ -8,6 +8,7 @@
 #include <limits>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include "c3/core/lcs.h"
 
@@ -38,6 +39,19 @@ double NormalForce(const VectorXd& scaled_force,
     if (index < 0 || index >= scaled_force.size())
       return std::numeric_limits<double>::quiet_NaN();
     result += scaled_force(index) / lambda_scaling;
+  }
+  return result;
+}
+
+double YawMomentAboutCubeCenter(
+    const std::array<Vector3d, 4>& force_on_cube_world,
+    const std::array<Vector3d, 4>& contact_point_world,
+    const Vector3d& cube_center_world) {
+  double result = 0.0;
+  for (int finger = 0; finger < 4; ++finger) {
+    result += (contact_point_world.at(finger) - cube_center_world)
+                  .cross(force_on_cube_world.at(finger))
+                  .z();
   }
   return result;
 }
@@ -314,7 +328,8 @@ void PrintOscTorqueSplit(const OscTorqueSplitDiagnostic& d) {
 SapFingertipCubeContactSummary SummarizeSapFingertipCubeContacts(
     const drake::multibody::ContactResults<double>& contacts,
     const drake::multibody::BodyIndex cube_body,
-    const std::array<drake::multibody::BodyIndex, 4>& tip_bodies) {
+    const std::array<drake::multibody::BodyIndex, 4>& tip_bodies,
+    const Eigen::Vector3d& cube_center_world) {
   SapFingertipCubeContactSummary result;
   for (int contact_index = 0;
        contact_index < contacts.num_point_pair_contacts(); ++contact_index) {
@@ -346,6 +361,11 @@ SapFingertipCubeContactSummary SummarizeSapFingertipCubeContacts(
         std::max(0.0, force_on_cube.dot(normal_into_cube));
     const Vector3d tangential_force =
         force_on_cube - normal_force * normal_into_cube;
+    // SAP reports force at the point-pair contact.  The two witness points
+    // straddle the tiny penetration depth, so their midpoint is a stable
+    // moment arm for the resolved contact force.
+    const Vector3d contact_point =
+        0.5 * (info.point_pair().p_WCa + info.point_pair().p_WCb);
 
     SapFingerContactForce& summary = result.fingers.at(finger);
     ++summary.point_contact_count;
@@ -354,6 +374,18 @@ SapFingertipCubeContactSummary SummarizeSapFingertipCubeContacts(
     summary.max_slip_speed =
         std::max(summary.max_slip_speed, std::abs(info.slip_speed()));
     summary.force_on_cube_world += force_on_cube;
+    summary.contact_point_world += contact_point;
+    summary.normal_into_cube_world += normal_into_cube;
+    result.net_force_on_cube_world += force_on_cube;
+    result.moment_about_cube_center_world +=
+        (contact_point - cube_center_world).cross(force_on_cube);
+  }
+  for (SapFingerContactForce& summary : result.fingers) {
+    if (summary.point_contact_count == 0) continue;
+    summary.contact_point_world /= summary.point_contact_count;
+    const double normal_norm = summary.normal_into_cube_world.norm();
+    if (normal_norm > 1e-12)
+      summary.normal_into_cube_world /= normal_norm;
   }
   return result;
 }
@@ -372,6 +404,10 @@ void PrintSapContactForceDiagnostic(const SapContactForceDiagnostic& d) {
               << d.osc_command_time << " s (one 1 ms control tick earlier); "
                  "applied includes lambda_torque_scale="
               << d.lambda_torque_scale << " and any join crossfade.\n";
+    if (d.osc_used_full_contact_force) {
+      std::cout << "  OSC force execution: full C3 lambda_n + beta contact "
+                   "force through J^T; C3 joint input u is not applied.\n";
+    }
   } else {
     std::cout << "  No prior OSC normal-force command is available yet.\n";
   }
@@ -412,6 +448,31 @@ void PrintSapContactForceDiagnostic(const SapContactForceDiagnostic& d) {
             << std::setw(8) << total_normal << " |" << std::setw(13)
             << total_tangential << " |" << std::setw(8) << total_vertical
             << " |" << std::setw(9) << max_slip << "\n";
+  std::cout << "\n=== CUBE YAW MOMENT @ t=" << d.time << " s ===\n"
+            << "  Moments are ON THE CUBE about its current center; +M_z "
+               "is world +Z. C3 uses its current linearization witness "
+               "points.\n"
+            << "  source                    | M_z [N m]\n"
+            << std::setprecision(6);
+  if (d.has_osc_command && d.osc_used_full_contact_force) {
+    std::cout << "  M_z C3 first-knot plan    |" << std::setw(12)
+              << YawMomentAboutCubeCenter(d.c3_force_on_cube_world,
+                                          d.c3_contact_point_world,
+                                          d.cube_center_world)
+              << "\n"
+              << "  M_z OSC force command     |" << std::setw(12)
+              << YawMomentAboutCubeCenter(
+                     d.osc_force_command_on_cube_world,
+                     d.c3_contact_point_world, d.cube_center_world)
+              << "\n";
+  } else {
+    std::cout << "  M_z C3 first-knot plan    |" << std::setw(12) << "n/a"
+              << "\n"
+              << "  M_z OSC force command     |" << std::setw(12) << "n/a"
+              << "\n";
+  }
+  std::cout << "  M_z SAP resolved contact  |" << std::setw(12)
+            << d.sap.moment_about_cube_center_world.z() << "\n";
   std::cout.flags(saved_flags);
   std::cout.precision(saved_precision);
 }

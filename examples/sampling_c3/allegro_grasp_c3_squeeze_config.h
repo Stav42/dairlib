@@ -17,6 +17,7 @@ struct SqueezeConfig {
   double ring_tip_surface_offset_z;
   double ring_tip_surface_offset_y;
   bool track_cube_contact;
+  std::string contact_ik_pose_source;
   bool contact_force_log;
   double contact_force_log_hz;
   bool lcm_publish;
@@ -63,6 +64,21 @@ struct SqueezeConfig {
   bool exec_grav_comp;
   double force_floor;
   double lambda_torque_scale;
+  bool osc_full_contact_force;
+  // Optional measured-SAP-wrench outer loop around the full C3 force
+  // executor.  The first implementation corrects world-Z yaw only.
+  bool osc_wrench_feedback;
+  double osc_wrench_feedback_period;
+  double osc_wrench_feedback_yaw_kp;
+  double osc_wrench_feedback_yaw_ki;
+  double osc_wrench_feedback_max_yaw_moment;
+  double osc_wrench_feedback_max_force_per_contact;
+  double osc_wrench_feedback_force_rate_limit;
+  double osc_wrench_feedback_allocation_damping;
+  double osc_wrench_feedback_min_commanded_yaw_moment;
+  double osc_wrench_feedback_min_resolved_yaw_moment;
+  double osc_wrench_feedback_authority_timeout;
+  bool osc_wrench_feedback_log;
   bool fk_target;
   int N;
   double c3_dt;
@@ -97,8 +113,53 @@ struct SqueezeConfig {
   std::string gait_scheme;
   double spider_yaw_delta;
   double spider_yaw_duration;
+  // Diagnostic mode: perform the isolated spider yaw and retain the
+  // established index-middle-thumb C3 hold without starting ring placement.
+  bool spider_yaw_only;
+  double spider_ring_placement_duration;
+  // Nominal 60 mm-cube coordinates for the three-finger triangle on yellow.
+  // They scale with cube_size_scale before being used as contact points.
+  double spider_triangle_half_width;
+  double spider_triangle_base_z;
+  double spider_triangle_apex_z;
   double spider_ring_red_y;
   double spider_ring_hold_z;
+  double spider_index_crawl;
+  double spider_index_arc_clearance;
+  double spider_index_duration;
+  // Keep the current maneuver at a four-contact hold after the selected ring
+  // placement unless an explicit later experiment enables the index crawl.
+  bool spider_index_crawl_after_ring;
+  double spider_support_normal_margin;
+  double spider_support_verify_time;
+  // Before changing the C3 contact topology, keep the four-contact grasp
+  // until the measured cube pose and velocity have remained within these
+  // settling bounds for spider_support_settle_time.
+  double spider_support_settle_time;
+  double spider_support_settle_yaw_error;
+  double spider_support_settle_translation_error;
+  double spider_support_settle_linear_speed;
+  double spider_support_settle_angular_speed;
+  // Before adding ring to C3, require the actual SAP fingertip contact
+  // force on the cube to support its weight within this allowed deficit.
+  // This is a measured-force gate, not a C3 normal-force constraint.
+  double spider_ring_handoff_vertical_force_deficit;
+  // Maximum total three-dimensional position error accepted by the gate.
+  double spider_support_max_translation_error;
+  double spider_support_max_orientation_error;
+  double spider_support_max_linear_speed;
+  double spider_support_max_angular_speed;
+  // Diagnostic-only override: retain the solved-force and normal-margin
+  // checks, but permit the index lift despite a predicted-motion violation.
+  bool spider_allow_unverified_index_lift;
+  // Diagnostic-only virtual placement sweep.  After the small yaw, retain
+  // the real index-middle-thumb hold, leave ring parked, and solve temporary
+  // middle-thumb-ring C3 problems on this grid of hypothetical red-face
+  // ring points.  It never commands any of those points.
+  bool spider_virtual_ring_search;
+  int spider_ring_search_rows;
+  int spider_ring_search_cols;
+  double spider_ring_search_face_margin;
   double relay_ring_hold_z;
   double relay_ring_press;
   double relay_ring_retract;
@@ -119,6 +180,9 @@ struct SqueezeConfig {
   double cube_start_x;
   double cube_start_y;
   double cube_start_z;
+  // Uniform geometric scale relative to the nominal 60 mm cube.  The
+  // currently supplied models support 1.0, 0.8, and 0.6.
+  double cube_size_scale;
   bool preview;
   double sim_time;
 };

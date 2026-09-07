@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Removed Three-Finger C3 State-Box Constraint</title>
+  <style>
+    :root {
+      --bg: #08131d;
+      --panel: #102432;
+      --panel-2: #142f40;
+      --ink: #eef7fb;
+      --muted: #b7cad5;
+      --line: #315166;
+      --cyan: #64d7e8;
+      --teal: #62d6ae;
+      --amber: #ffd37d;
+      --red: #ff9e9e;
+      --code: #071017;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 0%, rgba(54, 166, 196, .18), transparent 28rem),
+        radial-gradient(circle at 92% 16%, rgba(76, 173, 138, .12), transparent 25rem),
+        var(--bg);
+      font: 18px/1.62 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    code, pre, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code {
+      padding: .12rem .35rem;
+      border: 1px solid #39566a;
+      border-radius: 5px;
+      color: #bff2fb;
+      background: #0a1b27;
+      font-size: .88em;
+    }
+
+    .hero {
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(120deg, rgba(16, 56, 78, .9), rgba(7, 19, 29, .96));
+    }
+    .hero-inner, main { width: min(1000px, calc(100% - 36px)); margin: 0 auto; }
+    .hero-inner { padding: 58px 0 50px; }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--cyan);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.9rem); line-height: 1.08; letter-spacing: -.04em; }
+    .subtitle { max-width: 760px; margin: 20px 0 0; color: var(--muted); font-size: 1.14rem; }
+    .meta { margin-top: 24px; color: #c8e4ed; font-size: .92rem; }
+
+    main { padding: 34px 0 72px; }
+    section {
+      margin: 0 0 24px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(145deg, rgba(18, 42, 57, .96), rgba(11, 29, 40, .96));
+      box-shadow: 0 14px 36px rgba(0, 0, 0, .2);
+    }
+    h2 { margin: 0 0 14px; color: #f7fcff; font-size: 1.55rem; line-height: 1.24; }
+    h3 { margin: 26px 0 10px; color: var(--cyan); font-size: 1.1rem; }
+    p { margin: .8rem 0; }
+    ul { padding-left: 1.3rem; }
+    li { margin: .38rem 0; }
+    .lead { font-size: 1.1rem; color: #d8eaf1; }
+
+    .answer {
+      padding: 19px 21px;
+      border-left: 5px solid var(--cyan);
+      border-radius: 10px;
+      background: #0b2939;
+      color: #e7fbff;
+      font-weight: 650;
+    }
+    .warning {
+      padding: 17px 19px;
+      border: 1px solid #725e36;
+      border-left: 5px solid var(--amber);
+      border-radius: 10px;
+      background: #282213;
+      color: #fff0c7;
+    }
+    .note {
+      padding: 17px 19px;
+      border: 1px solid #386455;
+      border-left: 5px solid var(--teal);
+      border-radius: 10px;
+      background: #0d2925;
+      color: #d9f9ee;
+    }
+
+    .equation {
+      overflow-x: auto;
+      margin: 16px 0;
+      padding: 18px 20px;
+      border: 1px solid #34546a;
+      border-radius: 10px;
+      color: #d5f7fb;
+      background: var(--code);
+      font-size: .98rem;
+      line-height: 1.75;
+    }
+
+    .diagram {
+      overflow-x: auto;
+      margin: 22px 0 8px;
+      padding: 22px;
+      border: 1px solid #34546a;
+      border-radius: 12px;
+      background: #091923;
+    }
+    .diagram pre { margin: 0; color: #d9edf4; font-size: clamp(.72rem, 1.7vw, .98rem); line-height: 1.5; }
+    .cyan { color: var(--cyan); }
+    .green { color: var(--teal); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+    th, td { padding: 13px 14px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #d9f8ff; background: #173346; font-size: .9rem; }
+    td { color: #d4e1e8; }
+    .soft { color: var(--muted); }
+
+    .code-link { color: #aeeffd; text-decoration-color: rgba(174, 239, 253, .5); }
+    footer { color: #9eb6c2; font-size: .86rem; text-align: center; padding: 8px 0; }
+    @media (max-width: 620px) { body { font-size: 16px; } section { padding: 21px; } .hero-inner { padding: 44px 0 38px; } }
+  </style>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['\\(', '\\)']],
+        displayMath: [['\\[', '\\]']]
+      },
+      chtml: { scale: 1 }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">C3 / spiderwalk diagnostic note</p>
+      <h1>Removed three-finger C3 state-box constraint</h1>
+      <p class="subtitle">A record of the hard state constraint that was tried, then removed from C3.</p>
+      <p class="meta">August 30, 2026 &nbsp;•&nbsp; Candidate fingers: middle + thumb + ring</p>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Short answer</h2>
+      <div class="answer">
+        This was a hard constraint inside the C3 optimization problem. It has now been removed. C3 no longer constrains its predicted cube state to this box.
+      </div>
+      <p class="lead">It used to say: at every future state predicted by C3, the cube must remain close to its stationary target pose and must move slowly. That requirement was later-added and has been removed from the C3 problem.</p>
+    </section>
+
+    <section>
+      <h2>The former C3 constraint</h2>
+      <p>Let the cube part of C3's predicted state at knot \(k\) be:</p>
+      <div class="equation">
+\[
+Sx_k =
+\begin{bmatrix}
+q_k \\ p_k \\ \omega_k \\ v_k
+\end{bmatrix}.
+\]
+      </div>
+      <ul>
+        <li><span class="cyan">\(q\)</span>: the four-number cube orientation quaternion.</li>
+        <li><span class="cyan">\(p\)</span>: cube world position \([x\;y\;z]\).</li>
+        <li><span class="cyan">\(\omega\)</span>: cube angular velocity.</li>
+        <li><span class="cyan">\(v\)</span>: cube linear velocity.</li>
+      </ul>
+      <p>The reference is the first target state in the C3 horizon, <code>horizon_target_[0]</code>. During this candidate-support phase it is the stationary cube target at the requested small yaw.</p>
+
+      <div class="diagram" aria-label="Prediction horizon and hard state boxes">
+<pre>                 C3 prediction horizon
+
+ current state        knot 1             knot 2             ...       final knot
+     x(now)  ─────►    x<sub>1</sub>   ─────►    x<sub>2</sub>   ─────►           x<sub>N</sub>
+                        <span class="green">must be inside</span>       <span class="green">must be inside</span>                  <span class="green">must be inside</span>
+                       ┌─────────────┐     ┌─────────────┐              ┌─────────────┐
+                       │ target box  │     │ target box  │              │ target box  │
+                       └─────────────┘     └─────────────┘              └─────────────┘
+
+The constraint is applied to every C3-predicted state knot, not just the last one.</pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>Exact hard inequality</h2>
+      <p>For every predicted state knot, C3 previously received the following componentwise box constraint:</p>
+      <div class="equation">
+\[
+\begin{aligned}
+\ell &\le Sx_k \le u, \\[0.6em]
+q^\ast - \sin(0.10/2)\,\mathbf{1}_{4}
+  &\le q_k \le
+q^\ast + \sin(0.10/2)\,\mathbf{1}_{4}, \\
+p^\ast - 0.005\,\mathbf{1}_{3}
+  &\le p_k \le
+p^\ast + 0.005\,\mathbf{1}_{3}, \\
+\omega^\ast - 0.25\,\mathbf{1}_{3}
+  &\le \omega_k \le
+\omega^\ast + 0.25\,\mathbf{1}_{3}, \\
+v^\ast - 0.05\,\mathbf{1}_{3}
+  &\le v_k \le
+v^\ast + 0.05\,\mathbf{1}_{3}.
+\end{aligned}
+\]
+      </div>
+      <p>Here \(q^\ast, p^\ast, \omega^\ast, v^\ast\) come from the stationary target state. Thus \(\omega^\ast\) and \(v^\ast\) are zero for this hold.</p>
+
+      <table>
+        <thead>
+          <tr><th>Cube quantity</th><th>Hard C3 limit</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Position \(p\)</td><td>\(\pm 0.005\ \mathrm{m}\) on each x/y/z coordinate</td><td>No predicted coordinate may drift more than 5 mm from its target value.</td></tr>
+          <tr><td>Angular velocity \(\omega\)</td><td>\(\pm 0.25\ \mathrm{rad/s}\) on each component</td><td>The predicted cube cannot spin quickly.</td></tr>
+          <tr><td>Linear velocity \(v\)</td><td>\(\pm 0.05\ \mathrm{m/s}\) on each component</td><td>The predicted cube cannot translate quickly.</td></tr>
+          <tr><td>Quaternion \(q\)</td><td>\(\pm\sin(0.05) \approx \pm 0.04998\) on each quaternion entry</td><td>A conservative componentwise orientation box.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="warning">
+        <strong>Important precision:</strong> the quaternion line is not an exact \( \text{orientation error} \le 0.10\ \mathrm{rad} \) constraint. It is a box around the four quaternion entries. The true orientation error is also measured after C3 solves.
+      </div>
+    </section>
+
+    <section>
+      <h2>What is <em>not</em> this constraint</h2>
+      <table>
+        <thead>
+          <tr><th>Item</th><th>Where it is checked</th><th>Hard C3 constraint?</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Total position error \(\lVert p - p^\ast\rVert_2 \le 0.007\ \mathrm{m}\)</td><td>After the solve, when accepting or rejecting the candidate.</td><td><span class="amber">No.</span> It remains an after-solve acceptance check.</td></tr>
+          <tr><td>Desired yaw / desired cube pose</td><td>C3 tracking cost.</td><td><span class="amber">No.</span> A cost can be missed; it does not itself make the QP infeasible.</td></tr>
+          <tr><td>Each active contact has at least 0.05 N normal force</td><td>Separate force constraint.</td><td><span class="green">Yes.</span> This remains in C3.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Why it could cause an infeasible solve</h2>
+      <p>For the middle–thumb–ring candidate, C3 must satisfy all of these at the same time:</p>
+      <div class="diagram">
+<pre><span class="cyan">C3 must find:</span>     torque sequence u<sub>0...N-1</sub> and contact-force sequence &lambda;<sub>0...N-1</sub>
+
+<span class="green">such that:</span>           predicted dynamics are obeyed
+                     contact forces obey normal/contact/friction rules
+                     each active finger keeps its 0.05 N normal-force margin
+                     torques stay within their limits
+                     <span class="amber">[removed] every predicted cube state stays inside the box above</span>
+
+<span class="red">If no such u and &lambda; exist:</span>  C3::Solve final QP failed with InfeasibleConstraints</pre>
+      </div>
+      <p>This constraint was intentionally added as a safety test, but it is now removed. C3 may now solve a candidate that drifts; the existing after-solve viability check will reject it before index is allowed to lift.</p>
+    </section>
+
+    <section>
+      <h2>How a corrective yaw would use C3 and OSC</h2>
+      <div class="answer">
+        A corrective yaw is a new, short cube-reference trajectory. It is not a hand-tuned finger-force command and it is not an extra yaw torque injected outside C3.
+      </div>
+
+      <h3>1. Put the current state and yaw reference into C3</h3>
+      <p>While index, middle, and thumb are still touching, C3 receives:</p>
+      <ul>
+        <li>the measured hand and cube state, including cube pose and velocity;</li>
+        <li>the current three-contact contact/friction linearization;</li>
+        <li>the C3 horizon of desired cube poses, whose yaw is a smooth path toward the requested \(10^\circ\) yaw; and</li>
+        <li>the normal contact, friction, and torque constraints.</li>
+      </ul>
+      <p>For the original turn, the yaw component of the reference is a smooth path from zero to the goal:</p>
+      <div class="equation">
+\[
+\psi_{\mathrm{ref}}(t): 0 \longrightarrow
+\psi_{\mathrm{goal}} = 0.1745\ \mathrm{rad}.
+\]
+      </div>
+      <p>With <code>--track_cube_contact=true</code>, this cube reference also produces an IK posture reference for the fingertips.</p>
+
+      <h3>2. C3 solves its ordinary short-horizon plan</h3>
+      <p>At each scheduled C3 solve, it computes a new horizon of planned states, contact forces, and inputs:</p>
+      <div class="equation">
+\[
+\{x_k,\lambda_k,u_k\}_{k=0}^{N-1}.
+\]
+      </div>
+      <p>C3 is free to choose the force allocation needed to follow the yaw reference while satisfying its constraints. There is no prescribed middle/thumb/index force split.</p>
+
+      <h3>3. OSC turns the C3 result into actuator torque</h3>
+      <p>In <code>--exec_mode=osc</code>, the direct C3 input \(u_0\) is <em>not</em> sent straight to the motors. OSC instead uses the first planned C3 contact force \(\lambda_0\) as its contact-force objective and combines it with the IK joint posture target:</p>
+      <div class="equation">
+\[
+\tau_{\mathrm{actuated}}
+= \tau_{\mathrm{OSC\ force}}(\lambda_0)
++ \tau_{\mathrm{posture\ PD}}(q_{\mathrm{IK}},q,\dot q).
+\]
+      </div>
+      <p>For these tests the posture term uses <code>osc_kp=0.5</code> and <code>osc_kd=0.0</code>. The resulting hand torque is what reaches the simulator, which then produces the actual cube motion.</p>
+
+      <h3>4. Measure the yaw error</h3>
+      <p>The cube yaw is measured from its actual pose, not inferred from the planned force. The residual is:</p>
+      <div class="equation">
+\[
+e_\psi = \operatorname{wrap}\!\left(
+\psi_{\mathrm{goal}} - \psi_{\mathrm{measured}}\right).
+\]
+      </div>
+      <p>For the latest run before ring placement, the cube was near \(0.299\ \mathrm{rad}\) while the goal was \(0.1745\ \mathrm{rad}\), so the needed correction was about \(-0.124\ \mathrm{rad}\), or \(-7.1^\circ\).</p>
+
+      <h3>5. If necessary, start a second smooth yaw segment</h3>
+      <p><strong>This is the proposed feedback phase; it is not implemented yet.</strong> If \(\lvert e_\psi\rvert\) exceeds the yaw threshold, the gait keeps the same three contacts and does not place ring. It creates a new short reference that starts at the measured yaw and ends at the original goal:</p>
+      <div class="equation">
+\[
+\psi_{\mathrm{corr}}(\tau) =
+\psi_{\mathrm{measured}}
++ s(\tau)\left(
+    \psi_{\mathrm{goal}}-\psi_{\mathrm{measured}}
+  \right),
+\qquad 0\le s(\tau)\le1.
+\]
+      </div>
+      <p>Here \(s(\tau)\) is a smooth ramp. At the start of this correction, the reference equals the measured yaw, so the command does not jump.</p>
+
+      <h3>6. Re-solve C3; do not rebuild the contact model</h3>
+      <p>The new yaw-reference horizon is put into C3, and C3 solves fresh ordinary plans at its normal solve cadence. The contact set remains <code>{index, middle, thumb}</code>, so there is no C3 topology rebuild and no three-contact candidate test yet. Rebuilding is reserved for a contact-set change, such as ring joining or index leaving.</p>
+      <p>The solve/OSC/measure loop repeats until yaw, position, and velocity meet the settling gate. Only then does the gait place ring, later evaluate the middle–thumb–ring C3 hold, and potentially move index.</p>
+
+      <div class="note">
+        Current behavior is open-loop at the maneuver level: it commands one nominal \(0\!\to\!10^\circ\) yaw reference and proceeds by time. It does continue to solve C3, but it does not create this deliberate measured-yaw-to-goal correction segment before ring placement.
+      </div>
+    </section>
+
+    <section>
+      <h2>Why normal-only execution does not fully close the C3 feedback loop</h2>
+      <div class="answer">
+        Rejecting C3's noisy joint-input plan is reasonable. The problem is not that C3's input \(u\) is ignored; the problem is that the current OSC branch also discards the tangential part of C3's contact-force plan.
+      </div>
+
+      <h3>What C3 plans</h3>
+      <p>For the Stewart--Trinkle contact model, C3's first force vector has the layout:</p>
+      <div class="equation">
+\[
+\lambda_0 =
+\begin{bmatrix}
+\gamma \\
+\lambda_n \\
+\beta
+\end{bmatrix}.
+\]
+      </div>
+      <table>
+        <thead>
+          <tr><th>Part</th><th>Meaning</th><th>Physical force to execute?</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>\(\gamma\)</td><td>Friction-cone slack variables.</td><td><span class="amber">No.</span> They are not physical contact forces.</td></tr>
+          <tr><td>\(\lambda_n\)</td><td>Normal contact compression at each fingertip.</td><td><span class="green">Yes.</span></td></tr>
+          <tr><td>\(\beta\)</td><td>Tangential/friction force rays at each fingertip.</td><td><span class="green">Yes.</span></td></tr>
+        </tbody>
+      </table>
+
+      <h3>What the current OSC branch executes</h3>
+      <p>It extracts only one normal-force scalar per active finger:</p>
+      <div class="equation">
+\[
+f_{n,i} = \sum \lambda_{n,i},
+\qquad
+\tau_{\mathrm{OSC\ force}}
+= \sum_{i\in\mathrm{active}}
+J_i(q)^\mathsf{T}\bigl(f_{n,i}n_i\bigr).
+\]
+      </div>
+      <p>It drops \(\beta\) entirely. Thus the current execution branch is a <em>normal-force proxy</em>, not an execution of the full C3 contact-force plan.</p>
+
+      <div class="warning">
+        A normal scalar for each finger does not uniquely specify the six-dimensional wrench on the cube. It may hold the cube, but it cannot in general reproduce C3's planned net force and yaw torque.
+      </div>
+
+      <h3>Why this matters for automatic MPC correction</h3>
+      <p>C3 does re-solve from the measured cube state. If the cube yaw is wrong, it can plan a corrective contact wrench. But that planned correction often needs tangential/friction force and its moment arm about the cube centre:</p>
+      <div class="equation">
+\[
+M_z^{\mathrm{C3}}
+= \sum_i
+\left[
+  (p_i-p_{\mathrm{cube}})
+  \times
+  f_{i,\mathrm{cube}}^{\mathrm{C3}}
+\right]_z.
+\]
+      </div>
+      <p>Normal-only OSC can create <em>some</em> yaw torque through geometry, but it is not guaranteed to create \(M_z^{\mathrm{C3}}\). The coupled planner/executor loop can therefore settle at the wrong yaw even though C3 keeps observing and re-solving from that yaw.</p>
+
+      <h3>The appropriate force-only execution bridge</h3>
+      <p>Keep C3's joint input \(u\) out of the actuator loop. Instead, reconstruct the complete physical force that C3 planned <em>on the cube</em> at each active contact:</p>
+      <div class="equation">
+\[
+f_{i,\mathrm{cube}}^{\mathrm{C3}}
+=
+\lambda_{n,i}b_{n,i}
++ \sum_j \beta_{i,j}b_{\beta,i,j}.
+\]
+      </div>
+      <p>The existing C3 linearization already stores the exact world-frame bases \(b_{n,i}\) and \(b_{\beta,i,j}\). Use those bases; do not invent a second tangent basis in OSC.</p>
+
+      <p>Then command the equal-and-opposite desired force at the fingertip using the <em>measured</em> hand Jacobian:</p>
+      <div class="equation">
+\[
+\tau_{\mathrm{force}}
+= \sum_i
+J_i(q_{\mathrm{measured}})^\mathsf{T}
+f_{i,\mathrm{hand}}^{\mathrm{desired}},
+\qquad
+f_{i,\mathrm{hand}}^{\mathrm{desired}}
+= -f_{i,\mathrm{cube}}^{\mathrm{C3}},
+\]
+      </div>
+      <p>with the final sign chosen consistently with the simulator's Jacobian and contact-force convention. The total safe actuator command is then:</p>
+      <div class="equation">
+\[
+\tau =
+\tau_{\mathrm{gravity}}
++ \tau_{\mathrm{force}}
++ \tau_{\mathrm{posture}}.
+\]
+      </div>
+      <p>The posture term remains only a low-gain stabilizer. For these tests it retains <code>osc_kp=0.5</code> and <code>osc_kd=0.0</code>; it does not need C3's predicted joint state or joint input.</p>
+
+      <h3>Recommended diagnostic before adding a special yaw correction phase</h3>
+      <p>Log both the planned and the simulator-resolved contact wrench:</p>
+      <div class="equation">
+\[
+\begin{aligned}
+M_z^{\mathrm{C3}}
+&= \sum_i [(p_i-p_{\mathrm{cube}})\times
+f_{i,\mathrm{cube}}^{\mathrm{C3}}]_z, \\
+M_z^{\mathrm{SAP}}
+&= \sum_i [(p_i-p_{\mathrm{cube}})\times
+f_{i,\mathrm{cube}}^{\mathrm{SAP}}]_z.
+\end{aligned}
+\]
+      </div>
+      <ul>
+        <li>If C3 plans a corrective \(M_z\), but SAP does not produce it, the force executor is losing the C3 plan.</li>
+        <li>If C3 itself plans nearly zero corrective \(M_z\), then the C3 cost, model, or constraints need investigation.</li>
+      </ul>
+
+      <div class="note">
+        This produces a deliberately force-level controller: measured state \(\rightarrow\) C3 force plan \(\rightarrow\) full contact-force executor \(\rightarrow\) cube \(\rightarrow\) measured state. It avoids applying the unreliable C3 joint-input sequence while preserving the feedback content of the contact plan.
+      </div>
+    </section>
+
+    <section>
+      <h2>Measured-wrench outer loop for force-only yaw control</h2>
+      <div class="answer">
+        The force-only C3 executor needs one more feedback layer: compare the
+        <em>actual</em> wrench on the cube with the wrench required to reduce
+        the measured pose error, then make a bounded contact-force correction.
+        C3 remains the nominal force planner; this outer loop does not apply
+        C3's noisy joint input \(u\).
+      </div>
+
+      <h3>Why it is needed</h3>
+      <p>In the 30 degree four-contact experiment, at \(t=5.4\) s, C3 and
+      the reconstructed OSC command both requested \(+0.005692\) N m of
+      world-\(+Z\) moment, while SAP resolved essentially zero:</p>
+      <div class="equation">
+\[
+M_z^{\mathrm{C3}} = M_z^{\mathrm{OSC}} = +0.005692\ \mathrm{N\,m},
+\qquad
+M_z^{\mathrm{SAP}} \simeq 0.
+\]
+      </div>
+      <p>The cube consequently stopped near \(0.240\) rad (about 14 degrees)
+      despite a \(0.524\) rad (30 degree) yaw reference. The resolved normal
+      forces also differed sharply from the C3 normal commands. This is an
+      execution/contact mismatch: a planned wrench is not yet evidence that
+      the cube receives that wrench.</p>
+
+      <h3>1. Form a desired object wrench from measured error</h3>
+      <p>At an outer-loop rate such as 20--50 Hz, measure cube pose and twist.
+      For yaw, form a bounded PI-D correction around C3's nominal yaw moment:</p>
+      <div class="equation">
+\[
+e_\psi = \operatorname{wrap}(\psi_{\mathrm{ref}}-\psi),\qquad
+M_{z,\mathrm{des}} = M_{z,\mathrm{C3}}
+ + K_\psi e_\psi + K_{\dot\psi}(\dot\psi_{\mathrm{ref}}-\dot\psi)
+ + K_I\!\int e_\psi\,dt.
+\]
+      </div>
+      <p>Clamp this command and use anti-windup. In the actual implementation
+      the same idea should produce a complete six-dimensional desired wrench:
+      yaw correction plus limited roll/pitch and position corrections. Pure
+      yaw control is unsafe when the cube is already rolling or pitching.</p>
+
+      <h3>2. Estimate the wrench SAP actually applies</h3>
+      <p>Use the resolved simulator contact points and forces, not the C3
+      witness forces:</p>
+      <div class="equation">
+\[
+\hat w_{\mathrm{SAP}} =
+\sum_i
+\begin{bmatrix}
+f_i^{\mathrm{SAP}} \\
+(p_i-p_C)\times f_i^{\mathrm{SAP}}
+\end{bmatrix}.
+\]
+      </div>
+      <p>On hardware, replace SAP with a contact-wrench observer or
+      force/torque sensing. The yaw feedback error is then
+      \(M_{z,\mathrm{des}}-\hat M_z^{\mathrm{SAP}}\), not
+      \(M_{z,\mathrm{des}}-M_z^{\mathrm{C3}}\).</p>
+
+      <h3>3. Reallocate only the missing wrench</h3>
+      <p>Build the grasp map \(G_{\mathrm{actual}}\) from the measured cube
+      pose and current contact positions. Solve a small constrained QP for a
+      force correction around C3's first-knot force plan:</p>
+      <div class="equation">
+\[
+\Delta\lambda = \arg\min_{\Delta\lambda}
+\left\|G_{\mathrm{actual}}\Delta\lambda-
+\left(w_{\mathrm{des}}-\hat w_{\mathrm{SAP}}\right)\right\|_Q^2
++ \rho\|\Delta\lambda\|^2,
+\qquad
+\lambda_{\mathrm{cmd}} = \lambda_{\mathrm{C3}}+\Delta\lambda.
+\]
+      </div>
+      <p>Constraints must retain positive normal compression, friction-cone
+      margin, actuator limits, and a small per-update force-rate limit. The
+      regularization term prevents the controller from needlessly changing
+      the internal squeeze forces that already hold the cube.</p>
+
+      <h3>4. Execute and close the loop on the cube, not on planned forces</h3>
+      <p>Reconstruct the full normal-plus-tangential force from
+      \(\lambda_{\mathrm{cmd}}\), convert it to fingertip torque through the
+      measured Jacobians, and repeat the measurement. The resulting loop is:</p>
+      <div class="equation">
+\[
+\text{cube pose/twist} \longrightarrow w_{\mathrm{des}}
+\longrightarrow
+\text{constrained force allocation} \longrightarrow J^\mathsf{T}f
+\longrightarrow \text{cube} \longrightarrow \hat w_{\mathrm{SAP}}.
+\]
+      </div>
+
+      <h3>5. Include an authority test; do not integrate forever</h3>
+      <p>This outer loop is not magic. Before allowing its integral term to
+      grow, apply small, safe force-allocation perturbations and estimate the
+      local execution effectiveness:</p>
+      <div class="equation">
+\[
+B_{\mathrm{eff}} \approx
+\frac{\Delta w_{\mathrm{SAP}}}{\Delta\lambda_{\mathrm{cmd}}}.
+\]
+      </div>
+      <p>If every feasible perturbation produces negligible
+      \(\Delta M_z^{\mathrm{SAP}}\), the present contact geometry and
+      force-only execution have no usable yaw authority. Freeze the yaw
+      integrator, retain the holding wrench, and report the failure. The
+      remedy is then a different contact layout or a carefully controlled
+      hand-motion component&mdash;not arbitrarily larger force commands.</p>
+
+      <div class="warning">
+        The first implementation is now available behind
+        <code>--osc_wrench_feedback=true</code>. It is deliberately a
+        <em>yaw-only</em> outer loop: bounded PI yaw-moment correction,
+        measured-SAP contact geometry, tangential force redistribution,
+        per-contact force/rate limits, and an authority timeout. It requires
+        <code>--exec_mode=osc --osc_full_contact_force=true</code>. Roll,
+        pitch, and translational wrench feedback remain future work.
+      </div>
+    </section>
+
+    <section>
+      <h2>Where it lives in the code</h2>
+      <ul>
+        <li>The candidate rebuild now passes only the shared normal-force margin when evaluating <code>{middle, thumb, ring}</code>: <a class="code-link" href="allegro_grasp_c3_squeeze_gait.cc">allegro_grasp_c3_squeeze_gait.cc</a>, near <code>planner-&gt;Rebuild({1, 2, 3}, ...)</code>.</li>
+        <li><code>ConfigureHoldSafetyConstraints()</code> and <code>AddStateConstraintToAllPredictionKnots(...)</code> were removed from the planner.</li>
+        <li>The remaining predicted-motion limits are acceptance checks defined in <a class="code-link" href="allegro_grasp_c3_squeeze_flags_maneuver.cc">allegro_grasp_c3_squeeze_flags_maneuver.cc</a>, not C3 state constraints.</li>
+      </ul>
+      <div class="note">
+        The right diagnostic next step is to determine which remaining hard constraint first becomes impossible after relinearization: contact/friction, torque, or normal-force margin. The current solver message does not yet identify the individual conflicting row.
+      </div>
+    </section>
+
+    <footer>Three-finger C3 hold constraint note &mdash; August 30, 2026</footer>
+  </main>
+</body>
+</html>

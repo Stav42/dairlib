@@ -136,9 +136,12 @@ DEFINE_string(gait_scheme, "triangle",
               "triangle scheme.\n"
               "  spider   - lateral-reorientation milestones: index/middle/"
               "thumb make one small world-+Z yaw while ring stays parked; "
-              "the cube then holds still while ring approaches through an "
-              "outside waypoint and joins as the fourth support contact. "
-              "The maneuver stops there; no finger relocation runs yet.");
+              "the cube then holds still while ring approaches yellow/-Y "
+              "through an outside waypoint and joins as the fourth support "
+              "contact. "
+              "By default the maneuver stops in that four-contact hold; "
+              "--spider_index_crawl_after_ring can explicitly enable the "
+              "later index crawl.");
 DEFINE_double(spider_yaw_delta, 0.17453292519943295,
               "spider: signed world-+Z yaw for this first isolated turn "
               "(rad). Default +10 deg. This is deliberately independent of "
@@ -147,19 +150,131 @@ DEFINE_double(spider_yaw_duration, 1.0,
               "spider: duration (s) of the minimum-jerk small-yaw ramp. "
               "After this ramp and --gait_hold_time, the controller holds "
               "the final yaw and begins ring placement.");
-DEFINE_double(spider_ring_red_y, -0.015,
-              "spider: body-fixed Y coordinate (m) of ring's temporary "
-              "support point on face 1 / red (the cube's +X face) after the "
-              "small world-Z yaw. Negative lies toward the red-yellow edge. "
-              "The default is a preferred point safely inside red; if it is "
-              "just beyond ring's joint limits, spider moves it toward red's "
-              "face centre in 1 mm steps and uses the first IK-reachable "
-              "point. Keep it within 2 cm of face centre.");
-DEFINE_double(spider_ring_hold_z, 0.015,
-              "spider: body-fixed Z coordinate (m) of ring's support point "
-              "on face 1 / red. The validated +15 mm height keeps the ring "
-              "well inside the face while reducing the pitch disturbance at "
-              "four-contact handoff.");
+DEFINE_bool(spider_yaw_only, false,
+            "spider diagnostic: perform the isolated world-+Z yaw, then "
+            "hold the existing index-middle-thumb C3 grasp with the ring "
+            "parked. No ring placement or index lift is commanded.");
+DEFINE_double(spider_ring_placement_duration, 4.0,
+              "spider: duration (s) of the selected red-face ring approach. "
+              "The default 4 s is deliberately gentle: only the ring's "
+              "three-knot joint trajectory is slowed; the yaw, C3 contact "
+              "force plan, and index hold are unchanged.");
+DEFINE_double(spider_triangle_half_width, 0.015,
+              "spider: nominal 60 mm-cube half-width (m) of the yellow-face "
+              "support triangle's base. Index is at -half-width and ring at "
+              "+half-width, so they are opposite base corners. This value "
+              "scales with --cube_size_scale.");
+DEFINE_double(spider_triangle_base_z, -0.005,
+              "spider: nominal 60 mm-cube Z coordinate (m) for index and "
+              "ring, a few millimetres below yellow-face centre. This value "
+              "scales with --cube_size_scale.");
+DEFINE_double(spider_triangle_apex_z, 0.005,
+              "spider: nominal 60 mm-cube Z coordinate (m) for middle at "
+              "the yellow-face vertical centre line, a few millimetres above "
+              "face centre. This value scales with --cube_size_scale.");
+DEFINE_double(spider_ring_red_y, 0.026,
+              "Deprecated spider red-face placement coordinate. The active "
+              "spider handoff now places ring on yellow / -Y and ignores "
+              "this flag; it remains available for old command lines.");
+DEFINE_double(spider_ring_hold_z, 0.003,
+              "Deprecated spider ring height. The active yellow-face ring "
+              "target uses --spider_triangle_base_z so it forms the base "
+              "with index; this flag remains available for old command "
+              "lines.");
+DEFINE_double(spider_index_crawl, 0.003,
+              "spider: positive distance (m) for index's first in-face crawl "
+              "on yellow/4 after ring has joined C3. Yellow is body -Y and "
+              "blue/2 is its -X neighbour, so this subtracts from index's "
+              "body-X coordinate. The default 3 mm moves index from -20 to "
+              "-23 mm, leaving 7 mm before the yellow-blue edge. This is a "
+              "crawl only: it deliberately does not cross onto blue.");
+DEFINE_double(spider_index_arc_clearance, 0.005,
+              "spider: outward clearance (m) for index's first crawl path. "
+              "The index rises only 5 mm off yellow/4 before shifting 3 mm "
+              "sideways, then returns to yellow. This deliberately differs "
+              "from --regrasp_arc_clearance: the older, 30 mm regrasp arc "
+              "is unnecessarily large for a small spider-walk step.");
+DEFINE_double(spider_index_duration, 1.5,
+              "spider: duration (s) of index's first shallow crawl. A "
+              "slower move reduces the transient force while the remaining "
+              "middle-thumb-ring support grasp holds the cube.");
+DEFINE_bool(spider_index_crawl_after_ring, false,
+            "spider: after ring joins at the selected red-face target, "
+            "evaluate the three-contact C3 candidate and crawl index. "
+            "Default false leaves index in contact and holds all four "
+            "fingers after ring placement.");
+DEFINE_double(spider_support_normal_margin, 0.05,
+              "spider: shared lower bound (N) on each remaining contact's "
+              "C3 normal force during index's three-contact support phase. "
+              "This is a feasibility margin, not a per-finger force target: "
+              "C3 remains free to choose the force distribution above it.");
+DEFINE_double(spider_support_verify_time, 0.25,
+              "spider: duration (s) for which C3's candidate three-contact "
+              "hold must remain viable before index is allowed to lift.");
+DEFINE_double(spider_support_settle_time, 0.25,
+              "spider: continuous duration (s) for which the measured "
+              "four-contact cube state must be settled after ring joins C3 "
+              "and before C3 is rebuilt with only middle, thumb, and ring.");
+DEFINE_double(spider_support_settle_yaw_error, 0.03,
+              "spider: maximum measured world-yaw error (rad) from the "
+              "completed small-turn target before evaluating the "
+              "three-contact support candidate. Default is about 1.7 deg.");
+DEFINE_double(spider_support_settle_translation_error, 0.005,
+              "spider: maximum measured cube-center translation error (m) "
+              "from the stationary small-turn target before evaluating the "
+              "three-contact support candidate.");
+DEFINE_double(spider_support_settle_linear_speed, 0.02,
+              "spider: maximum measured cube linear speed (m/s) required "
+              "before replacing the four-contact C3 hold with the "
+              "three-contact support candidate.");
+DEFINE_double(spider_support_settle_angular_speed, 0.10,
+              "spider: maximum measured cube angular speed (rad/s) required "
+              "before replacing the four-contact C3 hold with the "
+              "three-contact support candidate.");
+DEFINE_double(spider_ring_handoff_vertical_force_deficit, 0.05,
+              "spider: maximum allowed deficit (N) between cube weight and "
+              "the actual SAP fingertip-contact upward force while the ring "
+              "is being verified before it joins C3. For example, 0.05 "
+              "requires SAP F_z >= weight - 0.05 N. This is a measured "
+              "handoff safety gate, not a C3 force constraint.");
+DEFINE_double(spider_support_max_translation_error, 0.007,
+              "spider: maximum predicted cube translation error (m) allowed "
+              "during the candidate three-contact hold. The default 7 mm "
+              "is a total 3-D distance, not a per-axis displacement.");
+DEFINE_double(spider_support_max_orientation_error, 0.10,
+              "spider: maximum predicted cube orientation error (rad) "
+              "allowed during the candidate three-contact hold.");
+DEFINE_double(spider_support_max_linear_speed, 0.05,
+              "spider: maximum predicted cube linear speed (m/s) allowed "
+              "during the candidate three-contact hold.");
+DEFINE_double(spider_support_max_angular_speed, 0.25,
+              "spider: maximum predicted cube angular speed (rad/s) allowed "
+              "during the candidate three-contact hold.");
+DEFINE_bool(spider_allow_unverified_index_lift, false,
+            "spider diagnostic override: after C3 has solved the "
+            "three-contact candidate and its normal-force margin passes, "
+            "allow index to lift even if the predicted position, "
+            "orientation, or speed checks fail. This is for observing the "
+            "actual three-contact hold only; default false keeps every "
+            "acceptance check enforced.");
+DEFINE_bool(spider_virtual_ring_search, false,
+            "spider diagnostic analysis: after the small yaw, keep the "
+            "real index-middle-thumb hold and the ring parked, then solve "
+            "temporary middle-thumb-ring C3 holds for a grid of virtual "
+            "ring points on red/+X. No ring motion or index lift is "
+            "commanded; the log ranks the hypothetical points only.");
+DEFINE_int32(spider_ring_search_rows, 10,
+             "spider virtual-ring search: number of Z rows on red/+X. "
+             "Together with --spider_ring_search_cols, the default is a "
+             "100-point 10x10 sweep.");
+DEFINE_int32(spider_ring_search_cols, 10,
+             "spider virtual-ring search: number of Y columns on red/+X. "
+             "Together with --spider_ring_search_rows, the default is a "
+             "100-point 10x10 sweep.");
+DEFINE_double(spider_ring_search_face_margin, 0.004,
+              "spider virtual-ring search: in-face edge clearance (m) on "
+              "the 60 mm red/+X face. The sampled coordinates span "
+              "[-0.03+margin, +0.03-margin] in both cube Y and Z.");
 DEFINE_double(relay_ring_hold_z, 0.0,
               "relay: where on the -Y face ring holds, as a height (m) above "
               "the face centre. Negative is below.\n"

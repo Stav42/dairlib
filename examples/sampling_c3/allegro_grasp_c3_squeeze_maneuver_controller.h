@@ -17,7 +17,7 @@
 namespace dairlib::allegro_grasp_c3 {
 
 enum class GaitPhase { kRotate, kMove, kDone };
-enum class GaitLegKind { kRegrasp, kEngage };
+enum class GaitLegKind { kRegrasp, kEngage, kSpiderCrawl };
 
 // Owns the release/recontact and gait state machines. It emits planner
 // topology changes and joint-reference overrides through named operations;
@@ -30,11 +30,14 @@ class ManeuverController {
               const std::array<bool, 4>& touching,
               const Eigen::VectorXd& state,
               const drake::math::RigidTransform<double>& cube_pose,
+              double sap_vertical_contact_force, double cube_weight,
               C3Planner* planner, Eigen::VectorXd* contact_start,
               Eigen::VectorXd* contact_end);
   void OverrideJointTarget(double time, Eigen::VectorXd* desired) const;
   void ConfigureCubeReference(CubeMotionReferenceConfig* reference) const;
   bool ring_engaged() const;
+  int handoff_generation() const;
+  std::array<Eigen::Vector3d, 4> OscPressDirectionsInCube() const;
 
  private:
   struct RecontactState {
@@ -56,6 +59,7 @@ class ManeuverController {
                   const std::array<bool, 4>& touching,
                   const Eigen::VectorXd& state,
                   const drake::math::RigidTransform<double>& cube_pose,
+                  double sap_vertical_contact_force, double cube_weight,
                   C3Planner* planner, Eigen::VectorXd* contact_start,
                   Eigen::VectorXd* contact_end);
   void CompleteFinger(int finger, const Eigen::VectorXd& destination,
@@ -78,19 +82,38 @@ class ManeuverController {
   bool gait_entered_{};
   bool gait_left_surface_{};
   bool gait_touch_latched_{};
+  // The spider ring stops at the first measured touch instead of completing
+  // its fixed trajectory into the cube.  It is held there while the existing
+  // three-contact grasp is verified.
+  bool gait_touch_hold_active_{};
+  bool gait_retreating_{};
+  bool spider_ring_handoff_gate_invalid_reported_{};
   double gait_touch_time_{-1.0};
+  double spider_ring_handoff_valid_since_{-1.0};
+  double gait_retreat_start_time_{-1.0};
   double gait_leg_done_time_{-1e9};
+  double gait_support_wait_start_time_{-1.0};
+  double spider_support_settle_wait_start_time_{-1.0};
+  double spider_support_settled_since_{-1.0};
+  double spider_support_candidate_start_time_{-1.0};
+  double spider_support_valid_since_{-1.0};
+  bool spider_support_force_plan_logged_{};
+  bool spider_support_candidate_approved_{};
   double gait_trajectory_start_{};
   double gait_theta_start_{};
   double gait_theta_target_{};
   double gait_rotate_start_{};
   Eigen::VectorXd gait_destination_;
+  Eigen::VectorXd gait_midpoint_;
+  Eigen::VectorXd gait_touch_hold_positions_;
   Eigen::VectorXd ring_parked_positions_;
   Eigen::Vector3d gait_target_C_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d gait_target_W_{Eigen::Vector3d::Zero()};
   drake::trajectories::PiecewisePolynomial<double> gait_trajectory_;
+  drake::trajectories::PiecewisePolynomial<double> gait_retreat_trajectory_;
   std::vector<std::pair<int, GaitLegKind>> gait_plan_;
   bool ring_engaged_{};
+  int handoff_generation_{};
 };
 
 }  // namespace dairlib::allegro_grasp_c3

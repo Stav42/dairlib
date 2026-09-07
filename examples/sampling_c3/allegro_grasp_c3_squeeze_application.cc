@@ -9,6 +9,8 @@
 
 #include <Eigen/Geometry>
 
+#include <drake/geometry/shape_specification.h>
+#include <drake/math/rigid_transform.h>
 #include <drake/math/roll_pitch_yaw.h>
 
 #include "allegro_grasp_c3_squeeze_execution.h"
@@ -31,13 +33,13 @@ SqueezeApplication::SqueezeApplication(SqueezeConfig config)
     : config_(std::move(config)),
       environment_(config_),
       grasp_(config_, &environment_),
-      lcs_model_(),
+      lcs_model_(config_.cube_size_scale),
       planner_(config_, &lcs_model_),
       maneuver_(config_, &grasp_) {
   tracking_.contact_start = grasp_.contact_positions;
   tracking_.contact_end = grasp_.contact_positions;
   tracking_.ramp_origin = grasp_.contact_positions;
-  ring_engaged_last_control_ = maneuver_.ring_engaged();
+  maneuver_handoff_generation_last_control_ = maneuver_.handoff_generation();
 }
 
 int SqueezeApplication::Run() {
@@ -46,9 +48,33 @@ int SqueezeApplication::Run() {
                                grasp_.initial_cube_positions);
   environment_.Initialize();
 
+  const bool show_spider_best_ring_target =
+      config_.show_cube_target && config_.gait &&
+      config_.gait_scheme == "spider";
+  const auto update_spider_best_ring_target = [this]() {
+    const auto cube_pose =
+        CubePoseFromPositions(environment_.cube_positions());
+    const Vector3d target_W = cube_pose * grasp_.spider_ring_hold;
+    environment_.meshcat()->SetTransform(
+        "/spider/virtual_ring_search_best_target",
+        drake::math::RigidTransform<double>(target_W));
+  };
+  if (show_spider_best_ring_target) {
+    environment_.meshcat()->SetObject(
+        "/spider/virtual_ring_search_best_target",
+        drake::geometry::Sphere(0.004),
+        drake::geometry::Rgba(1.0, 0.0, 1.0, 1.0));
+    update_spider_best_ring_target();
+    std::cout << "[visual] spider: magenta sphere marks the selected ring "
+                 "target_C=["
+              << grasp_.spider_ring_hold.transpose()
+              << "] m (sphere is visual only)\n";
+  }
+
   for (double time = kControlDt; time < config_.sim_time;
        time += kControlDt) {
     environment_.PublishState();
+    if (show_spider_best_ring_target) update_spider_best_ring_target();
     const std::array<bool, 4> touching = DetectContacts();
     LogContacts(time);
     LogRotation(time);
@@ -89,15 +115,23 @@ void SqueezeApplication::LogContacts(double time) const {
       1, static_cast<int>(std::lround(
              1.0 / (config_.contact_force_log_hz * kControlDt))));
   if (static_cast<long>(std::lround(time / kControlDt)) % period != 0) return;
-  PrintSapContactForceDiagnostic({
-      time,
-      last_osc_normal_command_.time,
-      last_osc_normal_command_.valid,
-      config_.lambda_torque_scale,
-      SummarizeSapFingertipCubeContacts(
-          environment_.contacts(), grasp_.cube_body, grasp_.tip_bodies),
-      last_osc_normal_command_.c3_normal_force_target,
-      last_osc_normal_command_.c3_normal_force_applied});
+  const Eigen::Vector3d cube_center =
+      CubePoseFromPositions(environment_.cube_positions()).translation();
+  PrintSapContactForceDiagnostic(
+      {time,
+       last_osc_contact_force_command_.time,
+       last_osc_contact_force_command_.valid,
+       last_osc_contact_force_command_.used_full_contact_force,
+       config_.lambda_torque_scale,
+       SummarizeSapFingertipCubeContacts(
+           environment_.contacts(), grasp_.cube_body, grasp_.tip_bodies,
+           cube_center),
+       last_osc_contact_force_command_.c3_normal_force_target,
+       last_osc_contact_force_command_.c3_normal_force_applied,
+       last_osc_contact_force_command_.c3_force_on_cube_world,
+       last_osc_contact_force_command_.osc_force_command_on_cube_world,
+       last_osc_contact_force_command_.c3_contact_point_world,
+       cube_center});
 }
 
 void SqueezeApplication::LogRotation(double time) const {
@@ -202,7 +236,10 @@ VectorXd SqueezeApplication::ComputeReachTorque(
       -plant.CalcGravityGeneralizedForces(environment_.plant_context()));
   const bool all_three = reach_.arrived[0] && reach_.arrived[1] &&
                          reach_.arrived[2];
-  const bool ring_ready = !config_.release_middle || reach_.arrived[3];
+  // Spider starts with ring as an ordinary required initial contact, just as
+  // the middle-release experiment does.  Do not enter C3 while its initial
+  // four-finger IK target is still in transit.
+  const bool ring_ready = grasp_.grasp_finger_count < 4 || reach_.arrived[3];
   const double last_arrival = *std::max_element(
       reach_.arrival_time.begin(), reach_.arrival_time.end());
   if (all_three && ring_ready &&
@@ -224,7 +261,7 @@ void SqueezeApplication::StartPlanner(double time) {
   target.segment(planner_.dimensions().hand_positions, 7) =
       grasp_.initial_cube_positions;
   planner_.SetBaseTarget(target);
-  planner_.Rebuild(config_.release_middle
+  planner_.Rebuild(grasp_.grasp_finger_count == 4
                        ? std::vector<int>{0, 1, 2, 3}
                        : std::vector<int>{0, 1, 2},
                    environment_.state(), time);
@@ -250,9 +287,18 @@ void SqueezeApplication::UpdateManeuver(
     double time, const std::array<bool, 4>& touching) {
   if (cube_pinned_) return;
   const double reference_time = std::max(0.0, time - (handoff_time_ + 0.5));
+  const auto cube_pose = CubePoseFromPositions(environment_.cube_positions());
+  const SapFingertipCubeContactSummary sap =
+      SummarizeSapFingertipCubeContacts(
+          environment_.contacts(), grasp_.cube_body, grasp_.tip_bodies,
+          cube_pose.translation());
+  const double cube_weight = environment_.plant()
+                                 .get_body(grasp_.cube_body)
+                                 .get_mass(environment_.plant_context()) *
+      9.81;
   maneuver_.Update(
       time, reference_time, touching, environment_.state(),
-      CubePoseFromPositions(environment_.cube_positions()), &planner_,
+      cube_pose, sap.net_force_on_cube_world.z(), cube_weight, &planner_,
       &tracking_.contact_start, &tracking_.contact_end);
 }
 
@@ -332,26 +378,218 @@ std::vector<double> SqueezeApplication::ComputePlannedCubeVerticalContactForces(
       force_plan});
 }
 
+std::array<Vector3d, 4> SqueezeApplication::UpdateYawWrenchFeedback(
+    double time, const C3ContactForcePlan& c3_contact_force_plan) {
+  const std::array<Vector3d, 4> zero{
+      Vector3d::Zero(), Vector3d::Zero(), Vector3d::Zero(),
+      Vector3d::Zero()};
+  if (!config_.osc_wrench_feedback || cube_pinned_ ||
+      !c3_contact_force_plan.valid) {
+    yaw_wrench_feedback_.force_on_cube_world = zero;
+    return zero;
+  }
+
+  const auto cube_pose = CubePoseFromPositions(environment_.cube_positions());
+  const Vector3d cube_center = cube_pose.translation();
+  const SapFingertipCubeContactSummary sap =
+      SummarizeSapFingertipCubeContacts(
+          environment_.contacts(), grasp_.cube_body, grasp_.tip_bodies,
+          cube_center);
+  const auto yaw_moment = [&cube_center](
+                              const std::array<Vector3d, 4>& forces,
+                              const std::array<Vector3d, 4>& points) {
+    double result = 0.0;
+    for (int finger = 0; finger < 4; ++finger)
+      result += (points.at(finger) - cube_center)
+                    .cross(forces.at(finger))
+                    .z();
+    return result;
+  };
+  yaw_wrench_feedback_.c3_yaw_moment = yaw_moment(
+      c3_contact_force_plan.force_on_cube_world,
+      c3_contact_force_plan.contact_point_world);
+  yaw_wrench_feedback_.sap_yaw_moment =
+      sap.moment_about_cube_center_world.z();
+
+  const double reference_time =
+      std::max(0.0, time - (handoff_time_ + 0.5));
+  const auto desired_pose = CubeTarget(reference_time).pose;
+  const drake::math::RollPitchYaw<double> desired_delta(
+      desired_pose.rotation() * grasp_.initial_cube_pose.rotation().inverse());
+  const drake::math::RollPitchYaw<double> measured_delta(
+      cube_pose.rotation() * grasp_.initial_cube_pose.rotation().inverse());
+  yaw_wrench_feedback_.yaw_error = std::remainder(
+      desired_delta.yaw_angle() - measured_delta.yaw_angle(), 2.0 * M_PI);
+
+  // This experiment is a yaw-maneuver corrector, not a general zero-yaw
+  // attitude servo.  Do not consume the authority-test budget while the
+  // gait is still in its pre-yaw settling hold; start only once its reference
+  // has actually departed from zero.
+  if (std::abs(desired_delta.yaw_angle()) < 1e-3) {
+    yaw_wrench_feedback_.yaw_integral = 0.0;
+    yaw_wrench_feedback_.requested_yaw_moment = 0.0;
+    yaw_wrench_feedback_.allocated_yaw_moment = 0.0;
+    yaw_wrench_feedback_.authority_test_start_time = -1.0;
+    yaw_wrench_feedback_.force_on_cube_world = zero;
+    return zero;
+  }
+
+  if (yaw_wrench_feedback_.last_update_time >= 0.0 &&
+      time < yaw_wrench_feedback_.last_update_time +
+                 config_.osc_wrench_feedback_period) {
+    return yaw_wrench_feedback_.authority_lost
+               ? zero
+               : yaw_wrench_feedback_.force_on_cube_world;
+  }
+  const double dt = yaw_wrench_feedback_.last_update_time < 0.0
+                        ? config_.osc_wrench_feedback_period
+                        : time - yaw_wrench_feedback_.last_update_time;
+  yaw_wrench_feedback_.last_update_time = time;
+  if (yaw_wrench_feedback_.authority_lost) {
+    yaw_wrench_feedback_.force_on_cube_world = zero;
+    return zero;
+  }
+
+  // Integrate only while the requested correction has headroom. This is
+  // ordinary PI anti-windup; the separate authority gate below prevents a
+  // feasible-but-ineffective force map from accumulating indefinitely.
+  const double previous_integral = yaw_wrench_feedback_.yaw_integral;
+  const double candidate_integral = previous_integral +
+      yaw_wrench_feedback_.yaw_error * std::max(0.0, dt);
+  const double raw_candidate = config_.osc_wrench_feedback_yaw_kp *
+          yaw_wrench_feedback_.yaw_error +
+      config_.osc_wrench_feedback_yaw_ki * candidate_integral;
+  const double requested = std::clamp(
+      raw_candidate, -config_.osc_wrench_feedback_max_yaw_moment,
+      config_.osc_wrench_feedback_max_yaw_moment);
+  const bool saturated = std::abs(raw_candidate - requested) > 1e-12;
+  if (!saturated ||
+      requested * yaw_wrench_feedback_.yaw_error < 0.0) {
+    yaw_wrench_feedback_.yaw_integral = candidate_integral;
+  }
+  yaw_wrench_feedback_.requested_yaw_moment = requested;
+
+  std::array<Vector3d, 4> directions = zero;
+  std::array<double, 4> leverage{};
+  double denominator = config_.osc_wrench_feedback_allocation_damping;
+  for (int finger : planner_.active_fingers()) {
+    const SapFingerContactForce& contact = sap.fingers.at(finger);
+    if (contact.point_contact_count == 0) continue;
+    const Vector3d r = contact.contact_point_world - cube_center;
+    Vector3d tangent = Vector3d::UnitZ().cross(r);
+    const Vector3d normal = contact.normal_into_cube_world;
+    if (normal.squaredNorm() > 1e-12)
+      tangent -= normal * normal.dot(tangent);
+    const double tangent_norm = tangent.norm();
+    if (tangent_norm < 1e-9) continue;
+    tangent /= tangent_norm;
+    const double moment_per_newton = r.cross(tangent).z();
+    if (std::abs(moment_per_newton) < 1e-9) continue;
+    directions.at(finger) = tangent;
+    leverage.at(finger) = moment_per_newton;
+    denominator += moment_per_newton * moment_per_newton;
+  }
+
+  std::array<Vector3d, 4> correction = zero;
+  if (denominator > config_.osc_wrench_feedback_allocation_damping + 1e-12) {
+    for (int finger : planner_.active_fingers()) {
+      if (std::abs(leverage.at(finger)) < 1e-9) continue;
+      const double scalar = std::clamp(
+          requested * leverage.at(finger) / denominator,
+          -config_.osc_wrench_feedback_max_force_per_contact,
+          config_.osc_wrench_feedback_max_force_per_contact);
+      const Vector3d target_force = scalar * directions.at(finger);
+      const Vector3d delta =
+          target_force - yaw_wrench_feedback_.force_on_cube_world.at(finger);
+      const double max_delta =
+          config_.osc_wrench_feedback_force_rate_limit * std::max(0.0, dt);
+      correction.at(finger) = delta.norm() <= max_delta || max_delta <= 0.0
+                                  ? target_force
+                                  : yaw_wrench_feedback_.force_on_cube_world.at(finger) +
+                                        (max_delta / delta.norm()) * delta;
+    }
+  }
+  yaw_wrench_feedback_.force_on_cube_world = correction;
+  yaw_wrench_feedback_.allocated_yaw_moment = 0.0;
+  for (int finger = 0; finger < 4; ++finger) {
+    const SapFingerContactForce& contact = sap.fingers.at(finger);
+    if (contact.point_contact_count == 0) continue;
+    yaw_wrench_feedback_.allocated_yaw_moment +=
+        (contact.contact_point_world - cube_center)
+            .cross(correction.at(finger))
+            .z();
+  }
+
+  const bool authority_test_active =
+      std::abs(yaw_wrench_feedback_.allocated_yaw_moment) >=
+      config_.osc_wrench_feedback_min_commanded_yaw_moment;
+  const bool insufficient_response =
+      std::abs(yaw_wrench_feedback_.sap_yaw_moment) <
+      config_.osc_wrench_feedback_min_resolved_yaw_moment;
+  if (authority_test_active && insufficient_response) {
+    if (yaw_wrench_feedback_.authority_test_start_time < 0.0)
+      yaw_wrench_feedback_.authority_test_start_time = time;
+    if (time >= yaw_wrench_feedback_.authority_test_start_time +
+                    config_.osc_wrench_feedback_authority_timeout) {
+      yaw_wrench_feedback_.authority_lost = true;
+      yaw_wrench_feedback_.force_on_cube_world = zero;
+      correction = zero;
+      std::cout << "[t=" << time
+                << "] wrench feedback: insufficient measured yaw authority; "
+                   "freezing integral and returning to nominal C3 hold\n";
+    }
+  } else {
+    yaw_wrench_feedback_.authority_test_start_time = -1.0;
+  }
+
+  if (config_.osc_wrench_feedback_log &&
+      (yaw_wrench_feedback_.last_log_time < 0.0 ||
+       time >= yaw_wrench_feedback_.last_log_time + 0.1)) {
+    yaw_wrench_feedback_.last_log_time = time;
+    std::cout << std::fixed << std::setprecision(6)
+              << "[WRENCH-FB t=" << time << "] yaw_err="
+              << yaw_wrench_feedback_.yaw_error << " Mz_C3="
+              << yaw_wrench_feedback_.c3_yaw_moment << " Mz_SAP="
+              << yaw_wrench_feedback_.sap_yaw_moment << " Mz_req="
+              << yaw_wrench_feedback_.requested_yaw_moment << " Mz_alloc="
+              << yaw_wrench_feedback_.allocated_yaw_moment << " integral="
+              << yaw_wrench_feedback_.yaw_integral << " authority="
+              << (yaw_wrench_feedback_.authority_lost ? "lost" : "active")
+              << "\n";
+  }
+  return correction;
+}
+
 void SqueezeApplication::UpdateTrackingReference(double time,
                                                   double reference_time) {
   const auto measured = CubePoseFromPositions(environment_.cube_positions());
   const auto now = CubeTarget(reference_time).pose;
   const auto end = CubeTarget(reference_time + config_.N * config_.c3_dt).pose;
-  const auto safe_now = ClampIkLead(now, measured,
-                                    config_.cube_ik_lead_pos_max,
-                                    config_.cube_ik_lead_rot_max);
-  const auto safe_end = ClampIkLead(end, measured,
-                                    config_.cube_ik_lead_pos_max,
-                                    config_.cube_ik_lead_rot_max);
+  // The historical/reference mode follows the commanded cube motion while
+  // limiting how far the hand IK can lead the real cube. Measured mode is a
+  // separate feedback option: its contact points are attached to the actual
+  // simulator cube pose, so a small cube displacement moves the PD target too.
+  const bool use_measured_pose =
+      config_.contact_ik_pose_source == "measured";
+  const auto ik_now = use_measured_pose
+                          ? measured
+                          : ClampIkLead(now, measured,
+                                        config_.cube_ik_lead_pos_max,
+                                        config_.cube_ik_lead_rot_max);
+  const auto ik_end = use_measured_pose
+                          ? measured
+                          : ClampIkLead(end, measured,
+                                        config_.cube_ik_lead_pos_max,
+                                        config_.cube_ik_lead_rot_max);
   tracking_.ramp_origin = tracking_.contact_start;
   tracking_.ramp_start_time = time;
   bool start_ok = false;
   bool end_ok = false;
   const VectorXd start = grasp_.SolveContactIk(
-      safe_now, tracking_.contact_start, maneuver_.ring_engaged(),
+      ik_now, tracking_.contact_start, maneuver_.ring_engaged(),
       &start_ok);
   const VectorXd finish = grasp_.SolveContactIk(
-      safe_end, start_ok ? start : tracking_.contact_start,
+      ik_end, start_ok ? start : tracking_.contact_start,
       maneuver_.ring_engaged(), &end_ok);
   if (start_ok) tracking_.contact_start = start;
   if (end_ok) tracking_.contact_end = finish;
@@ -421,6 +659,10 @@ VectorXd SqueezeApplication::ComputeOscTorque(double time) {
     desired = plan[1].head(planner_.dimensions().hand_positions);
   maneuver_.OverrideJointTarget(time, &desired);
 
+  const C3ContactForcePlan c3_contact_force_plan =
+      planner_.FirstPhysicalContactForcePlan();
+  const std::array<Vector3d, 4> wrench_feedback_force =
+      UpdateYawWrenchFeedback(time, c3_contact_force_plan);
   OscExecutorResult result = ComputeOscExecutorTorque(
       OscExecutorRequest{
           environment_.plant(), environment_.plant_context(),
@@ -428,24 +670,30 @@ VectorXd SqueezeApplication::ComputeOscTorque(double time) {
           grasp_.tip_bodies, GraspSetup::kFingerStarts,
           planner_.active_fingers(), planner_.normal_groups(),
           planner_.force_crossfade_origins(), planner_.finger_joined_times(),
+          maneuver_.OscPressDirectionsInCube(),
           desired, environment_.hand_positions(),
-          environment_.hand_velocities(), planner_.FirstPhysicalForce(), time,
+          environment_.hand_velocities(), planner_.FirstPhysicalForce(),
+          c3_contact_force_plan.force_on_cube_world,
+          wrench_feedback_force,
+          c3_contact_force_plan.valid,
+          config_.osc_full_contact_force,
+          time,
           kControlDt, config_.osc_kp, config_.osc_kd,
           config_.osc_qd_filter_tau, config_.gait_force_ramp_time,
           config_.lambda_torque_scale},
       &desired_velocity_filter_);
-  const bool ring_engaged = maneuver_.ring_engaged();
-  if (ring_engaged && !ring_engaged_last_control_ &&
+  const int handoff_generation = maneuver_.handoff_generation();
+  if (handoff_generation != maneuver_handoff_generation_last_control_ &&
       last_osc_pd_torque_.size() == result.pd_torque.size()) {
-    // Four-contact IK changes the desired posture of the whole hand, not just
-    // ring.  Preserve the applied pre-handoff PD torque and blend toward the
-    // new four-contact value so that a valid ring touchdown does not kick the
-    // cube into a new tilted static-friction equilibrium.
+    // Every touchdown rebuilds C3 and can change the whole-hand IK posture.
+    // Preserve the applied pre-handoff PD torque and blend toward the new
+    // value so a valid ring or spider-index touchdown does not kick the cube
+    // into another static-friction equilibrium.
     osc_pd_crossfade_from_ = last_osc_pd_torque_;
     osc_pd_crossfade_start_time_ = time;
     osc_pd_crossfade_active_ = true;
   }
-  ring_engaged_last_control_ = ring_engaged;
+  maneuver_handoff_generation_last_control_ = handoff_generation;
   if (osc_pd_crossfade_active_) {
     const double blend = config_.gait_torque_ramp_time <= 0.0
         ? 1.0
@@ -459,8 +707,20 @@ VectorXd SqueezeApplication::ComputeOscTorque(double time) {
     if (blend >= 1.0) osc_pd_crossfade_active_ = false;
   }
   last_osc_pd_torque_ = result.pd_torque;
-  last_osc_normal_command_ = {
-      true, time, result.normal_force_target, result.normal_force_applied};
+  last_osc_contact_force_command_.valid = true;
+  last_osc_contact_force_command_.time = time;
+  last_osc_contact_force_command_.used_full_contact_force =
+      result.used_full_contact_force;
+  last_osc_contact_force_command_.c3_normal_force_target =
+      result.normal_force_target;
+  last_osc_contact_force_command_.c3_normal_force_applied =
+      result.normal_force_applied;
+  last_osc_contact_force_command_.c3_force_on_cube_world =
+      result.c3_force_on_cube_world;
+  last_osc_contact_force_command_.osc_force_command_on_cube_world =
+      result.force_command_on_cube_world;
+  last_osc_contact_force_command_.c3_contact_point_world =
+      c3_contact_force_plan.contact_point_world;
   if (config_.osc_torque_split_log && schedule_.solved_this_tick) {
     const VectorXd commanded = ClampTorque(result.torque, config_.tau_max);
     const auto command_projection = ProjectHandTorqueToFingertipForces({

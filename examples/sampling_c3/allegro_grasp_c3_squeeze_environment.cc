@@ -1,5 +1,6 @@
 #include "allegro_grasp_c3_squeeze_environment.h"
 
+#include <cmath>
 #include <utility>
 
 #include <drake/geometry/scene_graph.h>
@@ -27,6 +28,18 @@ using drake::systems::FixedInputPortValue;
 using drake::systems::Simulator;
 using Eigen::VectorXd;
 
+const char* CubeModelResource(double cube_size_scale) {
+  if (std::abs(cube_size_scale - 0.8) < 1e-12) {
+    return "examples/sampling_c3/urdf/numbered_cube/"
+           "numbered_cube_80pct.sdf";
+  }
+  if (std::abs(cube_size_scale - 0.6) < 1e-12) {
+    return "examples/sampling_c3/urdf/numbered_cube/"
+           "numbered_cube_60pct.sdf";
+  }
+  return "examples/sampling_c3/urdf/numbered_cube/numbered_cube.sdf";
+}
+
 }  // namespace
 
 struct SimulationEnvironment::Impl {
@@ -37,8 +50,8 @@ struct SimulationEnvironment::Impl {
     scene_graph = &scene_graph_ref;
     hand = AddAllegroHandToPlant(plant, scene_graph);
     Parser parser(plant, scene_graph);
-    cube = parser.AddModels(FindResourceOrThrow(
-        "examples/sampling_c3/urdf/numbered_cube/numbered_cube.sdf"))[0];
+    cube = parser.AddModels(
+        FindResourceOrThrow(CubeModelResource(config.cube_size_scale)))[0];
     plant->set_discrete_contact_approximation(
         drake::multibody::DiscreteContactApproximation::kSap);
     plant->Finalize();

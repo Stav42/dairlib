@@ -40,14 +40,43 @@ struct PlannerSchedule {
   double last_solve_time{-1e9};
 };
 
-// The normal-force command that generated the contact state measured on the
-// following 1 ms control tick. Kept separately from the executor result so the
+// The force command that generated the contact state measured on the following
+// 1 ms control tick. Kept separately from the executor result so the
 // simulator-contact diagnostic has a small, explicit data dependency.
-struct OscNormalForceCommand {
+struct OscContactForceCommand {
   bool valid{};
   double time{};
+  bool used_full_contact_force{};
   std::array<double, 4> c3_normal_force_target{};
   std::array<double, 4> c3_normal_force_applied{};
+  std::array<Eigen::Vector3d, 4> c3_force_on_cube_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+  std::array<Eigen::Vector3d, 4> osc_force_command_on_cube_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+  std::array<Eigen::Vector3d, 4> c3_contact_point_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
+};
+
+// State of the optional measured-SAP-wrench feedback layer.  This first
+// implementation intentionally corrects world-Z yaw only, while preserving
+// C3's nominal full contact-force plan as the holding wrench.
+struct YawWrenchFeedbackState {
+  bool authority_lost{};
+  double last_update_time{-1.0};
+  double last_log_time{-1.0};
+  double yaw_integral{};
+  double yaw_error{};
+  double c3_yaw_moment{};
+  double sap_yaw_moment{};
+  double requested_yaw_moment{};
+  double allocated_yaw_moment{};
+  double authority_test_start_time{-1.0};
+  std::array<Eigen::Vector3d, 4> force_on_cube_world{
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
 };
 
 class SqueezeApplication {
@@ -67,6 +96,8 @@ class SqueezeApplication {
   void UpdateTrackingReference(double time, double reference_time);
   void UpdateHorizonTarget(double reference_time);
   std::vector<double> ComputePlannedCubeVerticalContactForces();
+  std::array<Eigen::Vector3d, 4> UpdateYawWrenchFeedback(
+      double time, const C3ContactForcePlan& c3_contact_force_plan);
   Eigen::VectorXd ComputeExecutionTorque(double time);
   Eigen::VectorXd ComputeOscTorque(double time);
   Eigen::VectorXd ComputeTaskSpaceTorque();
@@ -86,11 +117,12 @@ class SqueezeApplication {
   ReachState reach_;
   TrackingState tracking_;
   PlannerSchedule schedule_;
-  OscNormalForceCommand last_osc_normal_command_;
+  OscContactForceCommand last_osc_contact_force_command_;
+  YawWrenchFeedbackState yaw_wrench_feedback_;
   DesiredVelocityFilterState desired_velocity_filter_;
   Eigen::VectorXd last_osc_pd_torque_;
   Eigen::VectorXd osc_pd_crossfade_from_;
-  bool ring_engaged_last_control_{};
+  int maneuver_handoff_generation_last_control_{};
   bool osc_pd_crossfade_active_{};
   double osc_pd_crossfade_start_time_{};
   bool cube_pinned_{true};
